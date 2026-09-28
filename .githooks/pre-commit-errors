@@ -75,6 +75,10 @@ for file in $STAGED_GO_FILES; do
     fi
     # Skip comma-ok type assertions: ", _ :=" / ", _ =" paired with ".("
     echo "$pattern" | grep -qE ',\s*_\s*(:=|=)[^=]*\.\(' && continue
+    # Skip HTTP response-writer writes: after WriteHeader the response is
+    # committed and a write error cannot be surfaced; `_, _ = w.Write(...)`
+    # is the documented idiom (quality-gates convention).
+    echo "$pattern" | grep -qE '^\s*_,\s*_\s*=\s*(w|writer|rw|resp\.)\.Write' && continue
     LINE_NUMS=$(grep -nF "$pattern" "$file" 2>/dev/null | cut -d: -f1)
     for ln in $LINE_NUMS; do
       BLOCKING_ISSUES="${BLOCKING_ISSUES}  ❌ Ignored error (_ =):\n    $file:$ln: $pattern\n"
@@ -114,6 +118,13 @@ if [ -n "$BLOCKING_ISSUES" ]; then
   echo ""
   echo -e "${RED}━━━ BLOCKING issues (commit will fail) ━━━${NC}"
   echo -e "$BLOCKING_ISSUES"
+fi
+
+# Blocking findings must always fail the hook — even when no informational
+# issues exist (ISSUE_COUNT 0). Previously the exit-1 path sat inside the
+# ISSUE_COUNT branch, so a commit with only blocking findings passed.
+if [ "$BLOCK_COUNT" -gt 0 ]; then
+  exit 1
 fi
 
 if [ "$ISSUE_COUNT" -gt 0 ]; then

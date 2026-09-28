@@ -24,26 +24,26 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	}
 	tmpPath := path + ".tmp-" + hex.EncodeToString(randBytes[:])
 
-	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm) //nolint:gosec // G703: callers pass paths derived from validated object keys (validateObjectKey/validateUploadID).
 	if err != nil {
 		return fmt.Errorf("creating temp file for %s: %w", path, err)
 	}
-	if _, err := f.Write(data); err != nil {
+	if _, err := f.Write(data); err != nil { //nolint:gosec // G703: callers pass validated object-key paths.
 		f.Close()
-		os.Remove(tmpPath)
+		os.Remove(tmpPath) //nolint:gosec // G703: tmpPath built from validated caller path.
 		return fmt.Errorf("writing temp file %s: %w", tmpPath, err)
 	}
-	if err := f.Sync(); err != nil {
+	if err := f.Sync(); err != nil { //nolint:gosec // G703: callers pass validated object-key paths.
 		f.Close()
-		os.Remove(tmpPath)
+		os.Remove(tmpPath) //nolint:gosec // G703: tmpPath built from validated caller path.
 		return fmt.Errorf("syncing temp file %s: %w", tmpPath, err)
 	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmpPath)
+	if err := f.Close(); err != nil { //nolint:gosec // G703: callers pass validated object-key paths.
+		os.Remove(tmpPath) //nolint:gosec // G703: tmpPath built from validated caller path.
 		return fmt.Errorf("closing temp file %s: %w", tmpPath, err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
+	if err := os.Rename(tmpPath, path); err != nil { //nolint:gosec // G703: callers pass validated object-key paths.
+		os.Remove(tmpPath) //nolint:gosec // G703: tmpPath built from validated caller path.
 		return fmt.Errorf("renaming %s over %s: %w", tmpPath, path, err)
 	}
 	return nil

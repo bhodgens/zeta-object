@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -119,10 +120,10 @@ func listBucketsHandler(w http.ResponseWriter, r *http.Request) {
 func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
 	// Validate bucket name
 	if err := validateBucketName(bucketName); err != nil {
-		log.Printf("Invalid bucket name %s: %v", bucketName, err)
+		log.Printf("Invalid bucket name %s: %v", strconv.Quote(bucketName), err)
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(errorToXML("InvalidBucketName", err.Error())))
+		_, _ = w.Write([]byte(errorToXML("InvalidBucketName", err.Error())))
 		return
 	}
 
@@ -133,13 +134,13 @@ func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 	if _, isCustom := serverConfig.Buckets[bucketName]; isCustom {
 		customPath := serverConfig.Buckets[bucketName]
 		if info, err := os.Stat(customPath); err != nil || !info.IsDir() {
-			log.Printf("Bucket %s is a custom-configured bucket whose path %s is missing on disk.", bucketName, customPath)
+			log.Printf("Bucket %s is a custom-configured bucket whose path %s is missing on disk.", strconv.Quote(bucketName), customPath)
 			writeS3Error(w, "BucketAlreadyExists",
 				"The requested bucket name is a custom-configured bucket whose path is missing on disk; it cannot be created via the API.",
 				http.StatusConflict)
 			return
 		}
-		log.Printf("Bucket %s is a custom-configured bucket, already exists.", bucketName)
+		log.Printf("Bucket %s is a custom-configured bucket, already exists.", strconv.Quote(bucketName))
 		w.WriteHeader(http.StatusOK) // Idempotent
 		return
 	}
@@ -165,7 +166,7 @@ func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 		}
 		// Existing directory = a bucket we already own. Single-user server:
 		// report BucketAlreadyOwnedByYou (409) instead of S3's silent 200.
-		log.Printf("Bucket %s already exists.", bucketName)
+		log.Printf("Bucket %s already exists.", strconv.Quote(bucketName))
 		writeS3Error(w, "BucketAlreadyOwnedByYou",
 			"Your previous request to create the named bucket succeeded and you already own it.",
 			http.StatusConflict)
@@ -177,7 +178,7 @@ func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 		log.Printf("Error creating bucket directory %s: %v", bucketPath, err)
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error creating bucket.")))
+		_, _ = w.Write([]byte(errorToXML("InternalError", "Error creating bucket.")))
 		return
 	}
 
@@ -187,28 +188,28 @@ func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 		os.RemoveAll(bucketPath)
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error creating bucket metadata storage.")))
+		_, _ = w.Write([]byte(errorToXML("InternalError", "Error creating bucket metadata storage.")))
 		return
 	}
 
-	log.Printf("Successfully created bucket: %s", bucketName)
+	log.Printf("Successfully created bucket: %s", strconv.Quote(bucketName))
 	w.WriteHeader(http.StatusOK)
 }
 
 func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
 	// Leaf 2.4 fix 7: reject invalid/traversal bucket names
 	if !validBucket(bucketName) {
-		log.Printf("Invalid bucket name %s for DeleteBucket", bucketName)
+		log.Printf("Invalid bucket name %s for DeleteBucket", strconv.Quote(bucketName))
 		writeS3Error(w, "InvalidArgument", "Invalid bucket name.", http.StatusBadRequest)
 		return
 	}
 
 	// Prevent deletion of custom-configured buckets via API
 	if _, isCustom := serverConfig.Buckets[bucketName]; isCustom {
-		log.Printf("Cannot delete custom-configured bucket %s via API", bucketName)
+		log.Printf("Cannot delete custom-configured bucket %s via API", strconv.Quote(bucketName))
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(errorToXML("AccessDenied", "Cannot delete custom-configured bucket via API.")))
+		_, _ = w.Write([]byte(errorToXML("AccessDenied", "Cannot delete custom-configured bucket via API.")))
 		return
 	}
 
@@ -217,10 +218,10 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 
 	// Check if bucket exists
 	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
-		log.Printf("Attempted to delete non-existent bucket: %s", bucketName)
+		log.Printf("Attempted to delete non-existent bucket: %s", strconv.Quote(bucketName))
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(errorToXML("NoSuchBucket", "The specified bucket does not exist.")))
+		_, _ = w.Write([]byte(errorToXML("NoSuchBucket", "The specified bucket does not exist.")))
 		return
 	}
 
@@ -230,13 +231,13 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 		log.Printf("Error reading bucket directory %s during delete: %v", bucketPath, err)
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error reading bucket.")))
+		_, _ = w.Write([]byte(errorToXML("InternalError", "Error reading bucket.")))
 		return
 	}
 
 	for _, file := range files {
 		if file.Name() != ".metadata" && file.Name() != ".bucket-actions" {
-			log.Printf("Attempted to delete non-empty bucket: %s", bucketName)
+			log.Printf("Attempted to delete non-empty bucket: %s", strconv.Quote(bucketName))
 			writeS3Error(w, "BucketNotEmpty", "The bucket you tried to delete is not empty.", http.StatusConflict)
 			return
 		}
@@ -247,7 +248,7 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 	if uploadEntries, err := os.ReadDir(uploadsDir); err == nil {
 		for _, e := range uploadEntries {
 			if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
-				log.Printf("Bucket %s has in-progress multipart uploads: %s", bucketName, e.Name())
+				log.Printf("Bucket %s has in-progress multipart uploads: %s", strconv.Quote(bucketName), e.Name())
 				writeS3Error(w, "BucketNotEmpty", "Bucket has in-progress multipart uploads.", http.StatusConflict)
 				return
 			}
@@ -259,7 +260,7 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 		log.Printf("Error deleting metadata directory %s for bucket %s: %v", metadataPath, bucketName, err)
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error deleting bucket.")))
+		_, _ = w.Write([]byte(errorToXML("InternalError", "Error deleting bucket.")))
 		return
 	}
 
@@ -268,18 +269,18 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 		log.Printf("Error deleting bucket directory %s: %v", bucketPath, err)
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error deleting bucket.")))
+		_, _ = w.Write([]byte(errorToXML("InternalError", "Error deleting bucket.")))
 		return
 	}
 
-	log.Printf("Successfully deleted bucket: %s", bucketName)
+	log.Printf("Successfully deleted bucket: %s", strconv.Quote(bucketName))
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func getBucketLocationHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
 	// Leaf 2.4 fix 7: reject invalid/traversal bucket names
 	if !validBucket(bucketName) {
-		log.Printf("Invalid bucket name %s for GetBucketLocation", bucketName)
+		log.Printf("Invalid bucket name %s for GetBucketLocation", strconv.Quote(bucketName))
 		writeS3Error(w, "InvalidArgument", "Invalid bucket name.", http.StatusBadRequest)
 		return
 	}
@@ -287,7 +288,7 @@ func getBucketLocationHandler(w http.ResponseWriter, r *http.Request, bucketName
 	// Leaf 2.4 fix 9: existence check via bucketExists (rejects non-dir
 	// paths, not just IsNotExist)
 	if !bucketExists(bucketName) {
-		log.Printf("Bucket %s does not exist for GetBucketLocation", bucketName)
+		log.Printf("Bucket %s does not exist for GetBucketLocation", strconv.Quote(bucketName))
 		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return
 	}
@@ -295,13 +296,13 @@ func getBucketLocationHandler(w http.ResponseWriter, r *http.Request, bucketName
 	// S3 returns an empty LocationConstraint for US Standard (us-east-1)
 	location := LocationConstraint{Location: ""}
 	writeXML(w, http.StatusOK, location)
-	log.Printf("Successfully served GetBucketLocation for %s", bucketName)
+	log.Printf("Successfully served GetBucketLocation for %s", strconv.Quote(bucketName))
 }
 
 func headBucketHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
 	// Leaf 2.4 fix 7: reject invalid/traversal bucket names
 	if !validBucket(bucketName) {
-		log.Printf("Invalid bucket name %s for HeadBucket", bucketName)
+		log.Printf("Invalid bucket name %s for HeadBucket", strconv.Quote(bucketName))
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -309,13 +310,13 @@ func headBucketHandler(w http.ResponseWriter, r *http.Request, bucketName string
 	// Check if bucket exists (bucketExists also rejects non-dir paths, unlike
 	// a bare os.IsNotExist check — leaf 2.4 fix 9)
 	if !bucketExists(bucketName) {
-		log.Printf("Bucket %s does not exist for HeadBucket", bucketName)
+		log.Printf("Bucket %s does not exist for HeadBucket", strconv.Quote(bucketName))
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
-	log.Printf("Successfully served HeadBucket for %s", bucketName)
+	log.Printf("Successfully served HeadBucket for %s", strconv.Quote(bucketName))
 }
 
 // validateBucketName validates S3 bucket naming rules
@@ -324,19 +325,19 @@ func validateBucketName(name string) error {
 		return fmt.Errorf("bucket name must be between 3 and 63 characters")
 	}
 	// Must start with lowercase letter or number
-	if !((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= '0' && name[0] <= '9')) {
+	if (name[0] < 'a' || name[0] > 'z') && (name[0] < '0' || name[0] > '9') {
 		return fmt.Errorf("bucket name must start with a lowercase letter or number")
 	}
 	// Must end with lowercase letter or number
 	last := name[len(name)-1]
-	if !((last >= 'a' && last <= 'z') || (last >= '0' && last <= '9')) {
+	if (last < 'a' || last > 'z') && (last < '0' || last > '9') {
 		return fmt.Errorf("bucket name must end with a lowercase letter or number")
 	}
 	// Check valid characters and no consecutive periods
 	prevChar := byte(0)
-	for i := 0; i < len(name); i++ {
+	for i := range len(name) {
 		c := name[i]
-		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '.') {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' && c != '.' {
 			return fmt.Errorf("bucket name can only contain lowercase letters, numbers, hyphens, and periods")
 		}
 		if c == '.' && prevChar == '.' {

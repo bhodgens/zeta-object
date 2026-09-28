@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -128,7 +129,7 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 		objectName = strings.Join(pathParts[1:], "/")
 	}
 
-	log.Printf("Request: %s %s, Bucket: '%s', Object: '%s'", r.Method, r.URL.Path, bucketName, objectName)
+	log.Printf("Request: %s %s, Bucket: '%s', Object: '%s'", strconv.Quote(r.Method), strconv.Quote(r.URL.Path), strconv.Quote(bucketName), strconv.Quote(objectName))
 
 	// Authenticate request (placeholder - to be implemented with AWS SigV4)
 	if !authenticateRequest(w, r) {
@@ -142,72 +143,90 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if bucketName == "" { // Service-level operations
-		switch r.Method {
-		case "GET":
-			listBucketsHandler(w, r)
-		default:
-			http.Error(w, "Method Not Allowed at service level", http.StatusMethodNotAllowed)
-		}
-	} else if objectName == "" { // Bucket-level operations
-		// Check if location parameter is present for GetBucketLocation
-		if _, ok := r.URL.Query()["location"]; ok && r.Method == "GET" {
-			getBucketLocationHandler(w, r, bucketName)
-			return
-		}
-		// Check if list-type=2 parameter is present for ListObjectsV2
-		if val, ok := r.URL.Query()["list-type"]; ok && val[0] == "2" && r.Method == "GET" {
-			listObjectsV2Handler(w, r, bucketName)
-			return
-		}
+	switch {
+	case bucketName == "":
+		serviceLevelDispatch(w, r)
+	case objectName == "":
+		bucketLevelDispatch(w, r, bucketName)
+	default:
+		objectLevelDispatch(w, r, bucketName, objectName)
+	}
+}
 
-		switch r.Method {
-		case "PUT":
-			createBucketHandler(w, r, bucketName)
-		case "GET": // This would be ListObjectsV1 or GetBucketACL etc.
-			// For now, assume ListObjectsV2 is the primary way to list.
-			// If no specific query params for listing, could be GetBucketACL or other bucket specific GETs.
-			// We'll default to a simple "Not Implemented" or treat as ListObjectsV2 if query params match.
-			listObjectsV2Handler(w, r, bucketName) // Or a more specific handler based on query params
-		case "DELETE":
-			deleteBucketHandler(w, r, bucketName)
-		case "HEAD":
-			headBucketHandler(w, r, bucketName)
-		default:
-			http.Error(w, "Method Not Allowed for bucket", http.StatusMethodNotAllowed)
-		}
-	} else { // Object-level operations
-		// Check for multipart upload query parameters
-		if _, ok := r.URL.Query()["uploads"]; ok && r.Method == "POST" {
-			initiateMultipartUploadHandler(w, r, bucketName, objectName)
-			return
-		}
-		if partNumber, ok := r.URL.Query()["partNumber"]; ok && r.Method == "PUT" {
-			if uploadID, ok := r.URL.Query()["uploadId"]; ok {
-				uploadPartHandler(w, r, bucketName, objectName, partNumber[0], uploadID[0])
-				return
-			}
-		}
-		if uploadID, ok := r.URL.Query()["uploadId"]; ok && r.Method == "POST" {
-			completeMultipartUploadHandler(w, r, bucketName, objectName, uploadID[0])
-			return
-		}
-		if uploadID, ok := r.URL.Query()["uploadId"]; ok && r.Method == "DELETE" {
-			abortMultipartUploadHandler(w, r, bucketName, objectName, uploadID[0])
-			return
-		}
+// serviceLevelDispatch routes service-level (no bucket) requests.
+func serviceLevelDispatch(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		listBucketsHandler(w, r)
+	default:
+		http.Error(w, "Method Not Allowed at service level", http.StatusMethodNotAllowed)
+	}
+}
 
-		switch r.Method {
-		case "PUT":
-			putObjectHandler(w, r, bucketName, objectName)
-		case "GET":
-			getObjectHandler(w, r, bucketName, objectName)
-		case "DELETE":
-			deleteObjectHandler(w, r, bucketName, objectName)
-		case "HEAD":
-			headObjectHandler(w, r, bucketName, objectName)
-		default:
-			http.Error(w, "Method Not Allowed for object", http.StatusMethodNotAllowed)
+// bucketLevelDispatch routes bucket-level requests (bucket set, no object),
+// including the ?location and ?list-type=2 sub-resources.
+func bucketLevelDispatch(w http.ResponseWriter, r *http.Request, bucketName string) {
+	// Check if location parameter is present for GetBucketLocation
+	if _, ok := r.URL.Query()["location"]; ok && r.Method == "GET" {
+		getBucketLocationHandler(w, r, bucketName)
+		return
+	}
+	// Check if list-type=2 parameter is present for ListObjectsV2
+	if val, ok := r.URL.Query()["list-type"]; ok && val[0] == "2" && r.Method == "GET" {
+		listObjectsV2Handler(w, r, bucketName)
+		return
+	}
+
+	switch r.Method {
+	case "PUT":
+		createBucketHandler(w, r, bucketName)
+	case "GET": // This would be ListObjectsV1 or GetBucketACL etc.
+		// For now, assume ListObjectsV2 is the primary way to list.
+		// If no specific query params for listing, could be GetBucketACL or other bucket specific GETs.
+		// We'll default to a simple "Not Implemented" or treat as ListObjectsV2 if query params match.
+		listObjectsV2Handler(w, r, bucketName) // Or a more specific handler based on query params
+	case "DELETE":
+		deleteBucketHandler(w, r, bucketName)
+	case "HEAD":
+		headBucketHandler(w, r, bucketName)
+	default:
+		http.Error(w, "Method Not Allowed for bucket", http.StatusMethodNotAllowed)
+	}
+}
+
+// objectLevelDispatch routes object-level requests, including the multipart
+// sub-resources (?uploads, ?partNumber, ?uploadId).
+func objectLevelDispatch(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
+	// Check for multipart upload query parameters
+	if _, ok := r.URL.Query()["uploads"]; ok && r.Method == "POST" {
+		initiateMultipartUploadHandler(w, r, bucketName, objectName)
+		return
+	}
+	if partNumber, ok := r.URL.Query()["partNumber"]; ok && r.Method == "PUT" {
+		if uploadID, ok := r.URL.Query()["uploadId"]; ok {
+			uploadPartHandler(w, r, bucketName, objectName, partNumber[0], uploadID[0])
+			return
 		}
+	}
+	if uploadID, ok := r.URL.Query()["uploadId"]; ok && r.Method == "POST" {
+		completeMultipartUploadHandler(w, r, bucketName, objectName, uploadID[0])
+		return
+	}
+	if uploadID, ok := r.URL.Query()["uploadId"]; ok && r.Method == "DELETE" {
+		abortMultipartUploadHandler(w, r, bucketName, objectName, uploadID[0])
+		return
+	}
+
+	switch r.Method {
+	case "PUT":
+		putObjectHandler(w, r, bucketName, objectName)
+	case "GET":
+		getObjectHandler(w, r, bucketName, objectName)
+	case "DELETE":
+		deleteObjectHandler(w, r, bucketName, objectName)
+	case "HEAD":
+		headObjectHandler(w, r, bucketName, objectName)
+	default:
+		http.Error(w, "Method Not Allowed for object", http.StatusMethodNotAllowed)
 	}
 }

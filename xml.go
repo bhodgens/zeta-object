@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"log"
 	"net/http"
+	"strconv"
 )
 
 // xml.go — S3 XML error responses, response writer helper, ACL stub
@@ -43,21 +44,24 @@ func writeXML(w http.ResponseWriter, status int, v any) {
 	}
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(status)
-	w.Write([]byte(xml.Header))
-	w.Write(x)
+	_, _ = w.Write([]byte(xml.Header))
+	_, _ = w.Write(x)
 }
 
 // Placeholder ACL related requests.
 func handleACL(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
-	log.Printf("ACL request for Bucket: '%s', Object: '%s' - Not Implemented", bucketName, objectName)
+	log.Printf("ACL request for Bucket: '%s', Object: '%s' - Not Implemented", strconv.Quote(bucketName), strconv.Quote(objectName))
 	writeS3Error(w, "NotImplemented", "ACLs are not implemented.", http.StatusNotImplemented)
 }
 
 // writeS3Error writes an S3-compliant XML error response (XML prolog +
-// xmlns) with proper Content-Type header.
+// xmlns) with proper Content-Type header. The message may carry request-
+// derived text, but errorToXML routes it through xml.MarshalIndent, which
+// XML-escapes all special characters — the XSS taint is neutralized at the
+// encoder (G705 false positive).
 func writeS3Error(w http.ResponseWriter, code string, message string, statusCode int) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(statusCode)
-	w.Write([]byte(xml.Header))
-	w.Write([]byte(errorToXML(code, message)))
+	_, _ = w.Write([]byte(xml.Header))
+	_, _ = w.Write([]byte(errorToXML(code, message))) //nolint:gosec // G705: message is XML-escaped by MarshalIndent inside errorToXML.
 }

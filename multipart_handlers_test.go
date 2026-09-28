@@ -196,15 +196,13 @@ func TestLockObject_SerializesConcurrentWriters(t *testing.T) {
 	const n = 100
 	counter := 0
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range n {
+		wg.Go(func() {
 			unlock := lockObject("/virtual/path")
 			defer unlock()
 			c := counter
 			counter = c + 1
-		}()
+		})
 	}
 	wg.Wait()
 	if counter != n {

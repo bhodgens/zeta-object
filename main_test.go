@@ -430,7 +430,7 @@ func TestCompleteMultipartUploadXML(t *testing.T) {
 func BenchmarkHashSHA256(b *testing.B) {
 	data := bytes.Repeat([]byte("test"), 1000)
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		hashSHA256(data)
 	}
 }
@@ -439,7 +439,7 @@ func BenchmarkHmacSHA256(b *testing.B) {
 	key := []byte("secretkey")
 	data := "test message"
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		hmacSHA256(key, data)
 	}
 }

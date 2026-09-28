@@ -255,7 +255,7 @@ func getPayloadHash(r *http.Request) (string, []byte, error) {
 		if !streamingPayloadAllowlist[xAmzContentSHA256] {
 			return "", nil, fmt.Errorf("unsupported streaming payload hash %q", xAmzContentSHA256)
 		}
-		log.Printf("Note: Streaming payload type '%s' - accepting without body hash verification", xAmzContentSHA256)
+		log.Printf("Note: Streaming payload type '%s' - accepting without body hash verification", strconv.Quote(xAmzContentSHA256))
 		return xAmzContentSHA256, nil, nil
 	}
 
@@ -305,13 +305,13 @@ func authenticateRequest(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	if err != nil {
-		log.Printf("Authentication Error: Invalid date format. x-amz-date: '%s', Date: '%s'. Error: %v", xAmzDate, dateHeader, err)
+		log.Printf("Authentication Error: Invalid date format. x-amz-date: '%s', Date: '%s'. Error: %v", strconv.Quote(xAmzDate), strconv.Quote(dateHeader), err)
 		writeS3Error(w, "InvalidDate", "The date provided is invalid.", http.StatusBadRequest)
 		return false
 	}
 
 	if time.Since(requestTimestamp).Abs() > 15*time.Minute {
-		log.Printf("Authentication Error: Request timestamp %s is too skewed from server time %s.", requestTimestamp.Format(iso8601Format), time.Now().UTC().Format(iso8601Format))
+		log.Printf("Authentication Error: Request timestamp %s is too skewed from server time %s.", strconv.Quote(requestTimestamp.Format(iso8601Format)), time.Now().UTC().Format(iso8601Format))
 		writeS3Error(w, "RequestTimeTooSkewed", "The difference between the request time and the current time is too large.", http.StatusForbidden)
 		return false
 	}
@@ -324,7 +324,7 @@ func authenticateRequest(w http.ResponseWriter, r *http.Request) bool {
 
 	matches := authHeaderRegexTolerant.FindStringSubmatch(authHeader)
 	if len(matches) != 6 {
-		log.Printf("Authentication Error: Invalid Authorization header format: %s", authHeader)
+		log.Printf("Authentication Error: Invalid Authorization header format: %s", strconv.Quote(authHeader))
 		writeS3Error(w, "AuthorizationHeaderMalformed", "The authorization header is malformed; it does not match the expected format.", http.StatusBadRequest)
 		return false
 	}
@@ -336,7 +336,7 @@ func authenticateRequest(w http.ResponseWriter, r *http.Request) bool {
 	clientSignature := matches[5]
 
 	if accessKeyID != serverCredentials.AccessKeyID {
-		log.Printf("Authentication Error: Unknown AccessKeyID: %s", accessKeyID)
+		log.Printf("Authentication Error: Unknown AccessKeyID: %s", strconv.Quote(accessKeyID))
 		writeS3Error(w, "InvalidAccessKeyId", "The AWS Access Key Id you provided does not exist in our records.", http.StatusForbidden)
 		return false
 	}
@@ -351,14 +351,14 @@ func authenticateRequest(w http.ResponseWriter, r *http.Request) bool {
 	// Fix 8: scope-date mismatch is an InvalidRequest/400, not a signature failure.
 	requestDateStamp := requestTimestamp.UTC().Format(shortDateFormat)
 	if dateStampFromCred != requestDateStamp {
-		log.Printf("Authentication Error: Date mismatch. Credential scope date: %s, Request date: %s", dateStampFromCred, requestDateStamp)
+		log.Printf("Authentication Error: Date mismatch. Credential scope date: %s, Request date: %s", strconv.Quote(dateStampFromCred), strconv.Quote(requestDateStamp))
 		writeS3Error(w, "InvalidRequest", "Date in credential scope does not match request date", http.StatusBadRequest)
 		return false
 	}
 
 	// Fix 7: region mismatch is AuthorizationHeaderMalformed/400 (AWS behavior).
 	if regionFromCred != defaultRegion {
-		log.Printf("Authentication Error: Invalid region. Expected %s, got %s", defaultRegion, regionFromCred)
+		log.Printf("Authentication Error: Invalid region. Expected %s, got %s", defaultRegion, strconv.Quote(regionFromCred))
 		writeS3Error(w, "AuthorizationHeaderMalformed", "Region in credential scope ('"+regionFromCred+"') is incorrect; expected '"+defaultRegion+"'.", http.StatusBadRequest)
 		return false
 	}
@@ -379,7 +379,7 @@ func authenticateRequest(w http.ResponseWriter, r *http.Request) bool {
 	// claims to sign headers it did not send (or vice versa) cannot have
 	// produced a valid canonical request.
 	if signedHeadersString != matches[4] {
-		log.Printf("Authentication Error: SignedHeaders mismatch. Client sent: '%s', Server calculated: '%s'", matches[4], signedHeadersString)
+		log.Printf("Authentication Error: SignedHeaders mismatch. Client sent: '%s', Server calculated: '%s'", strconv.Quote(matches[4]), signedHeadersString)
 		writeS3Error(w, "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.", http.StatusForbidden)
 		return false
 	}
@@ -415,7 +415,7 @@ func authenticateRequest(w http.ResponseWriter, r *http.Request) bool {
 		// Fix 9: verbose diagnostics only when MINIS3_DEBUG_AUTH=1; one line always.
 		if debugAuthEnabled() {
 			log.Printf("Authentication Error: Signature mismatch.\nServer Signature: %s\nClient Signature: %s\nString To Sign:\n%s\nCanonical Request:\n%s",
-				serverSignature, clientSignature, stringToSign, canonicalRequest)
+				strconv.Quote(serverSignature), strconv.Quote(clientSignature), strconv.Quote(stringToSign), strconv.Quote(canonicalRequest))
 		} else {
 			log.Println("Authentication Error: Signature mismatch.")
 		}

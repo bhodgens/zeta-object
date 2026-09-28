@@ -594,7 +594,7 @@ func TestListObjectsV2Handler_Pagination(t *testing.T) {
 	env := setupTestEnv(t)
 	_ = env.setupBucket(t, "test-bucket")
 	// Create 5 objects
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		key := fmt.Sprintf("obj%02d.txt", i)
 		env.writeTestObject(t, "test-bucket", key, key)
 	}
@@ -947,7 +947,7 @@ func TestConcurrentPutObject_DifferentKeys(t *testing.T) {
 	const goroutines = 10
 	errCh := make(chan error, goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(idx int) {
 			key := fmt.Sprintf("concurrent-%d.txt", idx)
 			body := fmt.Sprintf("goroutine %d", idx)
@@ -962,14 +962,14 @@ func TestConcurrentPutObject_DifferentKeys(t *testing.T) {
 		}(i)
 	}
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		if err := <-errCh; err != nil {
 			t.Error(err)
 		}
 	}
 
 	// Verify all objects exist
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		key := fmt.Sprintf("concurrent-%d.txt", i)
 		path := filepath.Join(env.dataDir, "test-bucket", key)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -1012,7 +1012,7 @@ func BenchmarkPutObject(b *testing.B) {
 	body := strings.Repeat("x", 1024) // 1KB
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest("PUT", "/bench-bucket/bench.txt", strings.NewReader(body))
 		putObjectHandler(w, req, "bench-bucket", "bench.txt")
@@ -1026,7 +1026,7 @@ func BenchmarkGetObject(b *testing.B) {
 	env.writeTestObject(&testing.T{}, "bench-bucket", "bench.txt", content)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/bench-bucket/bench.txt", nil)
 		getObjectHandler(w, req, "bench-bucket", "bench.txt")
@@ -1575,7 +1575,7 @@ func TestListObjectsV2_IsTruncatedRequiresToken(t *testing.T) {
 	env := setupTestEnv(t)
 	_ = env.setupBucket(t, "test-bucket")
 	// Exactly maxKeys objects: loop consumes all, no next page
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		env.writeTestObject(t, "test-bucket", fmt.Sprintf("obj%d.txt", i), "x")
 	}
 

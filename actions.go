@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -107,13 +108,7 @@ func (t *InactivityTracker) recordActivity(bucketPath, activityType string) {
 
 	// Check if this activity type should reset the timer
 	if len(config.ResetOn) > 0 {
-		shouldReset := false
-		for _, resetType := range config.ResetOn {
-			if resetType == activityType {
-				shouldReset = true
-				break
-			}
-		}
+		shouldReset := slices.Contains(config.ResetOn, activityType)
 		if !shouldReset {
 			return
 		}
@@ -212,7 +207,9 @@ func parseDuration(s string) (time.Duration, error) {
 	}
 }
 
-// stripJSON5Comments removes // and /* */ comments from JSON5 content
+// stripJSON5Comments removes // and /* */ comments from JSON5 content.
+// Decomposed into per-state copiers (leaf 1.2) so each stays under the
+// gocognit ceiling; behavior is byte-identical to the previous single loop.
 func stripJSON5Comments(data []byte) []byte {
 	var result bytes.Buffer
 	inDouble := false
@@ -223,57 +220,35 @@ func stripJSON5Comments(data []byte) []byte {
 
 	for i < len(data) {
 		if inLineComment {
-			if data[i] == '\n' {
-				inLineComment = false
-				result.WriteByte('\n')
-			}
-			i++
+			i = copyLineCommentTail(data, i, &result)
+			inLineComment = false
 			continue
 		}
 
 		if inBlockComment {
-			if i+1 < len(data) && data[i] == '*' && data[i+1] == '/' {
+			var closed bool
+			i, closed = copyBlockCommentTail(data, i, &result)
+			if closed {
 				inBlockComment = false
-				i += 2
-				continue
 			}
-			// Preserve newlines in block comments for line number accuracy
-			if data[i] == '\n' {
-				result.WriteByte('\n')
-			}
-			i++
 			continue
 		}
 
 		if inDouble {
-			if data[i] == '\\' && i+1 < len(data) {
-				result.WriteByte(data[i])
-				result.WriteByte(data[i+1])
-				i += 2
-				continue
-			}
-			if data[i] == '"' {
+			var closed bool
+			i, closed = copyDoubleQuotedChar(data, i, &result)
+			if closed {
 				inDouble = false
 			}
-			result.WriteByte(data[i])
-			i++
 			continue
 		}
 
 		if inSingle {
-			if data[i] == '\\' && i+1 < len(data) {
-				// JSON5 escape inside single quotes (e.g. \')
-				result.WriteByte(data[i])
-				result.WriteByte(data[i+1])
-				i += 2
-				continue
-			}
-			if data[i] == '\'' {
+			var closed bool
+			i, closed = copySingleQuotedChar(data, i, &result)
+			if closed {
 				inSingle = false
 			}
-			// // and /* inside single quotes are string content
-			result.WriteByte(data[i])
-			i++
 			continue
 		}
 
@@ -292,9 +267,10 @@ func stripJSON5Comments(data []byte) []byte {
 		}
 
 		// Check for string start
-		if data[i] == '"' {
+		switch data[i] {
+		case '"':
 			inDouble = true
-		} else if data[i] == '\'' {
+		case '\'':
 			inSingle = true
 		}
 
@@ -305,12 +281,78 @@ func stripJSON5Comments(data []byte) []byte {
 	return result.Bytes()
 }
 
-// loadActionsFile loads and parses a .bucket-actions file
+// copyLineCommentTail consumes a line comment from i, writing only the
+// terminating newline (preserved for line-number accuracy). Returns the
+// index just past the newline (or end of data).
+func copyLineCommentTail(data []byte, i int, result *bytes.Buffer) int {
+	for i < len(data) {
+		if data[i] == '\n' {
+			result.WriteByte('\n')
+			return i + 1
+		}
+		i++
+	}
+	return i
+}
+
+// copyBlockCommentTail consumes a block comment from i, preserving newlines
+// for line-number accuracy. Returns the index past the closing */ (or end
+// of data) and whether the comment was closed.
+func copyBlockCommentTail(data []byte, i int, result *bytes.Buffer) (int, bool) {
+	for i < len(data) {
+		if i+1 < len(data) && data[i] == '*' && data[i+1] == '/' {
+			return i + 2, true
+		}
+		if data[i] == '\n' {
+			result.WriteByte('\n')
+		}
+		i++
+	}
+	return i, false
+}
+
+// copyDoubleQuotedChar copies one character of a double-quoted string from i,
+// handling backslash escapes. Returns the next index and whether the string
+// was closed by this character.
+func copyDoubleQuotedChar(data []byte, i int, result *bytes.Buffer) (int, bool) {
+	if data[i] == '\\' && i+1 < len(data) {
+		result.WriteByte(data[i])
+		result.WriteByte(data[i+1])
+		return i + 2, false
+	}
+	if data[i] == '"' {
+		result.WriteByte(data[i])
+		return i + 1, true
+	}
+	result.WriteByte(data[i])
+	return i + 1, false
+}
+
+// copySingleQuotedChar copies one character of a single-quoted JSON5 string
+// from i, handling escapes. // and /* inside are string content. Returns the
+// next index and whether the string was closed by this character.
+func copySingleQuotedChar(data []byte, i int, result *bytes.Buffer) (int, bool) {
+	if data[i] == '\\' && i+1 < len(data) {
+		result.WriteByte(data[i])
+		result.WriteByte(data[i+1])
+		return i + 2, false
+	}
+	if data[i] == '\'' {
+		result.WriteByte(data[i])
+		return i + 1, true
+	}
+	result.WriteByte(data[i])
+	return i + 1, false
+}
+
+// loadActionsFile loads and parses a .bucket-actions file. A missing file is
+// not an error (actions are optional per directory): it returns (nil, nil),
+// which callers already handle via the rootActions/childActions != nil check.
 func loadActionsFile(path string) (*BucketActions, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, nil //nolint:nilnil // missing file = no actions configured; intentional and documented.
 		}
 		return nil, err
 	}
@@ -348,7 +390,7 @@ func loadActionsForPath(bucketPath, objectKey string) *BucketActions {
 	parts := strings.Split(objectKey, "/")
 	currentPath := bucketPath
 
-	for i := 0; i < len(parts)-1; i++ { // Exclude the file name itself
+	for i := range len(parts) - 1 { // Exclude the file name itself
 		currentPath = filepath.Join(currentPath, parts[i])
 		actionsPath := filepath.Join(currentPath, actionsFileName)
 
