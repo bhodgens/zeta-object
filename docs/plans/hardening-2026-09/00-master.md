@@ -99,9 +99,9 @@ W6: 3.6, final gates
 
 | Leaf | Status | Commit | Notes |
 |---|---|---|---|
-| 1.1 | PENDING | | |
+| 1.1 | COMPLETE | 6d43ddb | tooling stack landed; make lint backlog=44 (leaf 1.2) |
 | 1.2 | PENDING | | |
-| 2.1 | PENDING | | |
+| 2.1 | COMPLETE | 6d43ddb | split verified 60/60 identical; +staticcheck cleanups |
 | 2.2 | PENDING | | |
 | 2.3 | PENDING | | |
 | 2.4 | PENDING | | |
