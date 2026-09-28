@@ -113,4 +113,11 @@ W6: 3.6, final gates
 | 3.3 | COMPLETE | be7e862 | sweeper + EntityTooSmall; marker semantics |
 | 3.4 | COMPLETE | 4d5143a | AWS golden vectors pinned; scope fix in main_test.go by orchestrator |
 | 3.5 | COMPLETE | 4d5143a | live CLI copy/batch verified |
-| 3.6 | PENDING | | |
+| 3.6 | COMPLETE | d3eb35e | 101 e2e asserts green; 3 product bugs found+fixed |
+
+
+## Completion
+
+All 16 leaves COMPLETE as of 2026-09-28. Final gates: 210 unit tests +
+101 e2e asserts green, make lint 0, race clean, staticcheck clean,
+live AWS CLI smokes green (basic, presign, copy/batch).
