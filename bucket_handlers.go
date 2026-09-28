@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/xml"
 	"fmt"
 	"log"
 	"net/http"
@@ -21,6 +20,18 @@ func getBucketPath(bucketName string) string {
 		return customPath
 	}
 	return filepath.Join(serverConfig.DataDir, bucketName)
+}
+
+// validBucket reports whether a bucket-level request may proceed for this
+// name: it must pass validateBucketName, OR be a config-declared custom
+// bucket (custom names/paths are config-controlled and exempt from the S3
+// naming rules). Rejects traversal names like "../escape" and "." before
+// they can reach getBucketPath (leaf 2.4 fix 7).
+func validBucket(name string) bool {
+	if _, isCustom := serverConfig.Buckets[name]; isCustom {
+		return true
+	}
+	return validateBucketName(name) == nil
 }
 
 // bucketExists checks if a bucket exists (follows symlinks)
@@ -101,16 +112,8 @@ func listBucketsHandler(w http.ResponseWriter, r *http.Request) {
 		Buckets: Buckets{Bucket: s3Buckets},
 	}
 
-	x, err := xml.MarshalIndent(result, "", "  ")
-	if err != nil {
-		log.Printf("Error marshalling ListAllMyBucketsResult to XML: %v", err)
-		writeS3Error(w, "InternalError", "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(http.StatusOK)
-	w.Write(x)
+	writeXML(w, http.StatusOK, result)
+	log.Printf("Successfully listed buckets")
 }
 
 func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
@@ -123,8 +126,19 @@ func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 		return
 	}
 
-	// Check if this is a custom-configured bucket (can't create via API)
+	// Check if this is a custom-configured bucket (can't create via API).
+	// Custom buckets are config-controlled: if the configured path exists on
+	// disk, PUT is idempotent success; if missing, report 409 with a message
+	// about the custom path (still no create — leaf 2.4 fix 8).
 	if _, isCustom := serverConfig.Buckets[bucketName]; isCustom {
+		customPath := serverConfig.Buckets[bucketName]
+		if info, err := os.Stat(customPath); err != nil || !info.IsDir() {
+			log.Printf("Bucket %s is a custom-configured bucket whose path %s is missing on disk.", bucketName, customPath)
+			writeS3Error(w, "BucketAlreadyExists",
+				"The requested bucket name is a custom-configured bucket whose path is missing on disk; it cannot be created via the API.",
+				http.StatusConflict)
+			return
+		}
 		log.Printf("Bucket %s is a custom-configured bucket, already exists.", bucketName)
 		w.WriteHeader(http.StatusOK) // Idempotent
 		return
@@ -133,10 +147,28 @@ func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 	bucketPath := getBucketPath(bucketName)
 	metadataPath := filepath.Join(bucketPath, ".metadata")
 
-	// Check if bucket already exists
-	if _, err := os.Stat(bucketPath); !os.IsNotExist(err) {
+	// Check if bucket already exists (leaf 2.4 fix 8 error semantics).
+	// Stat error that is neither nil nor IsNotExist → 500.
+	info, err := os.Stat(bucketPath)
+	if err != nil && !os.IsNotExist(err) {
+		log.Printf("Error statting bucket path %s: %v", bucketPath, err)
+		writeS3Error(w, "InternalError", "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	if err == nil {
+		if !info.IsDir() {
+			// A FILE exists at the bucket path → conflict, not ours
+			log.Printf("Path %s exists as a file; cannot create bucket %s.", bucketPath, bucketName)
+			writeS3Error(w, "BucketAlreadyExists",
+				"The requested bucket name is not available.", http.StatusConflict)
+			return
+		}
+		// Existing directory = a bucket we already own. Single-user server:
+		// report BucketAlreadyOwnedByYou (409) instead of S3's silent 200.
 		log.Printf("Bucket %s already exists.", bucketName)
-		w.WriteHeader(http.StatusOK) // S3 PUT Bucket is idempotent
+		writeS3Error(w, "BucketAlreadyOwnedByYou",
+			"Your previous request to create the named bucket succeeded and you already own it.",
+			http.StatusConflict)
 		return
 	}
 
@@ -164,6 +196,13 @@ func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 }
 
 func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
+	// Leaf 2.4 fix 7: reject invalid/traversal bucket names
+	if !validBucket(bucketName) {
+		log.Printf("Invalid bucket name %s for DeleteBucket", bucketName)
+		writeS3Error(w, "InvalidArgument", "Invalid bucket name.", http.StatusBadRequest)
+		return
+	}
+
 	// Prevent deletion of custom-configured buckets via API
 	if _, isCustom := serverConfig.Buckets[bucketName]; isCustom {
 		log.Printf("Cannot delete custom-configured bucket %s via API", bucketName)
@@ -198,10 +237,20 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 	for _, file := range files {
 		if file.Name() != ".metadata" && file.Name() != ".bucket-actions" {
 			log.Printf("Attempted to delete non-empty bucket: %s", bucketName)
-			w.Header().Set("Content-Type", "application/xml")
-			w.WriteHeader(http.StatusConflict)
-			w.Write([]byte(errorToXML("BucketNotEmpty", "The bucket you tried to delete is not empty.")))
+			writeS3Error(w, "BucketNotEmpty", "The bucket you tried to delete is not empty.", http.StatusConflict)
 			return
+		}
+	}
+
+	// Leaf 2.4 fix 10: in-flight multipart uploads count as non-empty
+	uploadsDir := filepath.Join(metadataPath, ".uploads")
+	if uploadEntries, err := os.ReadDir(uploadsDir); err == nil {
+		for _, e := range uploadEntries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+				log.Printf("Bucket %s has in-progress multipart uploads: %s", bucketName, e.Name())
+				writeS3Error(w, "BucketNotEmpty", "Bucket has in-progress multipart uploads.", http.StatusConflict)
+				return
+			}
 		}
 	}
 
@@ -228,36 +277,37 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 }
 
 func getBucketLocationHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
-	bucketPath := getBucketPath(bucketName)
-	// Check if bucket exists
-	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
+	// Leaf 2.4 fix 7: reject invalid/traversal bucket names
+	if !validBucket(bucketName) {
+		log.Printf("Invalid bucket name %s for GetBucketLocation", bucketName)
+		writeS3Error(w, "InvalidArgument", "Invalid bucket name.", http.StatusBadRequest)
+		return
+	}
+
+	// Leaf 2.4 fix 9: existence check via bucketExists (rejects non-dir
+	// paths, not just IsNotExist)
+	if !bucketExists(bucketName) {
 		log.Printf("Bucket %s does not exist for GetBucketLocation", bucketName)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(errorToXML("NoSuchBucket", "The specified bucket does not exist.")))
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return
 	}
 
 	// S3 returns an empty LocationConstraint for US Standard (us-east-1)
 	location := LocationConstraint{Location: ""}
-	x, err := xml.MarshalIndent(location, "", "  ")
-	if err != nil {
-		log.Printf("Error marshalling LocationConstraint to XML for bucket %s: %v", bucketName, err)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error formatting response.")))
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(http.StatusOK)
-	w.Write(x)
+	writeXML(w, http.StatusOK, location)
 	log.Printf("Successfully served GetBucketLocation for %s", bucketName)
 }
 
 func headBucketHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
+	// Leaf 2.4 fix 7: reject invalid/traversal bucket names
+	if !validBucket(bucketName) {
+		log.Printf("Invalid bucket name %s for HeadBucket", bucketName)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
 	// Check if bucket exists (bucketExists also rejects non-dir paths, unlike
-	// a bare os.IsNotExist check — audit fix, leaf 2.4 expands semantics)
+	// a bare os.IsNotExist check — leaf 2.4 fix 9)
 	if !bucketExists(bucketName) {
 		log.Printf("Bucket %s does not exist for HeadBucket", bucketName)
 		w.WriteHeader(http.StatusNotFound)

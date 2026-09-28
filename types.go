@@ -11,7 +11,7 @@ import (
 
 // S3Error defines the structure for S3 compatible XML error responses
 type S3Error struct {
-	XMLName   xml.Name `xml:"Error"`
+	XMLName   xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ Error"`
 	Code      string   `xml:"Code"`
 	Message   string   `xml:"Message"`
 	RequestID string   `xml:"RequestId,omitempty"` // Optional
@@ -20,7 +20,7 @@ type S3Error struct {
 
 // ListAllMyBucketsResult is the top-level structure for listing buckets
 type ListAllMyBucketsResult struct {
-	XMLName xml.Name `xml:"ListAllMyBucketsResult"`
+	XMLName xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListAllMyBucketsResult"`
 	Owner   Owner    `xml:"Owner"`
 	Buckets Buckets  `xml:"Buckets"`
 }
@@ -57,7 +57,7 @@ type ObjectMetadata struct {
 // ListBucketResult is the S3 response structure for listing objects (ListObjectsV2)
 // See: https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectsV2.html
 type ListBucketResult struct {
-	XMLName               xml.Name       `xml:"ListBucketResult"`
+	XMLName               xml.Name       `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListBucketResult"`
 	IsTruncated           bool           `xml:"IsTruncated"`
 	Contents              []Object       `xml:"Contents,omitempty"`
 	Name                  string         `xml:"Name"`
@@ -89,7 +89,7 @@ type CommonPrefix struct {
 
 // LocationConstraint is for GetBucketLocation
 type LocationConstraint struct {
-	XMLName  xml.Name `xml:"LocationConstraint"`
+	XMLName  xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ LocationConstraint"`
 	Location string   `xml:",chardata"`
 }
 

@@ -4,11 +4,11 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/xml"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,21 +27,17 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	objectMetadataDir := filepath.Join(bucketPath, ".metadata")
 	objectMetadataPath := filepath.Join(objectMetadataDir, objectName+".meta")
 
-	// Validate object key
+	// Validate object key (leaf 2.4 fix 2: traversal rejection)
 	if err := validateObjectKey(objectName); err != nil {
 		log.Printf("Invalid object key %s: %v", objectName, err)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(errorToXML("InvalidArgument", err.Error())))
+		writeS3Error(w, "InvalidArgument", err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	// Ensure bucket exists
 	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
 		log.Printf("Bucket %s does not exist for PutObject", bucketName)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(errorToXML("NoSuchBucket", "The specified bucket does not exist.")))
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return
 	}
 
@@ -49,9 +45,7 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("Error reading request body for %s/%s: %v", bucketName, objectName, err)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error reading request body.")))
+		writeS3Error(w, "InternalError", "Error reading request body.", http.StatusInternalServerError)
 		return
 	}
 	defer r.Body.Close()
@@ -62,9 +56,13 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 		decodedBody, err := decodeAWSChunked(body)
 		if err != nil {
 			log.Printf("Error decoding aws-chunked body for %s/%s: %v", bucketName, objectName, err)
-			w.Header().Set("Content-Type", "application/xml")
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(errorToXML("InvalidArgument", "Failed to decode chunked body.")))
+			writeS3Error(w, "InvalidArgument", "Failed to decode chunked body.", http.StatusBadRequest)
+			return
+		}
+		// Leaf 2.2 cross-leaf wiring: verify declared decoded length
+		if err := VerifyDecodedLength(r.Header.Get("x-amz-decoded-content-length"), len(decodedBody)); err != nil {
+			log.Printf("Decoded content length mismatch for %s/%s: %v", bucketName, objectName, err)
+			writeS3Error(w, "InvalidArgument", "Decoded content length mismatch.", http.StatusBadRequest)
 			return
 		}
 		body = decodedBody
@@ -75,34 +73,36 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	hash := md5.Sum(body)
 	eTag := hex.EncodeToString(hash[:])
 
+	// Leaf 2.4 fix 1: serialize writers per object and write data + metadata
+	// atomically via the storage.go helpers (no torn reads/partial files).
+	unlock := lockObject(objectDataPath)
+	defer unlock()
+
 	// Create parent directories for the object data if they don't exist
 	objectDataParentDir := filepath.Dir(objectDataPath)
 	if err := os.MkdirAll(objectDataParentDir, 0755); err != nil {
 		log.Printf("Error creating parent directories for object data %s: %v", objectDataPath, err)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error creating object storage.")))
+		writeS3Error(w, "InternalError", "Error creating object storage.", http.StatusInternalServerError)
 		return
 	}
 
-	// Write the object data
-	if err := os.WriteFile(objectDataPath, body, 0644); err != nil {
+	// Write the object data atomically
+	if err := writeFileAtomic(objectDataPath, body, 0644); err != nil {
 		log.Printf("Error writing object data to %s: %v", objectDataPath, err)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error writing object data.")))
+		writeS3Error(w, "InternalError", "Error writing object data.", http.StatusInternalServerError)
 		return
 	}
 
 	// Create parent directories for the metadata file if they don't exist
 	metadataParentDir := filepath.Dir(objectMetadataPath)
 	if err := os.MkdirAll(metadataParentDir, 0755); err != nil {
-		log.Printf("Error creating parent directories for metadata %s: %v", objectMetadataPath, err)
-		// Clean up the object data file since metadata creation failed
-		os.Remove(objectDataPath)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error creating metadata storage.")))
+		log.Printf("Error creating metadata storage for %s: %v", objectMetadataPath, err)
+		// RESIDUAL WINDOW (leaf 2.4 fix 1): the data file has been written
+		// but metadata creation failed. We can't tell whether the data file
+		// existed before this request — os.Remove here would delete the old
+		// good object on a PUT-overwrite. Full two-phase commit is out of
+		// scope; serve 500 and leave the new data in place unindexed.
+		writeS3Error(w, "InternalError", "Error creating metadata storage.", http.StatusInternalServerError)
 		return
 	}
 
@@ -122,22 +122,12 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 		}
 	}
 
-	metaJSON, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		log.Printf("Error marshalling metadata for %s/%s: %v", bucketName, objectName, err)
-		os.Remove(objectDataPath) // Clean up object data
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error creating metadata.")))
-		return
-	}
-
-	if err := os.WriteFile(objectMetadataPath, metaJSON, 0644); err != nil {
+	if err := writeFileAtomicJSON(objectMetadataPath, meta, 0644); err != nil {
 		log.Printf("Error writing metadata file %s: %v", objectMetadataPath, err)
-		os.Remove(objectDataPath) // Clean up object data
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error writing metadata.")))
+		// RESIDUAL WINDOW (leaf 2.4 fix 1): same as above — do NOT remove the
+		// data file; it may be the pre-overwrite good object. Return 500 with
+		// the new data left unindexed; a retry rewrites both files.
+		writeS3Error(w, "InternalError", "Error writing metadata.", http.StatusInternalServerError)
 		return
 	}
 
@@ -158,6 +148,18 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	})
 }
 
+// resolveObjectDataPath returns the data file path for an object, honoring
+// meta.StoragePath with a fallback to the canonical location when the stored
+// path is corrupt/empty (leaf 2.4 fix 6).
+func resolveObjectDataPath(bucketPath, objectName string, meta *ObjectMetadata) string {
+	if meta.StoragePath == "" {
+		// Corrupt metadata (empty StoragePath): fall back to the canonical
+		// bucket/key location.
+		return filepath.Join(bucketPath, objectName)
+	}
+	return meta.StoragePath
+}
+
 func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
 	bucketPath := getBucketPath(bucketName)
 	objectMetadataPath := filepath.Join(bucketPath, ".metadata", objectName+".meta")
@@ -165,9 +167,7 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	// Check if bucket exists
 	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
 		log.Printf("Bucket %s does not exist for GetObject", bucketName)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(errorToXML("NoSuchBucket", "The specified bucket does not exist.")))
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return
 	}
 
@@ -175,56 +175,66 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	metaJSON, err := os.ReadFile(objectMetadataPath)
 	if os.IsNotExist(err) {
 		log.Printf("Object metadata %s not found for %s/%s", objectMetadataPath, bucketName, objectName)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(errorToXML("NoSuchKey", "The specified key does not exist.")))
+		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", http.StatusNotFound)
 		return
 	}
 	if err != nil {
 		log.Printf("Error reading metadata file %s: %v", objectMetadataPath, err)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error reading object metadata.")))
+		writeS3Error(w, "InternalError", "Error reading object metadata.", http.StatusInternalServerError)
 		return
 	}
 
 	var meta ObjectMetadata
 	if err := json.Unmarshal(metaJSON, &meta); err != nil {
 		log.Printf("Error unmarshalling metadata from %s: %v", objectMetadataPath, err)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error parsing object metadata.")))
+		writeS3Error(w, "InternalError", "Error parsing object metadata.", http.StatusInternalServerError)
 		return
 	}
+
+	// Leaf 2.4 fix 6: fall back to the canonical path on corrupt StoragePath
+	objectDataPath := resolveObjectDataPath(bucketPath, objectName, &meta)
 
 	// Check if actual object data file exists
-	objectDataPath := meta.StoragePath
 	if _, err := os.Stat(objectDataPath); os.IsNotExist(err) {
 		log.Printf("Object data file %s not found for %s/%s", objectDataPath, bucketName, objectName)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(errorToXML("NoSuchKey", "The specified key does not exist.")))
+		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", http.StatusNotFound)
 		return
 	}
 
-	// Set headers from metadata
-	if meta.ContentType != "" {
-		w.Header().Set("Content-Type", meta.ContentType)
+	// Leaf 2.4 fix 5: stat the data file and serve the ACTUAL size. A meta
+	// lie no longer aborts the response — log a warning and serve truth.
+	fileInfo, err := os.Stat(objectDataPath)
+	if err != nil {
+		log.Printf("Error statting object data file %s: %v", objectDataPath, err)
+		writeS3Error(w, "InternalError", "Error reading object data.", http.StatusInternalServerError)
+		return
 	}
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", meta.ContentLength))
+	actualSize := fileInfo.Size()
+	if actualSize != meta.ContentLength {
+		log.Printf("WARNING: metadata ContentLength (%d) differs from actual file size (%d) for %s/%s; serving actual size",
+			meta.ContentLength, actualSize, bucketName, objectName)
+	}
+
+	// Set headers from metadata (leaf 2.4 fix 4: default Content-Type)
+	contentType := meta.ContentType
+	if contentType == "" {
+		contentType = "binary/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", actualSize))
 	w.Header().Set("ETag", fmt.Sprintf("\"%s\"", meta.ETag))
 	w.Header().Set("Last-Modified", meta.LastModified.UTC().Format(http.TimeFormat))
 	for k, v := range meta.CustomMetadata {
 		w.Header().Set(k, v)
 	}
 
-	// Stream the object data
+	// Stream the object data. Open AFTER headers are computed but write the
+	// status only once we know the file opens; a failed open becomes
+	// NoSuchKey/404 rather than a 500 with headers half-set (leaf 2.4 fix 6).
 	file, err := os.Open(objectDataPath)
 	if err != nil {
 		log.Printf("Error opening object data file %s: %v", objectDataPath, err)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error reading object data.")))
+		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", http.StatusNotFound)
 		return
 	}
 	defer file.Close()
@@ -253,11 +263,11 @@ func deleteObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, obj
 	objectMetadataPath := filepath.Join(bucketPath, ".metadata", objectName+".meta")
 	objectDataPath := filepath.Join(bucketPath, objectName)
 
-	// Check if bucket exists
+	// Leaf 2.4 fix 3: a missing bucket is a real 404 (missing KEY in an
+	// existing bucket still stays 204 per S3 semantics).
 	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
 		log.Printf("Bucket %s does not exist for DeleteObject", bucketName)
-		// S3 returns 204 No Content for delete even if object doesn't exist
-		w.WriteHeader(http.StatusNoContent)
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return
 	}
 
@@ -280,9 +290,7 @@ func deleteObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, obj
 	if err := os.Remove(actualDataPath); err != nil {
 		if !os.IsNotExist(err) {
 			log.Printf("Error deleting object data file %s: %v", actualDataPath, err)
-			w.Header().Set("Content-Type", "application/xml")
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(errorToXML("InternalError", "Error deleting object data.")))
+			writeS3Error(w, "InternalError", "Error deleting object data.", http.StatusInternalServerError)
 			return
 		}
 	} else {
@@ -353,18 +361,36 @@ func headObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 		return
 	}
 
+	// Leaf 2.4 fix 6: fall back to the canonical path on corrupt StoragePath
+	objectDataPath := resolveObjectDataPath(bucketPath, objectName, &meta)
+
 	// Check if actual object data file exists
-	if _, err := os.Stat(meta.StoragePath); os.IsNotExist(err) {
-		log.Printf("Object data file %s not found for %s/%s during HeadObject", meta.StoragePath, bucketName, objectName)
+	if _, err := os.Stat(objectDataPath); os.IsNotExist(err) {
+		log.Printf("Object data file %s not found for %s/%s during HeadObject", objectDataPath, bucketName, objectName)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
-	// Set headers from metadata
-	if meta.ContentType != "" {
-		w.Header().Set("Content-Type", meta.ContentType)
+	// Leaf 2.4 fix 5: serve the ACTUAL file size; warn when meta lies.
+	fileInfo, err := os.Stat(objectDataPath)
+	if err != nil {
+		log.Printf("Error statting object data file %s during HeadObject: %v", objectDataPath, err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
 	}
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", meta.ContentLength))
+	actualSize := fileInfo.Size()
+	if actualSize != meta.ContentLength {
+		log.Printf("WARNING: metadata ContentLength (%d) differs from actual file size (%d) for %s/%s during HeadObject; serving actual size",
+			meta.ContentLength, actualSize, bucketName, objectName)
+	}
+
+	// Set headers from metadata (leaf 2.4 fix 4: default Content-Type)
+	contentType := meta.ContentType
+	if contentType == "" {
+		contentType = "binary/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", actualSize))
 	w.Header().Set("ETag", fmt.Sprintf("\"%s\"", meta.ETag))
 	w.Header().Set("Last-Modified", meta.LastModified.UTC().Format(http.TimeFormat))
 	for k, v := range meta.CustomMetadata {
@@ -375,6 +401,13 @@ func headObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 	log.Printf("Successfully served HEAD for object %s/%s", bucketName, objectName)
 }
 
+// s3URLEncode percent-encodes a key for encoding-type=url responses: S3
+// encodes every byte except unreserved chars and "/", so a path stays a
+// path. (url.QueryEscape then restore "/" — leaf 2.4 fix 15.)
+func s3URLEncode(key string) string {
+	return strings.ReplaceAll(url.QueryEscape(key), "%2F", "/")
+}
+
 // listObjectsV2Handler implementation
 func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName string) {
 	bucketPath := getBucketPath(bucketName)
@@ -383,9 +416,7 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 	// Check if bucket exists
 	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
 		log.Printf("Bucket %s does not exist for ListObjectsV2", bucketName)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(errorToXML("NoSuchBucket", "The specified bucket does not exist.")))
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return
 	}
 
@@ -394,6 +425,8 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 	delimiter := r.URL.Query().Get("delimiter")
 	continuationToken := r.URL.Query().Get("continuation-token")
 	startAfter := r.URL.Query().Get("start-after")
+	encodingType := r.URL.Query().Get("encoding-type")
+	encodeKeys := encodingType == "url"
 	maxKeysStr := r.URL.Query().Get("max-keys")
 	maxKeys := 1000 // Default S3 maxKeys
 	if maxKeysStr != "" {
@@ -408,6 +441,23 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 				maxKeys = n
 			}
 		}
+	}
+
+	// Leaf 2.4 fix 13: max-keys=0 → empty result, no prefixes, not truncated
+	if maxKeys == 0 {
+		result := ListBucketResult{
+			IsTruncated: false,
+			Name:        bucketName,
+			Prefix:      prefix,
+			Delimiter:   delimiter,
+			MaxKeys:     0,
+			KeyCount:    0,
+		}
+		if encodeKeys {
+			result.EncodingType = "url"
+		}
+		writeXML(w, http.StatusOK, result)
+		return
 	}
 
 	var objects []Object
@@ -442,9 +492,7 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 	})
 	if err != nil && !os.IsNotExist(err) {
 		log.Printf("Error walking metadata directory %s: %v", metadataDir, err)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error listing objects.")))
+		writeS3Error(w, "InternalError", "Error listing objects.", http.StatusInternalServerError)
 		return
 	}
 	sort.Strings(allObjectKeys)
@@ -460,16 +508,27 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 	isTruncated := false
 	var nextContinuationToken string
 
+	// keyAtOrBeforeStart reports whether objectKey is excluded by the
+	// continuation/start-after cursor.
+	keyAtOrBeforeStart := func(objectKey string) bool {
+		return startKey != "" && objectKey <= startKey
+	}
+	// keyMatchesPrefix reports whether objectKey passes the prefix filter.
+	keyMatchesPrefix := func(objectKey string) bool {
+		return prefix == "" || strings.HasPrefix(objectKey, prefix)
+	}
+
 	for _, objectKey := range allObjectKeys {
-		if startKey != "" && objectKey <= startKey {
+		if keyAtOrBeforeStart(objectKey) {
+			continue
+		}
+		if !keyMatchesPrefix(objectKey) {
 			continue
 		}
 
-		if prefix != "" && !strings.HasPrefix(objectKey, prefix) {
-			continue
-		}
-
-		if processedCount >= maxKeys && maxKeys > 0 {
+		// Leaf 2.4 fix 12: truncation check runs BEFORE adding either an
+		// object or a new common prefix.
+		if processedCount >= maxKeys {
 			isTruncated = true
 			nextContinuationToken = objectKey
 			break
@@ -486,27 +545,13 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 			if idx := strings.Index(keyPartAfterRequestPrefix, delimiter); idx != -1 {
 				commonPrefixValue := prefix + keyPartAfterRequestPrefix[:idx+len(delimiter)]
 				if _, exists := commonPrefixesMap[commonPrefixValue]; !exists {
+					// First-seen roll-up counts toward maxKeys (fix 12);
+					// duplicates are free (dedupe before counting).
 					commonPrefixesMap[commonPrefixValue] = struct{}{}
+					processedCount++
 				}
 				continue
 			}
-		}
-
-		if maxKeys == 0 {
-			isTruncated = len(allObjectKeys) > 0
-			if isTruncated && len(allObjectKeys) > 0 && (startKey == "" || allObjectKeys[0] > startKey) {
-				for _, k := range allObjectKeys {
-					if startKey != "" && k <= startKey {
-						continue
-					}
-					if prefix != "" && !strings.HasPrefix(k, prefix) {
-						continue
-					}
-					nextContinuationToken = k
-					break
-				}
-			}
-			break
 		}
 
 		metaJSON, err := os.ReadFile(filepath.Join(metadataDir, objectKey+".meta"))
@@ -520,8 +565,12 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 			continue
 		}
 
+		objectKeyOut := objectKey
+		if encodeKeys {
+			objectKeyOut = s3URLEncode(objectKey)
+		}
 		objects = append(objects, Object{
-			Key:          objectKey,
+			Key:          objectKeyOut,
 			LastModified: meta.LastModified.UTC().Format("2006-01-02T15:04:05.000Z"),
 			ETag:         fmt.Sprintf("\"%s\"", meta.ETag),
 			Size:         meta.ContentLength,
@@ -530,9 +579,19 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 		processedCount++
 	}
 
+	// Leaf 2.4 fix 14: IsTruncated=true must carry a non-empty token; if the
+	// token is empty, no next page exists → report IsTruncated=false.
+	if isTruncated && nextContinuationToken == "" {
+		isTruncated = false
+	}
+
 	var commonPrefixEntries []CommonPrefix
 	for cp := range commonPrefixesMap {
-		commonPrefixEntries = append(commonPrefixEntries, CommonPrefix{Prefix: cp})
+		cpOut := cp
+		if encodeKeys {
+			cpOut = s3URLEncode(cp)
+		}
+		commonPrefixEntries = append(commonPrefixEntries, CommonPrefix{Prefix: cpOut})
 	}
 	sort.Slice(commonPrefixEntries, func(i, j int) bool {
 		return commonPrefixEntries[i].Prefix < commonPrefixEntries[j].Prefix
@@ -551,19 +610,11 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 		NextContinuationToken: nextContinuationToken,
 		StartAfter:            startAfter,
 	}
-
-	x, err := xml.MarshalIndent(result, "", "  ")
-	if err != nil {
-		log.Printf("Error marshalling ListBucketResult to XML for bucket %s: %v", bucketName, err)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error formatting object list response.")))
-		return
+	if encodeKeys {
+		result.EncodingType = "url"
 	}
 
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(http.StatusOK)
-	w.Write(x)
+	writeXML(w, http.StatusOK, result)
 	log.Printf("Successfully served ListObjectsV2 for bucket %s", bucketName)
 }
 
@@ -577,7 +628,15 @@ func parseInt(valueStr string, paramName string) (int, error) {
 	return val, nil
 }
 
-// validateObjectKey validates S3 object key constraints
+// validateObjectKey validates S3 object key constraints, including
+// path-traversal rejection (leaf 2.4 fix 2).
+//
+// DIVERGENCE from real S3 (documented per plan): real S3 permits ".." as a
+// key segment (keys are flat strings). Here safety wins: any path segment
+// equal to ".." is rejected, as is any ".metadata" segment (it would let a
+// key reach the metadata subtree or collide with the metadata directory
+// itself). Segments like "a..b", "..hidden", "x.metadata" are fine — only
+// whole segments match.
 func validateObjectKey(key string) error {
 	if len(key) == 0 {
 		return fmt.Errorf("object key cannot be empty")
@@ -588,6 +647,20 @@ func validateObjectKey(key string) error {
 	// Check for null bytes
 	if strings.ContainsRune(key, 0) {
 		return fmt.Errorf("object key cannot contain null bytes")
+	}
+	// Traversal defense: cleaned path must not escape the bucket, and no
+	// segment may be ".." or ".metadata".
+	cleaned := filepath.Clean("/" + key)
+	if cleaned == "/.." || strings.HasPrefix(cleaned, "/../") {
+		return fmt.Errorf("object key cannot escape the bucket directory")
+	}
+	for _, seg := range strings.Split(key, "/") {
+		if seg == ".." {
+			return fmt.Errorf("object key cannot contain %q path segments", "..")
+		}
+		if seg == ".metadata" {
+			return fmt.Errorf("object key cannot contain %q path segments", ".metadata")
+		}
 	}
 	return nil
 }

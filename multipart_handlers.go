@@ -212,6 +212,15 @@ func uploadPartHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 			return
 		}
 		body = decodedBody
+		// Wire VerifyDecodedLength (leaf 2.2 helper) — truncated/lying
+		// aws-chunked part uploads are rejected instead of stored.
+		if err := VerifyDecodedLength(r.Header.Get("x-amz-decoded-content-length"), len(body)); err != nil {
+			log.Printf("Decoded length mismatch for part %d of %s/%s: %v", partNumber, bucketName, objectName, err)
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(errorToXML("InvalidArgument", "Decoded content length mismatch.")))
+			return
+		}
 		log.Printf("Decoded aws-chunked part body: %d bytes", len(body))
 	}
 

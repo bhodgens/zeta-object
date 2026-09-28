@@ -6,9 +6,17 @@ import (
 	"net/http"
 )
 
-// xml.go — S3 XML error responses and ACL stub
+// xml.go — S3 XML error responses, response writer helper, ACL stub
+
+// s3XMLNamespace is the S3 API XML namespace. It is pinned per-struct via the
+// XMLName tag in types.go (e.g. `xml:"<ns> Error"`); Go's encoder only honors
+// the tag, not runtime XMLName values. TestXMLNamespaceConstantPinned pins the
+// constant to the tag value so the two cannot drift.
+const s3XMLNamespace = "http://s3.amazonaws.com/doc/2006-03-01/"
 
 // errorToXML converts an error code and message to S3 XML error format
+// (body only, with the S3 xmlns pinned via XMLName.Space; the XML prolog is
+// added by writeXML/writeS3Error).
 func errorToXML(code, message string) string {
 	s3Err := S3Error{
 		Code:    code,
@@ -22,15 +30,34 @@ func errorToXML(code, message string) string {
 	return string(x)
 }
 
+// writeXML writes v as an S3-conformant XML response: sets the Content-Type,
+// prefixes the body with the XML prolog (xml.Header), and expects v to carry
+// the S3 xmlns via its XMLName.Space (set by the caller, or by errorToXML for
+// error documents).
+func writeXML(w http.ResponseWriter, status int, v any) {
+	x, err := xml.MarshalIndent(v, "", "  ")
+	if err != nil {
+		log.Printf("Error marshalling %T to XML: %v", v, err)
+		writeS3Error(w, "InternalError", "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(status)
+	w.Write([]byte(xml.Header))
+	w.Write(x)
+}
+
 // Placeholder ACL related requests.
 func handleACL(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
 	log.Printf("ACL request for Bucket: '%s', Object: '%s' - Not Implemented", bucketName, objectName)
 	writeS3Error(w, "NotImplemented", "ACLs are not implemented.", http.StatusNotImplemented)
 }
 
-// writeS3Error writes an S3-compliant XML error response with proper Content-Type header
+// writeS3Error writes an S3-compliant XML error response (XML prolog +
+// xmlns) with proper Content-Type header.
 func writeS3Error(w http.ResponseWriter, code string, message string, statusCode int) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(statusCode)
+	w.Write([]byte(xml.Header))
 	w.Write([]byte(errorToXML(code, message)))
 }
