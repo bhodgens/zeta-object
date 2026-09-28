@@ -108,9 +108,9 @@ W6: 3.6, final gates
 | 2.5 | COMPLETE | 14574d8 | |
 | 2.6 | COMPLETE | 14574d8 | live smoke: TLS1.2 floor, SIGTERM clean, PORT wiring proven |
 | 2.7 | COMPLETE | 2b79f1e | all code claims grep-verified |
-| 3.1 | PENDING | | |
-| 3.2 | PENDING | | |
-| 3.3 | PENDING | | |
+| 3.1 | COMPLETE | be7e862 | 29 tests; multi-range→200 documented |
+| 3.2 | COMPLETE | be7e862 | live CLI presign verified; scope duplication fixed |
+| 3.3 | COMPLETE | be7e862 | sweeper + EntityTooSmall; marker semantics |
 | 3.4 | PENDING | | |
 | 3.5 | PENDING | | |
 | 3.6 | PENDING | | |
