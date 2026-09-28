@@ -77,9 +77,9 @@ W4: 4.10 + integration gate
 
 | Leaf | Status | Commit | Notes |
 |---|---|---|---|
-| 4.1 | PENDING | | |
-| 4.2 | PENDING | | |
-| 4.3 | PENDING | | |
+| 4.1 | COMPLETE | 933aa25 | executeAction 0->100%; timer drain pinned |
+| 4.2 | COMPLETE | 933aa25 | sweepAllBucketsOnce 0->91.7% |
+| 4.3 | COMPLETE | 933aa25 | dispatch trio + handleACL 100%; zero findings |
 | 4.4 | PENDING | | |
 | 4.5 | PENDING | | |
 | 4.6 | PENDING | | |
