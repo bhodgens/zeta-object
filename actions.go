@@ -4,15 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -77,8 +80,12 @@ type InactivityTracker struct {
 
 var inactivityTracker *InactivityTracker
 
-// InitInactivityTracker initializes the global inactivity tracker
+// InitInactivityTracker initializes the global inactivity tracker.
+// Double-init guard: if already initialized, keep the existing tracker.
 func InitInactivityTracker() {
+	if inactivityTracker != nil {
+		return
+	}
 	inactivityTracker = &InactivityTracker{
 		lastActivity: make(map[string]time.Time),
 		timers:       make(map[string]*time.Timer),
@@ -112,9 +119,14 @@ func (t *InactivityTracker) recordActivity(bucketPath, activityType string) {
 		}
 	}
 
-	// Reset the timer
+	// Reset the timer (stop, then drain the channel if the stop raced a fire)
 	if timer, ok := t.timers[bucketPath]; ok {
-		timer.Stop()
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
 	}
 
 	duration, err := parseDuration(config.Duration)
@@ -142,7 +154,9 @@ func (t *InactivityTracker) executeInactivityAction(bucketPath string, config *I
 	runCommand("inactivity", config.Command, 0, bucketPath)
 }
 
-// initializeForBucket sets up inactivity tracking for a bucket
+// initializeForBucket sets up inactivity tracking for a bucket.
+// Validation before registration: an invalid duration must not register
+// the config entry.
 func (t *InactivityTracker) initializeForBucket(bucketPath string, config *InactivityConfig) {
 	if config == nil || config.Command == "" {
 		return
@@ -152,17 +166,17 @@ func (t *InactivityTracker) initializeForBucket(bucketPath string, config *Inact
 		return
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	t.configs[bucketPath] = config
-	t.lastActivity[bucketPath] = time.Now()
-
 	duration, err := parseDuration(config.Duration)
 	if err != nil {
 		log.Printf("Error parsing inactivity duration for %s: %v", bucketPath, err)
 		return
 	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.configs[bucketPath] = config
+	t.lastActivity[bucketPath] = time.Now()
 
 	t.timers[bucketPath] = time.AfterFunc(duration, func() {
 		t.executeInactivityAction(bucketPath, config)
@@ -201,7 +215,8 @@ func parseDuration(s string) (time.Duration, error) {
 // stripJSON5Comments removes // and /* */ comments from JSON5 content
 func stripJSON5Comments(data []byte) []byte {
 	var result bytes.Buffer
-	inString := false
+	inDouble := false
+	inSingle := false
 	inLineComment := false
 	inBlockComment := false
 	i := 0
@@ -230,7 +245,7 @@ func stripJSON5Comments(data []byte) []byte {
 			continue
 		}
 
-		if inString {
+		if inDouble {
 			if data[i] == '\\' && i+1 < len(data) {
 				result.WriteByte(data[i])
 				result.WriteByte(data[i+1])
@@ -238,8 +253,25 @@ func stripJSON5Comments(data []byte) []byte {
 				continue
 			}
 			if data[i] == '"' {
-				inString = false
+				inDouble = false
 			}
+			result.WriteByte(data[i])
+			i++
+			continue
+		}
+
+		if inSingle {
+			if data[i] == '\\' && i+1 < len(data) {
+				// JSON5 escape inside single quotes (e.g. \')
+				result.WriteByte(data[i])
+				result.WriteByte(data[i+1])
+				i += 2
+				continue
+			}
+			if data[i] == '\'' {
+				inSingle = false
+			}
+			// // and /* inside single quotes are string content
 			result.WriteByte(data[i])
 			i++
 			continue
@@ -261,7 +293,9 @@ func stripJSON5Comments(data []byte) []byte {
 
 		// Check for string start
 		if data[i] == '"' {
-			inString = true
+			inDouble = true
+		} else if data[i] == '\'' {
+			inSingle = true
 		}
 
 		result.WriteByte(data[i])
@@ -351,7 +385,12 @@ func mergeActions(parent, child *BucketActions) *BucketActions {
 	case "override":
 		return child
 	case "disable":
-		return child // Only use child's actions, ignore parent
+		// "disable" means no actions run in this subtree: return an EMPTY
+		// result so neither parent nor child actions execute.
+		return &BucketActions{
+			Version:     child.Version,
+			Inheritance: child.Inheritance,
+		}
 	case "merge":
 		fallthrough
 	default:
@@ -481,25 +520,63 @@ func executeAction(action ActionConfig, ctx ActionContext) {
 	}
 }
 
-// substituteVariables replaces $VAR placeholders with actual values
+// shellQuote quotes s for safe POSIX shell use: wraps in single quotes and
+// escapes embedded single quotes using the standard quote-arrow sequence.
+// An empty string becomes two single quotes. This is
+// the real control for command injection (gosec G204's exclusion of
+// exec-with-variable is secondary): substituted values can no longer break
+// out of quoting, even if the admin-configured command template wraps the
+// variable in its own quotes. Command templates should reference the variable
+// unquoted; double-quoting it now passes extra literal quote characters
+// (the safe direction).
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// substituteVariables replaces $VAR placeholders with actual values in a
+// SINGLE pass: the command is scanned left to right and matched tokens are
+// replaced with their shell-quoted values, so text inside a substituted
+// value is never re-scanned (no re-expansion) and results are deterministic
+// (fixed longest-name-first match order, not map iteration).
 func substituteVariables(cmd string, ctx ActionContext) string {
-	replacements := map[string]string{
-		"$FILE_PATH":     ctx.FilePath,
-		"$METADATA_PATH": ctx.MetadataPath,
-		"$BUCKET_NAME":   ctx.BucketName,
-		"$BUCKET_PATH":   ctx.BucketPath,
-		"$OBJECT_KEY":    ctx.ObjectKey,
-		"$CONTENT_TYPE":  ctx.ContentType,
-		"$ETAG":          ctx.ETag,
-		"$SIZE":          strconv.FormatInt(ctx.Size, 10),
+	type repl struct {
+		name  string
+		value string
 	}
-
-	result := cmd
-	for varName, value := range replacements {
-		result = strings.ReplaceAll(result, varName, value)
+	replacements := []repl{
+		{"$METADATA_PATH", ctx.MetadataPath},
+		{"$BUCKET_PATH", ctx.BucketPath},
+		{"$BUCKET_NAME", ctx.BucketName},
+		{"$FILE_PATH", ctx.FilePath},
+		{"$OBJECT_KEY", ctx.ObjectKey},
+		{"$CONTENT_TYPE", ctx.ContentType},
+		{"$ETAG", ctx.ETag},
+		{"$SIZE", strconv.FormatInt(ctx.Size, 10)},
 	}
+	// Longest names first so distinct-prefix overlap can never mis-match.
+	sort.Slice(replacements, func(i, j int) bool {
+		return len(replacements[i].name) > len(replacements[j].name)
+	})
 
-	return result
+	var b strings.Builder
+	b.Grow(len(cmd))
+	i := 0
+	for i < len(cmd) {
+		matched := false
+		for _, r := range replacements {
+			if strings.HasPrefix(cmd[i:], r.name) {
+				b.WriteString(shellQuote(r.value))
+				i += len(r.name)
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			b.WriteByte(cmd[i])
+			i++
+		}
+	}
+	return b.String()
 }
 
 // matchesAnyPattern checks if the object key matches any of the glob patterns
@@ -533,34 +610,37 @@ func matchesAnyPattern(objectKey string, patterns []string) bool {
 func matchPathGlob(path, pattern string) bool {
 	// Handle ** for recursive matching
 	if strings.Contains(pattern, "**") {
-		// Escape regex meta chars, then convert glob to regex
-		regexPattern := strings.ReplaceAll(pattern, ".", "\\.")
-		// Replace ** with placeholder first to avoid double-processing *
-		const placeholder = "\x00"
-		regexPattern = strings.ReplaceAll(regexPattern, "**", placeholder)
-		regexPattern = strings.ReplaceAll(regexPattern, "*", "[^/]*")
-		regexPattern = strings.ReplaceAll(regexPattern, placeholder, ".*")
-		regexPattern = "^" + regexPattern + "$"
+		// Split on ** and regexp.QuoteMeta EVERY literal segment so
+		// metacharacters like ( ) [ ] . match literally; ** becomes .*
+		segments := strings.Split(pattern, "**")
+		var b strings.Builder
+		for i, seg := range segments {
+			b.WriteString(regexp.QuoteMeta(seg))
+			if i < len(segments)-1 {
+				b.WriteString(".*")
+			}
+		}
+		regexPattern := "^" + b.String() + "$"
 
-		matched, err := regexp.MatchString(regexPattern, path)
+		re, err := regexp.Compile(regexPattern)
 		if err != nil {
+			// With QuoteMeta this is rare; log and fail closed.
+			log.Printf("Invalid path glob pattern '%s': %v", pattern, err)
 			return false
 		}
-		return matched
+		return re.MatchString(path)
 	}
 
-	// Simple path glob matching
+	// Simple path glob matching: anchored — the pattern must consume the
+	// ENTIRE path, so part counts must be equal and every part must match.
 	patternParts := strings.Split(pattern, "/")
 	pathParts := strings.Split(path, "/")
 
-	if len(patternParts) > len(pathParts) {
+	if len(patternParts) != len(pathParts) {
 		return false
 	}
 
 	for i, patternPart := range patternParts {
-		if i >= len(pathParts) {
-			return false
-		}
 		matched, err := filepath.Match(patternPart, pathParts[i])
 		if err != nil || !matched {
 			return false
@@ -570,26 +650,58 @@ func matchPathGlob(path, pattern string) bool {
 	return true
 }
 
-// runCommand executes a shell command with optional timeout
+// limitBuffer is a bytes.Buffer wrapper that caps captured output at capBytes;
+// on overflow it appends "\n...[truncated]" and discards the rest.
+type limitBuffer struct {
+	buf      bytes.Buffer
+	capBytes int
+}
+
+const commandOutputCap = 1 << 20 // 1MB per stream
+
+func newLimitBuffer() *limitBuffer {
+	return &limitBuffer{capBytes: commandOutputCap}
+}
+
+func (l *limitBuffer) Write(p []byte) (int, error) {
+	if l.buf.Len() >= l.capBytes {
+		// Discard beyond the cap but report full acceptance so the
+		// underlying exec copy does not error out.
+		return len(p), nil
+	}
+	room := l.capBytes - l.buf.Len()
+	if len(p) > room {
+		l.buf.Write(p[:room])
+		l.buf.WriteString("\n...[truncated]")
+		return len(p), nil
+	}
+	return l.buf.Write(p)
+}
+
+func (l *limitBuffer) String() string { return l.buf.String() }
+func (l *limitBuffer) Len() int       { return l.buf.Len() }
+
+// runCommand executes a shell command with a timeout. A timeout <= 0 uses a
+// 30s default (previously unlimited). The command runs in its own process
+// group (Setpgid); on timeout the whole group is SIGKILLed so grandchildren
+// spawned by sh cannot outlive the timeout.
 func runCommand(name, cmd string, timeout int, workDir string) {
 	log.Printf("Executing action '%s': %s", name, cmd)
 
-	var ctx context.Context
-	var cancel context.CancelFunc
-
-	if timeout > 0 {
-		ctx, cancel = context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-		defer cancel()
-	} else {
-		ctx = context.Background()
+	if timeout <= 0 {
+		timeout = 30
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	defer cancel()
 
 	execCmd := exec.CommandContext(ctx, "sh", "-c", cmd)
 	execCmd.Dir = workDir
+	// New process group; safe on darwin+linux (Setpgid is in syscall for both).
+	execCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	var stdout, stderr bytes.Buffer
-	execCmd.Stdout = &stdout
-	execCmd.Stderr = &stderr
+	stdout, stderr := newLimitBuffer(), newLimitBuffer()
+	execCmd.Stdout = stdout
+	execCmd.Stderr = stderr
 
 	startTime := time.Now()
 	err := execCmd.Run()
@@ -597,6 +709,12 @@ func runCommand(name, cmd string, timeout int, workDir string) {
 
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
+			// Kill the entire process group so shell grandchildren die too.
+			if execCmd.Process != nil {
+				if killErr := syscall.Kill(-execCmd.Process.Pid, syscall.SIGKILL); killErr != nil && !errors.Is(killErr, syscall.ESRCH) {
+					log.Printf("Action '%s': failed to kill process group: %v", name, killErr)
+				}
+			}
 			log.Printf("Action '%s' timed out after %d seconds", name, timeout)
 		} else {
 			log.Printf("Action '%s' failed after %v: %v\nStderr: %s", name, elapsed, err, stderr.String())

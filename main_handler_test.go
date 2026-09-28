@@ -975,7 +975,9 @@ func TestConcurrentPutObject_DifferentKeys(t *testing.T) {
 // ---- DecodeAWSChunked Test ----
 
 func TestDecodeAWSChunked(t *testing.T) {
-	chunked := []byte("A;chunk-signature=abc123\r\nhello worl\r\n") // 10 bytes
+	// Single chunk, properly terminated with 0\r\n (leaf 2.2: truncated
+	// streams now error, so this case must include the final chunk).
+	chunked := []byte("A;chunk-signature=abc123\r\nhello worl\r\n0\r\n\r\n") // 10 bytes
 
 	decoded, err := decodeAWSChunked(chunked)
 	if err != nil {

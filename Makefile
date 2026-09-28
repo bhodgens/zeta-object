@@ -68,12 +68,12 @@ run: build
 
 certs:
 	@if [ ! -f certs/cert.pem ] || [ ! -f certs/key.pem ]; then \
-		echo "Generating self-signed SSL certificates..."; \
+		echo "Generating self-signed SSL certificates (SAN: localhost, 127.0.0.1)..."; \
 		mkdir -p certs; \
-		openssl req -x509 -newkey rsa:4096 -nodes -out certs/cert.pem -keyout certs/key.pem -days 365 -subj "/CN=localhost"; \
+		openssl req -x509 -newkey rsa:4096 -nodes -out certs/cert.pem -keyout certs/key.pem -days 365 -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"; \
 		echo "Certificates generated in certs/ directory."; \
 	else \
-		echo "Certificates already exist in certs/ directory."; \
+		echo "Certificates already exist in certs/ directory (delete them and re-run to regenerate with SANs)."; \
 	fi
 
 # Ensure data directory exists (optional, as main.go also creates it)

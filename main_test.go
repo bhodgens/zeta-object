@@ -2,14 +2,17 @@ package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Test helper functions
@@ -320,8 +323,11 @@ func TestGetCanonicalQueryString(t *testing.T) {
 	}{
 		{"", ""},
 		{"key=value", "key=value"},
-		{"b=2&a=1", "a=1&b=2"},   // Should be sorted
-		{"key=a%20b", "key=a+b"}, // Go's url.Values.Encode uses + for spaces
+		{"b=2&a=1", "a=1&b=2"},     // Should be sorted
+		{"key=a%20b", "key=a%20b"}, // SigV4: spaces must encode as %20, not +
+		{"key=a+b", "key=a%20b"},   // Wire '+' decodes to a space, re-encoded as %20
+		{"key=a~b", "key=a~b"},     // ~ is unreserved and must not be escaped
+		{"key=a$b", "key=a%24b"},   // Sub-delim handling
 	}
 
 	for _, tt := range tests {
@@ -435,5 +441,273 @@ func BenchmarkHmacSHA256(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		hmacSHA256(key, data)
+	}
+}
+
+// ---- Leaf 2.2: SigV4 auth fix tests ----
+
+// buildSignedRequest constructs a fully-signed SigV4 request for testing
+// authenticateRequest. Overrides allow inducing specific failures.
+func buildSignedRequest(t *testing.T, opts map[string]string) (*http.Request, string) {
+	t.Helper()
+	body := "hello world"
+	method := "POST"
+	path := "/bkt/obj"
+	if v, ok := opts["body"]; ok {
+		body = v
+	}
+	payloadHash := hashSHA256([]byte(body))
+	if v, ok := opts["payloadHash"]; ok {
+		payloadHash = v
+	}
+
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Host = "localhost:8443"
+
+	now := time.Now().UTC()
+	amzDate := now.Format(iso8601Format)
+	dateStamp := now.Format(shortDateFormat)
+	if v, ok := opts["amzDate"]; ok {
+		amzDate = v
+		ts, err := time.Parse(iso8601Format, v)
+		if err == nil {
+			dateStamp = ts.UTC().Format(shortDateFormat)
+		}
+	}
+	req.Header.Set("x-amz-date", amzDate)
+	req.Header.Set("x-amz-content-sha256", payloadHash)
+
+	region := defaultRegion
+	if v, ok := opts["region"]; ok {
+		region = v
+	}
+
+	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
+	if v, ok := opts["signedHeaders"]; ok {
+		signedHeaders = v
+	}
+
+	amzDateForSig := amzDate
+	if _, ok := opts["amzDate"]; !ok {
+		amzDateForSig = amzDate
+	}
+
+	// Canonical headers must mirror getCanonicalHeaders: only headers we list.
+	canonicalHeaders := fmt.Sprintf("host:%s\nx-amz-content-sha256:%s\nx-amz-date:%s\n",
+		req.Host, payloadHash, amzDateForSig)
+
+	canonicalRequest := strings.Join([]string{
+		method,
+		path,
+		"",
+		canonicalHeaders,
+		signedHeaders,
+		payloadHash,
+	}, "\n")
+
+	scopeDate := dateStamp
+	if v, ok := opts["scopeDate"]; ok {
+		scopeDate = v
+	}
+	credentialScope := fmt.Sprintf("%s/%s/%s/aws4_request", scopeDate, region, serviceName)
+	stringToSign := strings.Join([]string{
+		awsAlgorithm,
+		amzDateForSig,
+		credentialScope,
+		hashSHA256([]byte(canonicalRequest)),
+	}, "\n")
+
+	signingKey := getSigningKey(serverCredentials.SecretAccessKey, scopeDate, region, serviceName)
+	signature := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
+	if v, ok := opts["signature"]; ok {
+		signature = v
+	}
+
+	auth := fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s/%s/%s/aws4_request, SignedHeaders=%s, Signature=%s",
+		serverCredentials.AccessKeyID, scopeDate, region, serviceName, signedHeaders, signature)
+	req.Header.Set("Authorization", auth)
+
+	// Default expectation: valid signature.
+	wantCode := http.StatusOK
+	if v, ok := opts["wantCode"]; ok {
+		wantCode = atoiMust(v)
+	}
+	return req, fmt.Sprintf("%d", wantCode)
+}
+
+func atoiMust(s string) int {
+	n := 0
+	for _, c := range s {
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+
+// runAuth runs authenticateRequest against req and returns the recorded HTTP status.
+func runAuth(req *http.Request) int {
+	w := httptest.NewRecorder()
+	if authenticateRequest(w, req) {
+		return http.StatusOK
+	}
+	return w.Code
+}
+
+func TestAuthValidSignature(t *testing.T) {
+	req, _ := buildSignedRequest(t, nil)
+	if got := runAuth(req); got != http.StatusOK {
+		t.Errorf("valid signature: got status %d, want 200", got)
+	}
+}
+
+func TestAuthWrongSignatureRejected(t *testing.T) {
+	req, _ := buildSignedRequest(t, map[string]string{"signature": strings.Repeat("0", 64)})
+	if got := runAuth(req); got != http.StatusForbidden {
+		t.Errorf("wrong signature: got status %d, want 403", got)
+	}
+}
+
+func TestAuthSignatureNotHexRejected(t *testing.T) {
+	req, _ := buildSignedRequest(t, map[string]string{"signature": "zz-not-hex-or-full-length"})
+	if got := runAuth(req); got != http.StatusForbidden {
+		t.Errorf("non-hex signature: got status %d, want 403", got)
+	}
+}
+
+func TestAuthSignedHeadersMismatchRejected(t *testing.T) {
+	// Client claims to sign content-length but does not send/use it in canonical form.
+	req, _ := buildSignedRequest(t, map[string]string{"signedHeaders": "host;x-amz-date;content-length"})
+	if got := runAuth(req); got != http.StatusForbidden {
+		t.Errorf("signed-headers mismatch: got status %d, want 403", got)
+	}
+}
+
+func TestAuthRegionMismatch400(t *testing.T) {
+	req, _ := buildSignedRequest(t, map[string]string{"region": "eu-west-1"})
+	w := httptest.NewRecorder()
+	if authenticateRequest(w, req) {
+		t.Fatal("region mismatch should not authenticate")
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("region mismatch: got status %d, want 400", w.Code)
+	}
+}
+
+func TestAuthScopeDateMismatch400(t *testing.T) {
+	req, _ := buildSignedRequest(t, map[string]string{"scopeDate": "20000101"})
+	w := httptest.NewRecorder()
+	if authenticateRequest(w, req) {
+		t.Fatal("scope date mismatch should not authenticate")
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("scope date mismatch: got status %d, want 400", w.Code)
+	}
+	if code := w.Body.String(); !strings.Contains(code, "InvalidRequest") {
+		t.Errorf("scope date mismatch: want InvalidRequest code in body, got: %s", code)
+	}
+}
+
+func TestAuthUnknownStreamingHashRejected(t *testing.T) {
+	req, _ := buildSignedRequest(t, map[string]string{
+		"payloadHash": "STREAMING-UNKNOWN-MADE-UP-VALUE",
+	})
+	if got := runAuth(req); got != http.StatusForbidden {
+		t.Errorf("unknown STREAMING-* hash: got status %d, want 403", got)
+	}
+}
+
+func TestAuthKnownStreamingHashAccepted(t *testing.T) {
+	for _, v := range []string{"STREAMING-UNSIGNED-PAYLOAD-TRAILER", streamingPayload} {
+		req, _ := buildSignedRequest(t, map[string]string{"payloadHash": v})
+		if got := runAuth(req); got != http.StatusOK {
+			t.Errorf("known streaming hash %s: got status %d, want 200", v, got)
+		}
+	}
+}
+
+// TestAuthAuthHeaderRegexWhitespaceTolerance exercises fix 10 indirectly via
+// authenticateRequest: commas in the Authorization header may be followed by
+// optional whitespace without breaking the parse.
+func TestAuthAuthHeaderRegexWhitespaceTolerance(t *testing.T) {
+	req, _ := buildSignedRequest(t, nil)
+	auth := req.Header.Get("Authorization")
+	// Insert a space after each comma.
+	req.Header.Set("Authorization", strings.ReplaceAll(auth, ", ", ",   "))
+	if got := runAuth(req); got != http.StatusOK {
+		t.Errorf("auth header with whitespace after commas: got status %d, want 200", got)
+	}
+	// And the regex must still reject garbage.
+	req2, _ := buildSignedRequest(t, nil)
+	req2.Header.Set("Authorization", "AWS4-HMAC-SHA256 nonsense")
+	if got := runAuth(req2); got == http.StatusOK {
+		t.Error("garbage auth header should not authenticate")
+	}
+}
+
+// ---- Fix 3: canonical header whitespace collapse ----
+
+func TestCanonicalHeaderValueWhitespaceCollapse(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Host = "localhost:8443"
+	req.Header.Set("x-amz-meta-test", "a  b\t c")
+	req.Header.Set("x-amz-date", time.Now().UTC().Format(iso8601Format))
+	req.Header.Set("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
+
+	// getPayloadHash would consume body; call getCanonicalHeaders directly.
+	canon, signedList := getCanonicalHeaders(req, []string{"host", "x-amz-meta-test", "x-amz-date", "x-amz-content-sha256"})
+	if !strings.Contains(canon, "x-amz-meta-test:a b c\n") {
+		t.Errorf("canonical headers should collapse internal whitespace, got: %q", canon)
+	}
+	want := "host;x-amz-content-sha256;x-amz-date;x-amz-meta-test"
+	if signedList != want {
+		t.Errorf("signed headers list = %q, want %q", signedList, want)
+	}
+}
+
+// ---- Fix 5: VerifyDecodedLength + decodeAWSChunked corruption handling ----
+
+func TestVerifyDecodedLength(t *testing.T) {
+	if err := VerifyDecodedLength("5", 5); err != nil {
+		t.Errorf("matching length should pass, got: %v", err)
+	}
+	if err := VerifyDecodedLength("", 5); err != nil {
+		t.Errorf("absent header should pass (not enforced), got: %v", err)
+	}
+	if err := VerifyDecodedLength("abc", 5); err == nil {
+		t.Error("non-numeric header should error")
+	}
+	if err := VerifyDecodedLength("4", 5); err == nil {
+		t.Error("mismatched length should error")
+	}
+}
+
+func TestDecodeAWSChunkedTruncatedRejected(t *testing.T) {
+	// Missing the final 0-size chunk: EOF before terminator.
+	truncated := []byte("5;chunk-signature=abc\r\nhello\r\n")
+	if _, err := decodeAWSChunked(truncated); err == nil {
+		t.Error("truncated chunked body should error, got nil")
+	}
+}
+
+func TestDecodeAWSChunkedCorruptSizeRejected(t *testing.T) {
+	// Chunk-size line is not valid hex and is not a trailer context.
+	corrupt := []byte("xyz;chunk-signature=abc\r\nhello\r\n0\r\n\r\n")
+	if _, err := decodeAWSChunked(corrupt); err == nil {
+		t.Error("corrupt chunk size line should error, got nil")
+	}
+}
+
+// ---- Fix 1: timing-safe compare is behavioral (rejects bad sigs); verified
+// indirectly by TestAuthWrongSignatureRejected / TestAuthSignatureNotHexRejected.
+
+// TestGetSigningKeyGolden pins the SigV4 signing-key derivation to AWS's
+// published test vector. Guards against self-consistent regressions where
+// buildSignedRequest and authenticateRequest share a broken helper.
+func TestGetSigningKeyGolden(t *testing.T) {
+	// AWS SigV4 official test suite: secret wJalr..., date 20150830,
+	// us-east-1, s3, kSigning hex.
+	got := hex.EncodeToString(getSigningKey("wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", "20150830", "us-east-1", "s3"))
+	want := "32f78051dcde24c552811d654f4a769112bb834b03975cdd6b1fd7d16248c269"
+	if got != want {
+		t.Fatalf("getSigningKey golden vector mismatch:\n got %s\nwant %s", got, want)
 	}
 }

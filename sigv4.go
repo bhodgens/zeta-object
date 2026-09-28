@@ -6,11 +6,14 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,8 +22,48 @@ import (
 
 // sigv4.go — AWS Signature Version 4 request authentication
 
+// Regex for parsing the AWS V4 Authorization header (fix 10: tolerate optional
+// whitespace after commas). Defined here rather than config.go; config.go's
+// authHeaderRegex is superseded by this one (see leaf 2.2 cross-file note).
+var authHeaderRegexTolerant = regexp.MustCompile(
+	`^AWS4-HMAC-SHA256\s+Credential=([^/]+)/([^/]+)/([^/]+)/s3/aws4_request\s*,\s*SignedHeaders=([^,]+)\s*,\s*Signature=(\S+)\s*$`,
+)
+
+// canonicalWSRegex matches sequential whitespace inside header values (fix 3).
+var canonicalWSRegex = regexp.MustCompile(`\s+`)
+
+// Known STREAMING-* x-amz-content-sha256 constants we accept (fix 6).
+var streamingPayloadAllowlist = map[string]bool{
+	"STREAMING-UNSIGNED-PAYLOAD-TRAILER": true,
+	"STREAMING-AWS4-HMAC-SHA256-PAYLOAD": true,
+}
+
+// debugAuthEnabled reports whether verbose auth debugging is on (fix 9).
+func debugAuthEnabled() bool {
+	return os.Getenv("MINIS3_DEBUG_AUTH") == "1"
+}
+
+// VerifyDecodedLength checks a decoded body length against the
+// x-amz-decoded-content-length header value (fix 5c). Empty header = not
+// enforced. Call-site wiring in object/multipart handlers is leaf 2.4's job.
+func VerifyDecodedLength(header string, got int) error {
+	if header == "" {
+		return nil
+	}
+	want, err := strconv.Atoi(header)
+	if err != nil {
+		return fmt.Errorf("invalid x-amz-decoded-content-length %q: %w", header, err)
+	}
+	if want != got {
+		return fmt.Errorf("decoded content length mismatch: header says %d, got %d", want, got)
+	}
+	return nil
+}
+
 // decodeAWSChunked decodes aws-chunked Content-Encoding used by AWS CLI v2.
 // Format: <hex-size>;chunk-signature=...\r\n<data>\r\n, ending with 0\r\n<trailers>\r\n\r\n
+// Errors on: truncated streams (EOF before the 0-size final chunk), and
+// corrupt chunk-size lines that are not valid hex (fix 5a/5b).
 func decodeAWSChunked(body []byte) ([]byte, error) {
 	var result bytes.Buffer
 	reader := bufio.NewReader(bytes.NewReader(body))
@@ -29,42 +72,43 @@ func decodeAWSChunked(body []byte) ([]byte, error) {
 		// Read the chunk header line
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			if err == io.EOF {
-				break
+			if errors.Is(err, io.EOF) {
+				// EOF before the final 0-size chunk: truncated stream (fix 5a)
+				return nil, fmt.Errorf("truncated aws-chunked body: EOF before final zero-size chunk")
 			}
 			return nil, fmt.Errorf("error reading chunk header: %w", err)
 		}
 
 		// Parse chunk size (format: "<hex>;chunk-signature=..." or just "<hex>")
 		line = strings.TrimSpace(line)
+		if line == "" {
+			continue // Skip empty lines
+		}
 		parts := strings.SplitN(line, ";", 2)
 		sizeStr := strings.TrimSpace(parts[0])
 
-		if sizeStr == "" {
-			continue // Skip empty lines
-		}
-
 		chunkSize, err := strconv.ParseInt(sizeStr, 16, 64)
 		if err != nil {
-			// Might be a trailer line, skip it
-			continue
+			// Not valid hex: corrupt stream, not a skip-worthy trailer (fix 5b)
+			return nil, fmt.Errorf("corrupt aws-chunked body: invalid chunk size %q", sizeStr)
 		}
 
 		if chunkSize == 0 {
-			// Final chunk - read remaining trailers
+			// Final chunk - trailers follow; we are done.
 			break
 		}
 
 		// Read the chunk data
 		chunkData := make([]byte, chunkSize)
-		n, err := io.ReadFull(reader, chunkData)
-		if err != nil && err != io.EOF {
-			return nil, fmt.Errorf("error reading chunk data: %w", err)
+		if _, err := io.ReadFull(reader, chunkData); err != nil {
+			return nil, fmt.Errorf("truncated aws-chunked body: error reading chunk data: %w", err)
 		}
-		result.Write(chunkData[:n])
+		result.Write(chunkData)
 
 		// Read the trailing \r\n after chunk data
-		reader.ReadString('\n')
+		if _, err := reader.ReadString('\n'); err == io.EOF {
+			return nil, fmt.Errorf("truncated aws-chunked body: EOF after chunk data")
+		}
 	}
 
 	return result.Bytes(), nil
@@ -107,7 +151,7 @@ func getCanonicalURI(r *http.Request) string {
 	// Go's http.Request.URL.Path is already decoded. For SigV4, we need the URI-encoded path as sent by client.
 	// If r.URL.RawPath is empty, it means the path was not escaped or was "/"
 	// This part can be tricky. AWS SDKs handle this. For a minimal server, we might assume client sends correctly escaped path.
-	// Let's use r.URL.EscapedPath() if available and non-empty, otherwise r.URL.Path.
+	// Use r.URL.EscapedPath() if available and non-empty, otherwise r.URL.Path.
 	escapedPath := r.URL.EscapedPath()
 	if escapedPath == "" {
 		escapedPath = "/"                          // Default for empty path
@@ -116,6 +160,12 @@ func getCanonicalURI(r *http.Request) string {
 		}
 	}
 	return escapedPath
+}
+
+// canonicalQueryEscape encodes a query key/value per SigV4 rules: spaces as
+// %20 (not +), everything else via url.QueryEscape (fix 2).
+func canonicalQueryEscape(s string) string {
+	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 }
 
 func getCanonicalQueryString(r *http.Request) string {
@@ -135,9 +185,8 @@ func getCanonicalQueryString(r *http.Request) string {
 		values := queryParams[k]
 		sort.Strings(values) // Sort values for the same key
 		for _, v := range values {
-			// S3 requires both key and value to be URI encoded.
-			// r.URL.Query() gives decoded values. We need to re-encode them.
-			canonicalParams = append(canonicalParams, url.QueryEscape(k)+"="+url.QueryEscape(v))
+			// S3 requires both key and value to be URI encoded with %20 for spaces.
+			canonicalParams = append(canonicalParams, canonicalQueryEscape(k)+"="+canonicalQueryEscape(v))
 		}
 	}
 	return strings.Join(canonicalParams, "&")
@@ -170,7 +219,8 @@ func getCanonicalHeaders(r *http.Request, signedHeaderNames []string) (string, s
 		if signedHeadersMap[lowerName] {
 			var processedValues []string
 			for _, v := range values {
-				processedValues = append(processedValues, strings.TrimSpace(v))
+				// Fix 3: trim edges AND collapse sequential internal whitespace to a single space
+				processedValues = append(processedValues, canonicalWSRegex.ReplaceAllString(strings.TrimSpace(v), " "))
 			}
 			headerPairs = append(headerPairs, [2]string{lowerName, strings.Join(processedValues, ",")})
 			actualSignedHeadersForOutput = append(actualSignedHeadersForOutput, lowerName)
@@ -199,9 +249,12 @@ func getPayloadHash(r *http.Request) (string, []byte, error) {
 	if xAmzContentSHA256 == unsignedPayload {
 		return unsignedPayload, nil, nil
 	}
-	// Handle various streaming payload types (AWS CLI v2 uses STREAMING-UNSIGNED-PAYLOAD-TRAILER)
+	// Fix 6: accept ONLY the known STREAMING-* constants; anything else
+	// STREAMING-* is rejected. (Full chunk-signature verification is leaf 3.4.)
 	if strings.HasPrefix(xAmzContentSHA256, "STREAMING-") {
-		// Streaming payloads are signed differently - treat as unsigned for basic implementation
+		if !streamingPayloadAllowlist[xAmzContentSHA256] {
+			return "", nil, fmt.Errorf("unsupported streaming payload hash %q", xAmzContentSHA256)
+		}
 		log.Printf("Note: Streaming payload type '%s' - accepting without body hash verification", xAmzContentSHA256)
 		return xAmzContentSHA256, nil, nil
 	}
@@ -222,12 +275,24 @@ func getPayloadHash(r *http.Request) (string, []byte, error) {
 	return payloadHash, bodyBytes, nil // Return bodyBytes so it can be used if needed by caller
 }
 
+// isLowercaseHex64 reports whether s is exactly 64 lowercase hex chars.
+func isLowercaseHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	if err != nil {
+		return false
+	}
+	return s == strings.ToLower(s)
+}
+
 func authenticateRequest(w http.ResponseWriter, r *http.Request) bool {
 	authHeader := r.Header.Get("Authorization")
 	xAmzDate := r.Header.Get("x-amz-date")
 	dateHeader := r.Header.Get("Date") // Fallback if x-amz-date is not present
 
-	requestTimestamp := time.Time{}
+	var requestTimestamp time.Time
 	var err error
 
 	if xAmzDate != "" {
@@ -252,13 +317,12 @@ func authenticateRequest(w http.ResponseWriter, r *http.Request) bool {
 	}
 
 	if authHeader == "" {
-		// Enforce auth for all requests now. Remove temporary allowance for ListBuckets if any.
 		log.Println("Authentication Error: Missing Authorization header.")
 		writeS3Error(w, "AuthorizationHeaderMissing", "The authorization header is missing.", http.StatusForbidden)
 		return false
 	}
 
-	matches := authHeaderRegex.FindStringSubmatch(authHeader)
+	matches := authHeaderRegexTolerant.FindStringSubmatch(authHeader)
 	if len(matches) != 6 {
 		log.Printf("Authentication Error: Invalid Authorization header format: %s", authHeader)
 		writeS3Error(w, "AuthorizationHeaderMalformed", "The authorization header is malformed; it does not match the expected format.", http.StatusBadRequest)
@@ -277,22 +341,30 @@ func authenticateRequest(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 
-	// Validate dateStamp from credential scope matches the request date (short YYYYMMDD format)
-	requestDateStamp := requestTimestamp.UTC().Format(shortDateFormat)
-	if dateStampFromCred != requestDateStamp {
-		log.Printf("Authentication Error: Date mismatch. Credential scope date: %s, Request date: %s", dateStampFromCred, requestDateStamp)
-		writeS3Error(w, "SignatureDoesNotMatch", "Credential scope date mismatch.", http.StatusForbidden)
+	// Fix 1 precondition: client signature must be 64 lowercase hex chars.
+	if !isLowercaseHex64(clientSignature) {
+		log.Printf("Authentication Error: Client signature is not 64 lowercase hex chars.")
+		writeS3Error(w, "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.", http.StatusForbidden)
 		return false
 	}
 
+	// Fix 8: scope-date mismatch is an InvalidRequest/400, not a signature failure.
+	requestDateStamp := requestTimestamp.UTC().Format(shortDateFormat)
+	if dateStampFromCred != requestDateStamp {
+		log.Printf("Authentication Error: Date mismatch. Credential scope date: %s, Request date: %s", dateStampFromCred, requestDateStamp)
+		writeS3Error(w, "InvalidRequest", "Date in credential scope does not match request date", http.StatusBadRequest)
+		return false
+	}
+
+	// Fix 7: region mismatch is AuthorizationHeaderMalformed/400 (AWS behavior).
 	if regionFromCred != defaultRegion {
 		log.Printf("Authentication Error: Invalid region. Expected %s, got %s", defaultRegion, regionFromCred)
-		writeS3Error(w, "AuthorizationHeaderMalformed", "Region in credential scope ('"+regionFromCred+"') is incorrect; expected '"+defaultRegion+"'.", http.StatusForbidden)
+		writeS3Error(w, "AuthorizationHeaderMalformed", "Region in credential scope ('"+regionFromCred+"') is incorrect; expected '"+defaultRegion+"'.", http.StatusBadRequest)
 		return false
 	}
 
 	// Step 1: Create a Canonical Request
-	payloadHash, _, err := getPayloadHash(r) // bodyBytes might be needed if we re-calculate hash for some reason
+	payloadHash, _, err := getPayloadHash(r)
 	if err != nil {
 		log.Printf("Authentication Error: Failed to get/verify payload hash: %v", err)
 		writeS3Error(w, "SignatureDoesNotMatch", "Payload hash mismatch or error reading body.", http.StatusForbidden)
@@ -303,14 +375,13 @@ func authenticateRequest(w http.ResponseWriter, r *http.Request) bool {
 	canonicalQueryString := getCanonicalQueryString(r)
 	canonicalHeaders, signedHeadersString := getCanonicalHeaders(r, signedHeadersFromAuth)
 
-	// Verify that the signedHeadersString from our calculation matches what client sent in Authorization header
-	// The client's list of signed headers (matches[4]) should be used to build our canonicalHeaders string.
-	// Then, our re-calculated signedHeadersString (from getCanonicalHeaders) should match matches[4].
+	// Fix 4: a SignedHeaders mismatch is now a hard reject. A client that
+	// claims to sign headers it did not send (or vice versa) cannot have
+	// produced a valid canonical request.
 	if signedHeadersString != matches[4] {
-		log.Printf("Authentication Error: SignedHeaders mismatch. Client sent: '%s', Server calculated based on found headers: '%s'", matches[4], signedHeadersString)
-		// This might happen if client claims to sign a header that's not present, or if our sorting/joining is different.
-		// For robustness, ensure getCanonicalHeaders uses the client's list of signed headers strictly.
-		// The current getCanonicalHeaders already does this by taking signedHeaderNames as input.
+		log.Printf("Authentication Error: SignedHeaders mismatch. Client sent: '%s', Server calculated: '%s'", matches[4], signedHeadersString)
+		writeS3Error(w, "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.", http.StatusForbidden)
+		return false
 	}
 
 	canonicalRequest := strings.Join([]string{
@@ -339,10 +410,15 @@ func authenticateRequest(w http.ResponseWriter, r *http.Request) bool {
 	// Step 4: Calculate the Signature
 	serverSignature := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
 
-	// Step 5: Compare the Signatures
-	if serverSignature != clientSignature {
-		log.Printf("Authentication Error: Signature mismatch.\nServer Signature: %s\nClient Signature: %s\nString To Sign:\n%s\nCanonical Request:\n%s",
-			serverSignature, clientSignature, stringToSign, canonicalRequest)
+	// Step 5: Compare the Signatures — timing-safe (fix 1)
+	if !hmac.Equal([]byte(serverSignature), []byte(clientSignature)) {
+		// Fix 9: verbose diagnostics only when MINIS3_DEBUG_AUTH=1; one line always.
+		if debugAuthEnabled() {
+			log.Printf("Authentication Error: Signature mismatch.\nServer Signature: %s\nClient Signature: %s\nString To Sign:\n%s\nCanonical Request:\n%s",
+				serverSignature, clientSignature, stringToSign, canonicalRequest)
+		} else {
+			log.Println("Authentication Error: Signature mismatch.")
+		}
 		writeS3Error(w, "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.", http.StatusForbidden)
 		return false
 	}

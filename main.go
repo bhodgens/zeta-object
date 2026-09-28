@@ -1,28 +1,70 @@
 package main
 
 import (
+	"context"
+	"crypto/tls"
+	"errors"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // main.go — server entrypoint and root request router
 
+// TLS/server timeout configuration for the explicit http.Server
+const (
+	serverReadTimeout       = 30 * time.Second  // full request (incl. body) — generous for uploads
+	serverReadHeaderTimeout = 10 * time.Second  // headers only — protects against slowloris
+	serverWriteTimeout      = 5 * time.Minute   // large object PUT/GET responses
+	serverIdleTimeout       = 120 * time.Second // keep-alive idle between requests
+	serverShutdownTimeout   = 30 * time.Second  // drain window on SIGINT/SIGTERM
+	serverMinTLSVersion     = tls.VersionTLS12
+)
+
+// newServer builds the explicit http.Server with lifecycle hardening:
+// timeouts on all phases and TLS 1.2 as the minimum protocol version.
+func newServer(addr string, handler http.Handler, certFile, keyFile string) *http.Server {
+	tlsConfig := &tls.Config{
+		MinVersion: serverMinTLSVersion,
+	}
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		TLSConfig:         tlsConfig,
+		ReadTimeout:       serverReadTimeout,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		WriteTimeout:      serverWriteTimeout,
+		IdleTimeout:       serverIdleTimeout,
+	}
+}
+
 func main() {
-	// Load configuration
+	// Load configuration (fatal on any error other than a missing file)
 	configPath := getEnvOrDefault("MINIS3_CONFIG", defaultConfigFile)
 	if err := loadConfig(configPath); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	// Explicitly load credentials from environment (warn on empty values)
+	loadCredentials()
 
-	// Ensure data directory exists
-	if _, err := os.Stat(serverConfig.DataDir); os.IsNotExist(err) {
+	// Environment override for the listen address (beats config file)
+	if listenAddr := os.Getenv("MINIS3_LISTEN_ADDR"); listenAddr != "" {
+		serverConfig.ListenAddr = listenAddr
+	}
+
+	// Ensure data directory exists; any stat error other than IsNotExist is fatal
+	if _, err := os.Stat(serverConfig.DataDir); err != nil {
+		if !os.IsNotExist(err) {
+			log.Fatalf("Cannot access data directory %s: %v", serverConfig.DataDir, err)
+		}
 		if err := os.MkdirAll(serverConfig.DataDir, 0755); err != nil {
 			log.Fatalf("Failed to create data directory: %v", err)
 		}
 	}
-
 	// Validate custom bucket paths exist
 	for bucketName, bucketPath := range serverConfig.Buckets {
 		info, err := os.Stat(bucketPath)
@@ -39,12 +81,37 @@ func main() {
 	InitInactivityTracker()
 	initializeInactivityTimers()
 
-	http.HandleFunc("/", rootHandler)
-	log.Println("Starting S3 server on :8443 (HTTPS)")
-	// Assumes certs/cert.pem and certs/key.pem exist
-	err := http.ListenAndServeTLS(":8443", "certs/cert.pem", "certs/key.pem", nil)
-	if err != nil {
-		log.Fatalf("ListenAndServeTLS failed: %v. Please ensure certs/cert.pem and certs/key.pem are correctly generated and in place.", err)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", rootHandler)
+	srv := newServer(serverConfig.ListenAddr, mux, serverConfig.CertFile, serverConfig.KeyFile)
+
+	// Graceful shutdown: SIGINT/SIGTERM stop accepting new connections and
+	// drain in-flight requests within serverShutdownTimeout.
+	shutdownCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		log.Printf("Starting S3 server on %s (HTTPS, cert=%s, key=%s)",
+			srv.Addr, serverConfig.CertFile, serverConfig.KeyFile)
+		serverErr <- srv.ListenAndServeTLS(serverConfig.CertFile, serverConfig.KeyFile)
+	}()
+
+	select {
+	case err := <-serverErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("ListenAndServeTLS failed: %v. Please ensure %s and %s are correctly generated and in place.",
+				err, serverConfig.CertFile, serverConfig.KeyFile)
+		}
+	case <-shutdownCtx.Done():
+		log.Println("Shutdown signal received, draining in-flight requests...")
+		drainCtx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
+		defer cancel()
+		if err := srv.Shutdown(drainCtx); err != nil {
+			log.Printf("Graceful shutdown failed (forcing close): %v", err)
+		} else {
+			log.Println("Server shut down cleanly")
+		}
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,19 @@ var multipartLocks sync.Map // map[string]*sync.Mutex — keyed by upload metada
 func getMultipartLock(path string) *sync.Mutex {
 	mu, _ := multipartLocks.LoadOrStore(path, &sync.Mutex{})
 	return mu.(*sync.Mutex)
+}
+
+// uploadIDRegex matches exactly the upload IDs this server generates (32-char lowercase md5 hex).
+var uploadIDRegex = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// validateUploadID rejects upload IDs that are not 32-char lowercase hex.
+// Must be called BEFORE any path join so a hostile uploadID cannot traverse
+// out of .uploads. Callers map the error to InvalidArgument/400.
+func validateUploadID(id string) error {
+	if !uploadIDRegex.MatchString(id) {
+		return fmt.Errorf("invalid uploadId %q: must be 32 hex characters", id)
+	}
+	return nil
 }
 
 // Multipart Handlers
@@ -67,6 +81,7 @@ func initiateMultipartUploadHandler(w http.ResponseWriter, r *http.Request, buck
 		UploadID:       uploadID,
 		Key:            objectName,
 		Initiated:      time.Now().UTC(),
+		ContentType:    r.Header.Get("Content-Type"),
 		CustomMetadata: make(map[string]string),
 		Parts:          make(map[int]PartMetadata),
 	}
@@ -77,17 +92,9 @@ func initiateMultipartUploadHandler(w http.ResponseWriter, r *http.Request, buck
 			mpUpload.CustomMetadata[headerName] = strings.Join(headerValues, ", ")
 		}
 	}
-	mpUploadJSON, err := json.MarshalIndent(mpUpload, "", "  ")
-	if err != nil {
-		log.Printf("Error marshalling multipart upload metadata for %s: %v", uploadID, err)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error creating upload metadata.")))
-		return
-	}
 
 	mpUploadMetaPath := filepath.Join(uploadsDir, uploadID+".json")
-	if err := os.WriteFile(mpUploadMetaPath, mpUploadJSON, 0644); err != nil {
+	if err := writeFileAtomicJSON(mpUploadMetaPath, mpUpload, 0644); err != nil {
 		log.Printf("Error writing multipart upload metadata file %s: %v", mpUploadMetaPath, err)
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -117,6 +124,15 @@ func initiateMultipartUploadHandler(w http.ResponseWriter, r *http.Request, buck
 }
 
 func uploadPartHandler(w http.ResponseWriter, r *http.Request, bucketName, objectName, partNumberStr, uploadID string) {
+	// Validate uploadID BEFORE any path join
+	if err := validateUploadID(uploadID); err != nil {
+		log.Printf("Invalid uploadId in UploadPart: %v", err)
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(errorToXML("InvalidArgument", "Invalid upload id.")))
+		return
+	}
+
 	bucketPath := getBucketPath(bucketName)
 	mpUploadMetaPath := filepath.Join(bucketPath, ".metadata", ".uploads", uploadID+".json")
 
@@ -215,7 +231,9 @@ func uploadPartHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 		return
 	}
 	partPath := filepath.Join(partsDir, fmt.Sprintf("part-%d", partNumber))
-	if err := os.WriteFile(partPath, body, 0644); err != nil {
+	// Part files are rewritten on retry — write atomically so a torn part
+	// file can never be picked up by CompleteMultipartUpload.
+	if err := writeFileAtomic(partPath, body, 0644); err != nil {
 		log.Printf("Error writing part data to %s: %v", partPath, err)
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -231,15 +249,7 @@ func uploadPartHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 		StoredPath: partPath,
 	}
 
-	updatedMetaJSON, err := json.MarshalIndent(mpUpload, "", "  ")
-	if err != nil {
-		log.Printf("Error marshalling updated multipart upload metadata for %s: %v", uploadID, err)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error updating upload metadata.")))
-		return
-	}
-	if err := os.WriteFile(mpUploadMetaPath, updatedMetaJSON, 0644); err != nil {
+	if err := writeFileAtomicJSON(mpUploadMetaPath, mpUpload, 0644); err != nil {
 		log.Printf("Error writing updated multipart upload metadata file %s: %v", mpUploadMetaPath, err)
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -253,6 +263,15 @@ func uploadPartHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 }
 
 func completeMultipartUploadHandler(w http.ResponseWriter, r *http.Request, bucketName, objectName, uploadID string) {
+	// Validate uploadID BEFORE any path join
+	if err := validateUploadID(uploadID); err != nil {
+		log.Printf("Invalid uploadId in CompleteMultipartUpload: %v", err)
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(errorToXML("InvalidArgument", "Invalid upload id.")))
+		return
+	}
+
 	bucketPath := getBucketPath(bucketName)
 	mpUploadMetaPath := filepath.Join(bucketPath, ".metadata", ".uploads", uploadID+".json")
 	partsDir := filepath.Join(bucketPath, ".metadata", ".uploads", uploadID+"_parts")
@@ -326,15 +345,35 @@ func completeMultipartUploadHandler(w http.ResponseWriter, r *http.Request, buck
 		w.Write([]byte(errorToXML("InternalError", "Error creating object storage.")))
 		return
 	}
-	finalObjectFile, err := os.OpenFile(finalObjectPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+
+	// Atomic assembly: parts are copied into a temp file in the same
+	// directory and only renamed over the final object once every part
+	// has been copied and the metadata written. Until the rename, the
+	// previous object version stays fully intact, and lockObject holds
+	// so no concurrent GET/PUT can observe the temp file.
+	unlock := lockObject(finalObjectPath)
+	defer unlock()
+
+	// Temp assembly file in the same directory (same filesystem for rename).
+	finalTempPath := finalObjectPath + ".tmp-multipart"
+	finalTempFile, err := os.OpenFile(finalTempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
-		log.Printf("Error creating final object file %s: %v", finalObjectPath, err)
+		log.Printf("Error creating temporary assembly file %s: %v", finalTempPath, err)
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(errorToXML("InternalError", "Error creating object file.")))
 		return
 	}
-	defer finalObjectFile.Close()
+	// failCleanup removes the temp file on every error path after creation.
+	// On success it must NOT run (rename already consumed the temp file).
+	failCleanup := true
+	defer func() {
+		if failCleanup {
+			if err := os.Remove(finalTempPath); err != nil && !os.IsNotExist(err) {
+				log.Printf("Warning: Error removing temporary assembly file %s: %v", finalTempPath, err)
+			}
+		}
+	}()
 
 	var totalSize int64
 	var partETags []string // To calculate the final ETag
@@ -374,10 +413,10 @@ func completeMultipartUploadHandler(w http.ResponseWriter, r *http.Request, buck
 			w.Write([]byte(errorToXML("InternalError", "Could not access part data.")))
 			return
 		}
-		written, err := io.Copy(finalObjectFile, partFile)
+		written, err := io.Copy(finalTempFile, partFile)
 		partFile.Close()
 		if err != nil {
-			log.Printf("Error copying part %d data to final object: %v", storedPartMeta.PartNumber, err)
+			log.Printf("Error copying part %d data to temporary assembly file: %v", storedPartMeta.PartNumber, err)
 			w.Header().Set("Content-Type", "application/xml")
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(errorToXML("InternalError", "Error during object assembly.")))
@@ -385,6 +424,22 @@ func completeMultipartUploadHandler(w http.ResponseWriter, r *http.Request, buck
 		}
 		totalSize += written
 		partETags = append(partETags, storedPartMeta.ETag)
+	}
+
+	// Flush part data to disk before the rename
+	if err := finalTempFile.Sync(); err != nil {
+		log.Printf("Error syncing temporary assembly file %s: %v", finalTempPath, err)
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(errorToXML("InternalError", "Error during object assembly.")))
+		return
+	}
+	if err := finalTempFile.Close(); err != nil {
+		log.Printf("Error closing temporary assembly file %s: %v", finalTempPath, err)
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(errorToXML("InternalError", "Error during object assembly.")))
+		return
 	}
 
 	// Calculate final ETag for the assembled object
@@ -404,7 +459,6 @@ func completeMultipartUploadHandler(w http.ResponseWriter, r *http.Request, buck
 	// Create parent directories for metadata
 	if err := os.MkdirAll(filepath.Dir(objectMetadataPath), 0755); err != nil {
 		log.Printf("Error creating metadata directories for %s: %v", objectMetadataPath, err)
-		os.Remove(finalObjectPath) // Clean up assembled object
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(errorToXML("InternalError", "Error creating metadata storage.")))
@@ -412,7 +466,7 @@ func completeMultipartUploadHandler(w http.ResponseWriter, r *http.Request, buck
 	}
 
 	meta := ObjectMetadata{
-		ContentType:    r.Header.Get("Content-Type"),
+		ContentType:    mpUpload.ContentType,
 		ContentLength:  totalSize,
 		ETag:           strings.Trim(finalETag, "\""),
 		CustomMetadata: mpUpload.CustomMetadata,
@@ -420,23 +474,24 @@ func completeMultipartUploadHandler(w http.ResponseWriter, r *http.Request, buck
 		StoragePath:    finalObjectPath, // Points to actual object data
 	}
 
-	metaJSONOutput, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		log.Printf("Error marshalling final object metadata for %s/%s: %v", bucketName, objectName, err)
-		os.Remove(finalObjectPath)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(errorToXML("InternalError", "Error creating metadata.")))
-		return
-	}
-	if err := os.WriteFile(objectMetadataPath, metaJSONOutput, 0644); err != nil {
+	if err := writeFileAtomicJSON(objectMetadataPath, meta, 0644); err != nil {
 		log.Printf("Error writing final object metadata file %s: %v", objectMetadataPath, err)
-		os.Remove(finalObjectPath)
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(errorToXML("InternalError", "Error writing metadata.")))
 		return
 	}
+
+	// Rename the fully assembled temp file over the final object. Until this
+	// point the previous object version was untouched.
+	if err := os.Rename(finalTempPath, finalObjectPath); err != nil {
+		log.Printf("Error renaming temporary assembly file %s over %s: %v", finalTempPath, finalObjectPath, err)
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(errorToXML("InternalError", "Error finalizing object.")))
+		return
+	}
+	failCleanup = false // rename consumed the temp file
 
 	// Clean up: delete the multipart upload metadata file and the temporary parts directory
 	if err := os.Remove(mpUploadMetaPath); err != nil {
@@ -478,6 +533,15 @@ func completeMultipartUploadHandler(w http.ResponseWriter, r *http.Request, buck
 }
 
 func abortMultipartUploadHandler(w http.ResponseWriter, r *http.Request, bucketName, objectName, uploadID string) {
+	// Validate uploadID BEFORE any path join
+	if err := validateUploadID(uploadID); err != nil {
+		log.Printf("Invalid uploadId in AbortMultipartUpload: %v", err)
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(errorToXML("InvalidArgument", "Invalid upload id.")))
+		return
+	}
+
 	bucketPath := getBucketPath(bucketName)
 	mpUploadMetaPath := filepath.Join(bucketPath, ".metadata", ".uploads", uploadID+".json")
 	partsDir := filepath.Join(bucketPath, ".metadata", ".uploads", uploadID+"_parts")
@@ -487,10 +551,37 @@ func abortMultipartUploadHandler(w http.ResponseWriter, r *http.Request, bucketN
 	uploadLock.Lock()
 	defer uploadLock.Unlock()
 
-	// Check if the multipart upload metadata file exists
-	_, err := os.Stat(mpUploadMetaPath)
+	// Read the upload metadata first: key validation needs it, and the
+	// stat fast-path is folded into the IsNotExist check on the read.
+	metaJSON, err := os.ReadFile(mpUploadMetaPath)
 	if os.IsNotExist(err) {
 		log.Printf("Multipart upload metadata %s not found for UploadID %s (Abort)", mpUploadMetaPath, uploadID)
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(errorToXML("NoSuchUpload", "The specified multipart upload does not exist.")))
+		return
+	}
+	if err != nil {
+		log.Printf("Error reading multipart upload metadata %s: %v", mpUploadMetaPath, err)
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(errorToXML("InternalError", "Error reading upload metadata.")))
+		return
+	}
+
+	var mpUpload MultipartUpload
+	if err := json.Unmarshal(metaJSON, &mpUpload); err != nil {
+		log.Printf("Error unmarshalling multipart upload metadata from %s: %v", mpUploadMetaPath, err)
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(errorToXML("InternalError", "Error parsing upload metadata.")))
+		return
+	}
+
+	// Key validation (mirrors complete): an upload may only be aborted via
+	// its own key, so one client cannot kill another object's upload.
+	if mpUpload.Key != objectName {
+		log.Printf("Object name mismatch for UploadID %s during abort. Expected %s, got %s", uploadID, mpUpload.Key, objectName)
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte(errorToXML("NoSuchUpload", "The specified multipart upload does not exist.")))

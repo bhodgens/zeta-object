@@ -23,10 +23,15 @@
       //   $CONTENT_TYPE  - MIME type from metadata
       //   $ETAG          - Object ETag (MD5 hash)
       //   $SIZE          - Object size in bytes
-      "command": "/usr/local/bin/generate-thumbnail.sh \"$FILE_PATH\" \"$BUCKET_PATH/.thumbs/\"",
+      // Every substituted value is shell-quoted (POSIX single-quote
+      // escaping), so values cannot break out of quoting or inject
+      // commands. Reference variables UNQUOTED in your command; wrapping
+      // them in your own quotes ("$OBJECT_KEY") adds literal quote
+      // characters to the argument — harmless but usually not intended.
+      "command": "/usr/local/bin/generate-thumbnail.sh $FILE_PATH $BUCKET_PATH/.thumbs/",
       // Run asynchronously (non-blocking). Default: true
       "async": true,
-      // Timeout in seconds (0 = no limit). Default: 0
+      // Timeout in seconds (0 or omitted = 30s default)
       "timeout": 60,
       // Enable/disable this action. Default: true
       "enabled": true
@@ -106,7 +111,8 @@
     // Mode options:
     //   "merge"    - (default) Child actions added; same-name actions override parent
     //   "override" - Child completely replaces parent actions
-    //   "disable"  - Only current directory's actions apply, ignore all parents
+    //   "disable"  - No actions run in this subtree: neither the parent's
+    //                actions nor this directory's actions execute
     "mode": "merge"
   }
 }

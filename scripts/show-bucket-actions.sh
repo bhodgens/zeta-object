@@ -27,10 +27,66 @@ else
     NC=''
 fi
 
-# Strip JSON5 comments for jq processing
+# Strip JSON5 comments for jq processing — string-aware: // and /* */ inside
+# quoted strings are preserved. Uses a small python3 state machine mirroring
+# the server's stripJSON5Comments; falls back to the old (naive) sed with a
+# warning if python3 is unavailable.
 strip_comments() {
-    # Remove // comments (not in strings) and /* */ comments
-    sed -e 's|//.*$||g' -e ':a;N;$!ba;s|/\*[^*]*\*\+\([^/*][^*]*\*\+\)*/||g'
+    if command -v python3 &>/dev/null; then
+        python3 -c '
+import sys
+out = []
+data = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+i, n = 0, len(data)
+in_str = in_line = in_block = False
+while i < n:
+    c = data[i]
+    if in_line:
+        if c == "\n":
+            in_line = False
+            out.append(c)
+        i += 1
+        continue
+    if in_block:
+        if c == "*" and i + 1 < n and data[i + 1] == "/":
+            in_block = False
+            i += 2
+            continue
+        if c == "\n":
+            out.append(c)
+        i += 1
+        continue
+    if in_str:
+        if c == "\\" and i + 1 < n:
+            out.append(c)
+            out.append(data[i + 1])
+            i += 2
+            continue
+        if c == "\"":
+            in_str = False
+        out.append(c)
+        i += 1
+        continue
+    if c == "/" and i + 1 < n:
+        nxt = data[i + 1]
+        if nxt == "/":
+            in_line = True
+            i += 2
+            continue
+        if nxt == "*":
+            in_block = True
+            i += 2
+            continue
+    if c == "\"":
+        in_str = True
+    out.append(c)
+    i += 1
+sys.stdout.write("".join(out))
+'
+    else
+        echo "WARNING: python3 not found; using naive sed comment stripper (comments inside strings may corrupt output)" >&2
+        sed -e 's|//.*$||g' -e ':a;N;$!ba;s|/\*[^*]*\*\+\([^/*][^*]*\*\+\)*/||g'
+    fi
 }
 
 # Check if jq is available

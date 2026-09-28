@@ -99,6 +99,7 @@ type MultipartUpload struct {
 	Key            string            `json:"key"`
 	Initiated      time.Time         `json:"initiated"`
 	CustomMetadata map[string]string `json:"customMetadata,omitempty"` // x-amz-meta-* headers from initiate
+	ContentType    string            `json:"contentType,omitempty"`    // Content-Type from initiate, propagated to final object meta
 	// Parts will store metadata about each uploaded part
 	Parts map[int]PartMetadata `json:"parts"` // Keyed by PartNumber
 }
