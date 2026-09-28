@@ -3,8 +3,9 @@
 
 BINARY_NAME := mini-s3-server
 
-# Coverage floor. Current baseline is 50.0%; feature waves will raise it.
-COVER_MIN := 50
+# Coverage floor. Raised from 50 to 70 by leaf 4.10: actual total after the
+# test-gap closure campaign is 83.6%, comfortably above the floor.
+COVER_MIN := 70
 
 # Lint only issues introduced since NEW_FROM_REV (any rev/ref):
 #   make lint NEW_FROM_REV=HEAD
@@ -13,7 +14,7 @@ NEW_FROM_REV ?=
 GO_TOOLS_MISSING :=
 
 .PHONY: help build run certs data_dir clean \
-        test test-verbose test-race test-cover test-cover-enforce fuzz \
+        test test-verbose test-race test-cover test-cover-enforce fuzz bench \
         lint vet fmt fmt-check mod-tidy mod-tidy-check mod-verify \
         precommit check vuln secrets e2e hooks
 
@@ -212,6 +213,13 @@ fuzz: ## Run fuzz targets briefly (30s each). Full runs: go test -fuzz=. -fuzzti
 	go test -fuzz=FuzzParseRangeHeader    -fuzztime=30s .
 	go test -fuzz=FuzzMatchPathGlob       -fuzztime=30s .
 	go test -fuzz=FuzzParseCopySource     -fuzztime=30s .
+
+# =============================================================================
+# Benchmarks (leaf 4.10)
+# =============================================================================
+
+bench: ## Run all benchmarks once with allocation stats.
+	go test -bench=. -benchmem -run='^$$' .
 
 # =============================================================================
 # Git hooks
