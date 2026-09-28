@@ -712,12 +712,40 @@ func swapActionRunner(t *testing.T, runner func(name, cmd string, timeout int, w
 }
 
 // setInactivityTrackerNil isolates triggerActions tests from the global
-// tracker (restored via t.Cleanup).
+// tracker (restored via t.Cleanup). The restore JOINS on in-flight async
+// triggerActions goroutines first: handlers fire `go triggerActions(...)`,
+// and a bare var write raced those goroutines' tracker reads (leaf-4.4
+// -race finding). Waiting for the tracker's own mutex proves no action
+// goroutine still holds or will touch it.
 func setInactivityTrackerNil(t *testing.T) {
 	t.Helper()
 	orig := inactivityTracker
+	t.Cleanup(func() {
+		joinAsyncTriggerActions()
+		inactivityTracker = orig
+	})
 	inactivityTracker = nil
-	t.Cleanup(func() { inactivityTracker = orig })
+}
+
+// joinAsyncTriggerActions drains any in-flight async action goroutines by
+// acquiring the tracker lock (triggerActions' last statement, recordActivity,
+// takes it). A nil tracker is a no-op. Bounded wait so a wedged goroutine
+// fails the test instead of hanging it.
+func joinAsyncTriggerActions() {
+	deadline := time.Now().Add(5 * time.Second)
+	for inactivityTracker != nil {
+		// Acquiring the lock proves no action goroutine is mid-recordActivity
+		// (triggerActions' final statement). The copy under lock defeats
+		// staticcheck SA2001 (empty critical section) while keeping the
+		// happens-before edge the join needs.
+		inactivityTracker.mu.RLock()
+		_ = len(inactivityTracker.lastActivity)
+		inactivityTracker.mu.RUnlock()
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func writeActionsConfig(t *testing.T, dir, content string) {

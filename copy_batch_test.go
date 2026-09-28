@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // copy_batch_test.go — leaf 3.5: CopyObject (x-amz-copy-source) and
@@ -422,5 +424,589 @@ func TestDeleteObjects_NoSuchBucket(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "NoSuchBucket") {
 		t.Errorf("expected NoSuchBucket, got: %s", w.Body.String())
+	}
+}
+
+// ====================================================================
+// Leaf 4.5 — Copy/Delete edge matrix (docs/plans/test-gaps-2026-09/
+// 4.5-copy-delete-edges.md). Additive; nothing above this line changed.
+// ====================================================================
+
+// ---- CopyObject edges ----
+
+// Pins: a 0-byte object copies to 200 with the canonical empty-MD5 ETag
+// (d41d8cd98f00b204e9800998ecf8427e) and a 0-byte destination.
+func TestCopyObject_ZeroByteObject(t *testing.T) {
+	env := setupTestEnv(t)
+	env.setupBucket(t, "zb-src")
+	env.setupBucket(t, "zb-dst")
+	env.writeTestObject(t, "zb-src", "empty.bin", "")
+
+	w := doCopyObject(t, "zb-dst", "empty-copy.bin", "zb-src/empty.bin", nil)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	const emptyMD5 = "d41d8cd98f00b204e9800998ecf8427e"
+	var result CopyObjectResult
+	if err := xml.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to parse CopyObjectResult: %v", err)
+	}
+	if result.ETag != fmt.Sprintf("%q", emptyMD5) {
+		t.Errorf("expected quoted empty-MD5 ETag, got %q", result.ETag)
+	}
+	got, err := os.ReadFile(filepath.Join(env.dataDir, "zb-dst", "empty-copy.bin"))
+	if err != nil {
+		t.Fatalf("destination data read failed: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0-byte destination, got %d bytes", len(got))
+	}
+	meta := readObjectMeta(t, env, "zb-dst", "empty-copy.bin")
+	if meta.ETag != emptyMD5 || meta.ContentLength != 0 {
+		t.Errorf("expected ETag %s len 0, got %s len %d", emptyMD5, meta.ETag, meta.ContentLength)
+	}
+}
+
+// Pins: copying into a nested destination key creates parent data +
+// metadata directories and writes both files.
+func TestCopyObject_NestedDestination(t *testing.T) {
+	env := setupTestEnv(t)
+	env.setupBucket(t, "nest-src")
+	env.setupBucket(t, "nest-dst")
+	env.writeTestObject(t, "nest-src", "src.txt", "nested payload")
+
+	w := doCopyObject(t, "nest-dst", "a/b/c.txt", "nest-src/src.txt", nil)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	data, err := os.Stat(filepath.Join(env.dataDir, "nest-dst", "a", "b", "c.txt"))
+	if err != nil {
+		t.Fatalf("destination data not created: %v", err)
+	}
+	if data.Size() != int64(len("nested payload")) {
+		t.Errorf("destination size = %d, want %d", data.Size(), len("nested payload"))
+	}
+	if _, err := os.Stat(filepath.Join(env.dataDir, "nest-dst", ".metadata", "a", "b", "c.txt.meta")); err != nil {
+		t.Errorf("destination metadata not created: %v", err)
+	}
+}
+
+// Pins: COPY (explicit directive) preserves x-amz-meta-* — asserted via the
+// real GET path, not just the stored JSON.
+func TestCopyObject_CopyDirectivePreservesMetaHeaders(t *testing.T) {
+	env := setupTestEnv(t)
+	env.setupBucket(t, "cp-src")
+	env.setupBucket(t, "cp-dst")
+
+	put := httptest.NewRequest("PUT", "/cp-src/doc.txt", strings.NewReader("meta me"))
+	put.Header.Set("Content-Type", "text/x-custom")
+	put.Header.Set("X-Amz-Meta-Color", "blue")
+	put.Header.Set("X-Amz-Meta-Shape", "round")
+	pw := httptest.NewRecorder()
+	putObjectHandler(pw, put, "cp-src", "doc.txt")
+	if pw.Code != 200 {
+		t.Fatalf("source PUT failed: %d %s", pw.Code, pw.Body.String())
+	}
+
+	w := doCopyObject(t, "cp-dst", "doc-copy.txt", "cp-src/doc.txt",
+		map[string]string{"x-amz-metadata-directive": "COPY"})
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	get := httptest.NewRequest("GET", "/cp-dst/doc-copy.txt", nil)
+	gw := httptest.NewRecorder()
+	getObjectHandler(gw, get, "cp-dst", "doc-copy.txt")
+	if gw.Code != 200 {
+		t.Fatalf("GET failed: %d %s", gw.Code, gw.Body.String())
+	}
+	if ct := gw.Header().Get("Content-Type"); ct != "text/x-custom" {
+		t.Errorf("COPY should preserve Content-Type text/x-custom, got %q", ct)
+	}
+	if got := gw.Header().Get("X-Amz-Meta-Color"); got != "blue" {
+		t.Errorf("COPY should preserve x-amz-meta-color, got %q", got)
+	}
+	if got := gw.Header().Get("X-Amz-Meta-Shape"); got != "round" {
+		t.Errorf("COPY should preserve x-amz-meta-shape, got %q", got)
+	}
+}
+
+// Pins: REPLACE swaps Content-Type on the served response AND the stale
+// source meta headers are GONE from a real GET.
+func TestCopyObject_ReplaceSwapsServedHeaders(t *testing.T) {
+	env := setupTestEnv(t)
+	env.setupBucket(t, "rpl-src")
+	env.setupBucket(t, "rpl-dst")
+
+	put := httptest.NewRequest("PUT", "/rpl-src/doc.txt", strings.NewReader("replace body"))
+	put.Header.Set("Content-Type", "text/x-old")
+	put.Header.Set("X-Amz-Meta-Stale", "yes")
+	pw := httptest.NewRecorder()
+	putObjectHandler(pw, put, "rpl-src", "doc.txt")
+	if pw.Code != 200 {
+		t.Fatalf("source PUT failed: %d %s", pw.Code, pw.Body.String())
+	}
+
+	w := doCopyObject(t, "rpl-dst", "doc-new.txt", "rpl-src/doc.txt", map[string]string{
+		"x-amz-metadata-directive": "REPLACE",
+		"Content-Type":             "application/x-new",
+	})
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	get := httptest.NewRequest("GET", "/rpl-dst/doc-new.txt", nil)
+	gw := httptest.NewRecorder()
+	getObjectHandler(gw, get, "rpl-dst", "doc-new.txt")
+	if gw.Code != 200 {
+		t.Fatalf("GET failed: %d %s", gw.Code, gw.Body.String())
+	}
+	if ct := gw.Header().Get("Content-Type"); ct != "application/x-new" {
+		t.Errorf("REPLACE should serve Content-Type application/x-new, got %q", ct)
+	}
+	if got := gw.Header().Get("X-Amz-Meta-Stale"); got != "" {
+		t.Errorf("REPLACE must drop source meta headers, got x-amz-meta-stale=%q", got)
+	}
+}
+
+// Pins: buildCopyMetadata REPLACE with NO request meta/Content-Type still
+// replaces (fresh empty meta, not source meta) — covers the 93.3% branch.
+func TestCopyObject_ReplaceWithoutNewMeta(t *testing.T) {
+	env := setupTestEnv(t)
+	env.setupBucket(t, "rw-src")
+	env.setupBucket(t, "rw-dst")
+
+	put := httptest.NewRequest("PUT", "/rw-src/doc.txt", strings.NewReader("body"))
+	put.Header.Set("Content-Type", "text/x-old")
+	put.Header.Set("X-Amz-Meta-Stale", "yes")
+	pw := httptest.NewRecorder()
+	putObjectHandler(pw, put, "rw-src", "doc.txt")
+	if pw.Code != 200 {
+		t.Fatalf("source PUT failed: %d %s", pw.Code, pw.Body.String())
+	}
+
+	w := doCopyObject(t, "rw-dst", "doc.txt", "rw-src/doc.txt", map[string]string{
+		"x-amz-metadata-directive": "REPLACE",
+	})
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	meta := readObjectMeta(t, env, "rw-dst", "doc.txt")
+	if meta.ContentType != "" {
+		t.Errorf("REPLACE without Content-Type should leave it empty, got %q", meta.ContentType)
+	}
+	if len(meta.CustomMetadata) != 0 {
+		t.Errorf("REPLACE must not inherit source meta, got %v", meta.CustomMetadata)
+	}
+}
+
+// Pins: copy-source with URL-encoded key (space as %20) resolves to the
+// real object.
+func TestCopyObject_URLEncodedSourceKey(t *testing.T) {
+	env := setupTestEnv(t)
+	env.setupBucket(t, "enc-src")
+	env.setupBucket(t, "enc-dst")
+	env.writeTestObject(t, "enc-src", "dir with space/file name.txt", "encoded src")
+
+	w := doCopyObject(t, "enc-dst", "out.txt", "enc-src/dir%20with%20space/file%20name.txt", nil)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	got, err := os.ReadFile(filepath.Join(env.dataDir, "enc-dst", "out.txt"))
+	if err != nil || string(got) != "encoded src" {
+		t.Errorf("destination data mismatch: %q err=%v", got, err)
+	}
+}
+
+// Pins: meta present but data file missing → 404 NoSuchKey (pinned 3.5
+// behavior exercised through the copy path).
+func TestCopyObject_DataFileMissingMetaPresent(t *testing.T) {
+	env := setupTestEnv(t)
+	env.setupBucket(t, "orphan-src")
+	env.setupBucket(t, "orphan-dst")
+	// writeTestObject then remove the data file: meta-only object.
+	env.writeTestObject(t, "orphan-src", "ghost.txt", "once")
+	if err := os.Remove(filepath.Join(env.dataDir, "orphan-src", "ghost.txt")); err != nil {
+		t.Fatalf("failed removing data file: %v", err)
+	}
+
+	w := doCopyObject(t, "orphan-dst", "out.txt", "orphan-src/ghost.txt", nil)
+	if w.Code != 404 {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "NoSuchKey") {
+		t.Errorf("expected NoSuchKey, got: %s", w.Body.String())
+	}
+}
+
+// Pins: the after_upload action fires for the DESTINATION object with the
+// substituted context, via the leaf-4.1 actionCommandRunner seam.
+func TestCopyObject_AfterUploadActionFiresForDestination(t *testing.T) {
+	env := setupTestEnv(t)
+	env.setupBucket(t, "act-src")
+	env.setupBucket(t, "act-dst")
+	env.writeTestObject(t, "act-src", "in.txt", "action payload")
+
+	writeActionsConfig(t, filepath.Join(env.dataDir, "act-dst"), `{
+		"version": "1.0",
+		"after_upload": [
+			{"name": "on-copy", "patterns": ["out.txt"], "command": "echo $OBJECT_KEY", "async": false}
+		]
+	}`)
+	// Keep a REAL tracker (not nil): triggerActions records activity as its
+	// LAST step, which this test uses below as a join signal for the
+	// `go triggerActions` goroutine spawned by copyObjectHandler — cleanup
+	// must not restore globals while that goroutine still reads them.
+	InitInactivityTracker()
+	actBucketPath := filepath.Join(env.dataDir, "act-dst")
+
+	type invocation struct {
+		name, cmd, workDir string
+	}
+	invocations := make(chan invocation, 4)
+	swapActionRunner(t, func(name, cmd string, timeout int, workDir string) {
+		invocations <- invocation{name: name, cmd: cmd, workDir: workDir}
+	})
+
+	w := doCopyObject(t, "act-dst", "out.txt", "act-src/in.txt", nil)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	select {
+	case inv := <-invocations:
+		if inv.name != "on-copy" {
+			t.Errorf("action name = %q, want on-copy", inv.name)
+		}
+		if inv.cmd != "echo 'out.txt'" {
+			t.Errorf("command = %q, want substituted destination key", inv.cmd)
+		}
+		if inv.workDir != actBucketPath {
+			t.Errorf("workDir = %q, want destination bucket", inv.workDir)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("after_upload action did not fire for the copy destination within 2s")
+	}
+
+	// Join the spawned goroutine: once the activity record for the
+	// destination bucket appears, triggerActions has executed its final
+	// statement and released every global, so t.Cleanup restores are safe.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		inactivityTracker.mu.Lock()
+		_, recorded := inactivityTracker.lastActivity[actBucketPath]
+		inactivityTracker.mu.Unlock()
+		if recorded {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("triggerActions goroutine never recorded activity — join timed out")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// Pins the remaining copy-source parsing guards: malformed URL escape,
+// missing key (bucket only), and a traversal-shaped source key all 400
+// InvalidArgument before any filesystem access.
+func TestCopyObject_MalformedCopySourceVariants(t *testing.T) {
+	env := setupTestEnv(t)
+	env.setupBucket(t, "mal-src")
+	env.writeTestObject(t, "mal-src", "ok.txt", "data")
+
+	tests := []struct {
+		name       string
+		copySource string
+	}{
+		{"invalid URL escape", "mal-src/%zz.txt"},
+		{"bucket without key", "mal-src-only-bucket"},
+		{"traversal source key", "mal-src/../evil"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := doCopyObject(t, "mal-src", "out.txt", tt.copySource, nil)
+			if w.Code != 400 {
+				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), "InvalidArgument") {
+				t.Errorf("expected InvalidArgument, got: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+// Pins the last copy-source guard: a traversal-shaped DESTINATION key is
+// 400 InvalidArgument before any filesystem work.
+func TestCopyObject_InvalidDestinationKey(t *testing.T) {
+	env := setupTestEnv(t)
+	env.setupBucket(t, "idst-src")
+	env.setupBucket(t, "idst-dst")
+	env.writeTestObject(t, "idst-src", "src.txt", "data")
+
+	w := doCopyObject(t, "idst-dst", "../escape", "idst-src/src.txt", nil)
+	if w.Code != 400 {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "InvalidArgument") {
+		t.Errorf("expected InvalidArgument, got: %s", w.Body.String())
+	}
+	// Nothing escaped the bucket.
+	if _, err := os.Stat(filepath.Join(env.dataDir, "escape")); !os.IsNotExist(err) {
+		t.Errorf("something escaped: %v", err)
+	}
+}
+
+// Pins: an UNREADABLE source metadata file (directory where the .meta JSON
+// belongs) → 500 InternalError.
+func TestCopyObject_UnreadableSourceMeta(t *testing.T) {
+	env := setupTestEnv(t)
+	env.setupBucket(t, "um-src")
+	env.setupBucket(t, "um-dst")
+	metaDir := filepath.Join(env.dataDir, "um-src", ".metadata")
+	if err := os.MkdirAll(filepath.Join(metaDir, "weird.txt.meta"), 0755); err != nil {
+		t.Fatalf("failed creating directory at meta path: %v", err)
+	}
+
+	w := doCopyObject(t, "um-dst", "out.txt", "um-src/weird.txt", nil)
+	if w.Code != 500 {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "InternalError") {
+		t.Errorf("expected InternalError, got: %s", w.Body.String())
+	}
+}
+
+// ---- DeleteObjects edges ----
+
+// Pins current behavior: a traversal-shaped key in a batch gets an
+// InvalidArgument error entry (leaf 2.4 validateObjectKey rejects ".."
+// segments before any filesystem touch), NOT a Deleted entry. Asserts
+// nothing escaped: no file or directory was created outside the bucket.
+//
+// NOTE: the leaf plan sketches Deleted for this case ("delete is
+// idempotent"); the documented divergence in CLAUDE.md wins — safety
+// rejects the key. This test pins the shipped behavior.
+func TestDeleteObjects_TraversalShapedKeyRejectedNoEscape(t *testing.T) {
+	env := setupTestEnv(t)
+	bucketPath := env.setupBucket(t, "trav-bucket")
+
+	body := `<Delete><Object><Key>../escape</Key></Object></Delete>`
+	w := doDeleteObjects(t, "trav-bucket", body)
+	if w.Code != 200 {
+		t.Fatalf("expected 200 batch response, got %d: %s", w.Code, w.Body.String())
+	}
+	var result DeleteResult
+	if err := xml.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to parse DeleteResult: %v", err)
+	}
+	if len(result.Deleted) != 0 {
+		t.Errorf("traversal-shaped key must not be reported Deleted, got: %s", w.Body.String())
+	}
+	if len(result.Error) != 1 || result.Error[0].Key != "../escape" || result.Error[0].Code != "InvalidArgument" {
+		t.Errorf("expected one InvalidArgument error entry for ../escape, got: %s", w.Body.String())
+	}
+
+	// Nothing escaped: no "escape" file/dir next to the bucket, and the
+	// bucket itself is untouched.
+	if _, err := os.Stat(filepath.Join(env.dataDir, "escape")); !os.IsNotExist(err) {
+		t.Errorf("something escaped the bucket: %v", err)
+	}
+	entries, err := os.ReadDir(env.dataDir)
+	if err != nil {
+		t.Fatalf("dataDir read failed: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != "trav-bucket" {
+			t.Errorf("unexpected entry %q created in dataDir", e.Name())
+		}
+	}
+	if _, err := os.Stat(bucketPath); err != nil {
+		t.Errorf("bucket vanished: %v", err)
+	}
+}
+
+// Pins: duplicate keys in one batch → 200 with a Deleted entry per
+// occurrence, and the object is gone from disk exactly once.
+func TestDeleteObjects_DuplicateKeys(t *testing.T) {
+	env := setupTestEnv(t)
+	env.setupBucket(t, "dup-bucket")
+	env.writeTestObject(t, "dup-bucket", "dup.txt", "once")
+
+	body := `<Delete><Object><Key>dup.txt</Key></Object><Object><Key>dup.txt</Key></Object></Delete>`
+	w := doDeleteObjects(t, "dup-bucket", body)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var result DeleteResult
+	if err := xml.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to parse DeleteResult: %v", err)
+	}
+	if len(result.Deleted) != 2 {
+		t.Fatalf("expected 2 Deleted entries for duplicate keys, got %d: %s", len(result.Deleted), w.Body.String())
+	}
+	for i, d := range result.Deleted {
+		if d.Key != "dup.txt" {
+			t.Errorf("Deleted[%d].Key = %q, want dup.txt", i, d.Key)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(env.dataDir, "dup-bucket", "dup.txt")); !os.IsNotExist(err) {
+		t.Errorf("object should be deleted from disk: %v", err)
+	}
+}
+
+// ---- deleteObjectHandler / cleanupEmptyDirs ----
+
+// Pins: deleting the last object under a/b/ removes a/b and a; a sibling
+// object elsewhere keeps its branch (cleanupEmptyDirs stops at the first
+// non-empty directory). Exercises the full path through deleteObjectCore.
+func TestDeleteObject_NestedCleanupStopsAtNonEmpty(t *testing.T) {
+	env := setupTestEnv(t)
+	env.setupBucket(t, "prune-bucket")
+	env.writeTestObject(t, "prune-bucket", "a/b/leaf.txt", "deep")
+	env.writeTestObject(t, "prune-bucket", "a/sibling.txt", "keeps a alive")
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("DELETE", "/prune-bucket/a/b/leaf.txt", nil)
+	deleteObjectHandler(w, req, "prune-bucket", "a/b/leaf.txt")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// a/b must be fully pruned; a kept because the sibling lives there.
+	if _, err := os.Stat(filepath.Join(env.dataDir, "prune-bucket", "a", "b")); !os.IsNotExist(err) {
+		t.Errorf("a/b should be pruned: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(env.dataDir, "prune-bucket", "a")); err != nil {
+		t.Errorf("a must be kept (sibling object exists): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(env.dataDir, "prune-bucket", "a", "sibling.txt")); err != nil {
+		t.Errorf("sibling object must survive: %v", err)
+	}
+	// Metadata subtree mirrors the same pruning.
+	if _, err := os.Stat(filepath.Join(env.dataDir, "prune-bucket", ".metadata", "a", "b")); !os.IsNotExist(err) {
+		t.Errorf(".metadata/a/b should be pruned: %v", err)
+	}
+}
+
+// Pins: deleting a missing key in an EXISTING bucket stays 204 (S3
+// idempotency) and does not trigger an InternalError via deleteObjectCore.
+func TestDeleteObject_MissingKeyInExistingBucket204(t *testing.T) {
+	env := setupTestEnv(t)
+	env.setupBucket(t, "idem-bucket")
+	// Also create a decoy sibling so cleanupEmptyDirs has something to walk.
+	env.writeTestObject(t, "idem-bucket", "keep.txt", "keep")
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("DELETE", "/idem-bucket/never-there.txt", nil)
+	deleteObjectHandler(w, req, "idem-bucket", "never-there.txt")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for missing key, got %d: %s", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(env.dataDir, "idem-bucket", "keep.txt")); err != nil {
+		t.Errorf("decoy sibling must survive: %v", err)
+	}
+}
+
+// Pins: corrupt metadata JSON falls back to the canonical path, the delete
+// still returns 204 and removes the data file (meta removal is best effort).
+func TestDeleteObject_CorruptMetaFallback(t *testing.T) {
+	env := setupTestEnv(t)
+	bucketPath := env.setupBucket(t, "corrupt-bucket")
+	dataPath := filepath.Join(bucketPath, "victim.txt")
+	if err := os.WriteFile(dataPath, []byte("data"), 0644); err != nil {
+		t.Fatalf("failed writing data: %v", err)
+	}
+	metaPath := filepath.Join(bucketPath, ".metadata", "victim.txt.meta")
+	if err := os.WriteFile(metaPath, []byte("{not valid json!!"), 0644); err != nil {
+		t.Fatalf("failed writing corrupt meta: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("DELETE", "/corrupt-bucket/victim.txt", nil)
+	deleteObjectHandler(w, req, "corrupt-bucket", "victim.txt")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 with corrupt meta, got %d: %s", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(dataPath); !os.IsNotExist(err) {
+		t.Errorf("data file should be deleted via canonical fallback: %v", err)
+	}
+}
+
+// Pins: REPLACE that actually sets a new x-amz-meta-* header — the request
+// header loop in buildCopyMetadata must store it under the original header
+// casing.
+func TestCopyObject_ReplaceWithNewMeta(t *testing.T) {
+	env := setupTestEnv(t)
+	env.setupBucket(t, "rn-src")
+	env.setupBucket(t, "rn-dst")
+
+	put := httptest.NewRequest("PUT", "/rn-src/doc.txt", strings.NewReader("body"))
+	put.Header.Set("Content-Type", "text/x-old")
+	put.Header.Set("X-Amz-Meta-Stale", "yes")
+	pw := httptest.NewRecorder()
+	putObjectHandler(pw, put, "rn-src", "doc.txt")
+	if pw.Code != 200 {
+		t.Fatalf("source PUT failed: %d %s", pw.Code, pw.Body.String())
+	}
+
+	w := doCopyObject(t, "rn-dst", "doc.txt", "rn-src/doc.txt", map[string]string{
+		"x-amz-metadata-directive": "REPLACE",
+		"Content-Type":             "application/x-new",
+		"X-Amz-Meta-Fresh":         "value1",
+	})
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	meta := readObjectMeta(t, env, "rn-dst", "doc.txt")
+	if got := meta.CustomMetadata["X-Amz-Meta-Fresh"]; got != "value1" {
+		t.Errorf("REPLACE should store the new x-amz-meta-fresh header, got %v", meta.CustomMetadata)
+	}
+	if _, ok := meta.CustomMetadata["X-Amz-Meta-Stale"]; ok {
+		t.Errorf("REPLACE must drop source meta, got %v", meta.CustomMetadata)
+	}
+	if meta.ContentType != "application/x-new" {
+		t.Errorf("REPLACE should set application/x-new, got %q", meta.ContentType)
+	}
+}
+
+// Pins: a batch key whose path is a non-empty DIRECTORY makes
+// deleteObjectCore fail on os.Remove → InternalError error entry, and the
+// rest of the batch still completes. Also proves the same key through
+// deleteObjectHandler → 500.
+func TestDeleteObject_KeyIsNonEmptyDirectory(t *testing.T) {
+	env := setupTestEnv(t)
+	bucketPath := env.setupBucket(t, "dir-key-bucket")
+	dirKeyPath := filepath.Join(bucketPath, "occupied")
+	if err := os.MkdirAll(filepath.Join(dirKeyPath, "child"), 0755); err != nil {
+		t.Fatalf("failed creating directory key: %v", err)
+	}
+
+	// Single delete: 500 InternalError.
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("DELETE", "/dir-key-bucket/occupied", nil)
+	deleteObjectHandler(w, req, "dir-key-bucket", "occupied")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for non-empty directory key, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "InternalError") {
+		t.Errorf("expected InternalError, got: %s", w.Body.String())
+	}
+
+	// Batch delete: InternalError entry for that key, Deleted for the other.
+	env.writeTestObject(t, "dir-key-bucket", "real.txt", "fine")
+	body := `<Delete><Object><Key>occupied</Key></Object><Object><Key>real.txt</Key></Object></Delete>`
+	bw := doDeleteObjects(t, "dir-key-bucket", body)
+	if bw.Code != 200 {
+		t.Fatalf("expected 200 batch response, got %d: %s", bw.Code, bw.Body.String())
+	}
+	var result DeleteResult
+	if err := xml.Unmarshal(bw.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to parse DeleteResult: %v", err)
+	}
+	if len(result.Error) != 1 || result.Error[0].Key != "occupied" || result.Error[0].Code != "InternalError" {
+		t.Errorf("expected InternalError entry for occupied, got: %s", bw.Body.String())
+	}
+	if len(result.Deleted) != 1 || result.Deleted[0].Key != "real.txt" {
+		t.Errorf("expected Deleted entry for real.txt, got: %s", bw.Body.String())
 	}
 }

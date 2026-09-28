@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -915,4 +916,500 @@ func TestCompleteMultipartUploadHandler_SmallFinalPartAllowed(t *testing.T) {
 func mpHashETag(content string) string {
 	sum := md5.Sum([]byte(content))
 	return hex.EncodeToString(sum[:])
+}
+
+// ---- Leaf 4.4: multipart error paths ----
+
+// mpCallUploadPart invokes uploadPartHandler with an optional header map.
+// Safe to call from test goroutines (no t.Fatal inside).
+func mpCallUploadPart(t *testing.T, bucketName, objectName, partNumber, uploadID, body string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	url := "/" + bucketName + "/" + objectName + "?partNumber=" + partNumber + "&uploadId=" + uploadID
+	r := httptest.NewRequest(http.MethodPut, url, strings.NewReader(body))
+	for k, v := range headers {
+		r.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	uploadPartHandler(w, r, bucketName, objectName, partNumber, uploadID)
+	return w
+}
+
+// mpChunkedBody wraps data in a minimal aws-chunked framing.
+func mpChunkedBody(data string) string {
+	return fmt.Sprintf("%x\r\n%s\r\n0\r\n\r\n", len(data), data)
+}
+
+// mpAssertS3Error checks status and error code in an errorToXML response.
+func mpAssertS3Error(t *testing.T, w *httptest.ResponseRecorder, wantCode int, wantCodeStr string) {
+	t.Helper()
+	if w.Code != wantCode {
+		t.Fatalf("status = %d, want %d, body: %s", w.Code, wantCode, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), wantCodeStr) {
+		t.Fatalf("body missing %s: %s", wantCodeStr, w.Body.String())
+	}
+}
+
+// mpReadUploadMeta reads and unmarshals a session meta JSON file.
+func mpReadUploadMeta(t *testing.T, bucketPath, uploadID string) MultipartUpload {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(mpUploadsDir(bucketPath), uploadID+".json"))
+	if err != nil {
+		t.Fatalf("reading upload meta: %v", err)
+	}
+	var mp MultipartUpload
+	if err := json.Unmarshal(raw, &mp); err != nil {
+		t.Fatalf("parsing upload meta: %v", err)
+	}
+	return mp
+}
+
+// ---- Leaf 4.4: initiate error paths ----
+
+func TestInitiateMultipartUploadHandler_InvalidKeyNoUploadsDir(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+
+	w := httptest.NewRecorder()
+	initiateMultipartUploadHandler(w, httptest.NewRequest(http.MethodPost, "/bkt/a/../evil?uploads", nil), "bkt", "a/../evil")
+
+	mpAssertS3Error(t, w, http.StatusBadRequest, "InvalidArgument")
+	if _, err := os.Stat(mpUploadsDir(bucketPath)); !os.IsNotExist(err) {
+		t.Errorf(".uploads dir created despite invalid key")
+	}
+}
+
+func TestInitiateMultipartUploadHandler_NoSuchBucket(t *testing.T) {
+	tmpTestConfig := mpTestConfig(t)
+
+	w := httptest.NewRecorder()
+	initiateMultipartUploadHandler(w, httptest.NewRequest(http.MethodPost, "/missing/obj?uploads", nil), "missing", "obj")
+
+	mpAssertS3Error(t, w, http.StatusNotFound, "NoSuchBucket")
+	if _, err := os.Stat(filepath.Join(tmpTestConfig, "missing")); !os.IsNotExist(err) {
+		t.Errorf("bucket dir created for nonexistent bucket")
+	}
+}
+
+func TestInitiateMultipartUploadHandler_MetaHeaderCapture(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+
+	r := httptest.NewRequest(http.MethodPost, "/bkt/obj?uploads", nil)
+	r.Header.Set("Content-Type", "application/x-test")
+	r.Header.Set("X-Amz-Meta-Color", "blue")
+	r.Header.Set("X-Amz-Meta-Origin", "deep-space")
+	w := httptest.NewRecorder()
+	initiateMultipartUploadHandler(w, r, "bkt", "obj")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", w.Code, w.Body.String())
+	}
+	var result InitiateMultipartUploadResult
+	if err := xml.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	mp := mpReadUploadMeta(t, bucketPath, result.UploadID)
+	if len(mp.CustomMetadata) != 2 {
+		t.Fatalf("CustomMetadata = %v, want 2 entries", mp.CustomMetadata)
+	}
+	got := make(map[string]string, len(mp.CustomMetadata))
+	for k, v := range mp.CustomMetadata {
+		got[strings.ToLower(k)] = v
+	}
+	if got["x-amz-meta-color"] != "blue" || got["x-amz-meta-origin"] != "deep-space" {
+		t.Fatalf("CustomMetadata = %v, want color=blue origin=deep-space", mp.CustomMetadata)
+	}
+}
+
+func TestInitiateMultipartUploadHandler_UploadsDirCreateFailure(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	// .metadata as a regular file makes MkdirAll(.metadata/.uploads) fail.
+	if err := os.Remove(filepath.Join(bucketPath, ".metadata")); err != nil {
+		t.Fatalf("removing .metadata dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bucketPath, ".metadata"), []byte("block"), 0644); err != nil {
+		t.Fatalf("creating .metadata file: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	initiateMultipartUploadHandler(w, httptest.NewRequest(http.MethodPost, "/bkt/obj?uploads", nil), "bkt", "obj")
+
+	mpAssertS3Error(t, w, http.StatusInternalServerError, "InternalError")
+	_ = dataDir
+}
+
+// ---- Leaf 4.4: uploadPart error paths ----
+
+func TestUploadPartHandler_PartNumberBoundsAndFormat(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	uploadID := newTestUploadID(t)
+	mpWriteUploadMeta(t, bucketPath, uploadID, MultipartUpload{UploadID: uploadID, Key: "obj", Parts: make(map[int]PartMetadata)})
+
+	cases := []struct {
+		name string
+		pn   string
+	}{
+		{"zero", "0"},
+		{"negative", "-1"},
+		{"over-max", "10001"},
+		{"non-numeric", "abc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := mpCallUploadPart(t, "bkt", "obj", tc.pn, uploadID, "data", nil)
+			mpAssertS3Error(t, w, http.StatusBadRequest, "InvalidArgument")
+		})
+	}
+
+	// Malformed uploadId (validateUploadID gate).
+	w := mpCallUploadPart(t, "bkt", "obj", "1", "../evil", "data", nil)
+	mpAssertS3Error(t, w, http.StatusBadRequest, "InvalidArgument")
+}
+
+func TestUploadPartHandler_MissingSessionNoSuchUpload(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	tmpBucket := mpTestBucket(t, dataDir, "bkt")
+	_ = tmpBucket
+
+	// Structurally valid id, but no session meta on disk.
+	w := mpCallUploadPart(t, "bkt", "obj", "1", "0123456789abcdef0123456789abcdef", "data", nil)
+	mpAssertS3Error(t, w, http.StatusNotFound, "NoSuchUpload")
+}
+
+func TestUploadPartHandler_KeyMismatchNoSuchUpload(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	uploadID := newTestUploadID(t)
+	mpWriteUploadMeta(t, bucketPath, uploadID, MultipartUpload{UploadID: uploadID, Key: "real-key", Parts: make(map[int]PartMetadata)})
+
+	w := mpCallUploadPart(t, "bkt", "other-key", "1", uploadID, "data", nil)
+	mpAssertS3Error(t, w, http.StatusNotFound, "NoSuchUpload")
+	// No part file may be created for the mismatched key.
+	if _, err := os.Stat(filepath.Join(mpUploadsDir(bucketPath), uploadID+"_parts")); !os.IsNotExist(err) {
+		t.Errorf("parts dir created on key mismatch")
+	}
+}
+
+func TestUploadPartHandler_AWSChunkedDecodedLengthLies(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	uploadID := newTestUploadID(t)
+	mpWriteUploadMeta(t, bucketPath, uploadID, MultipartUpload{UploadID: uploadID, Key: "obj", Parts: make(map[int]PartMetadata)})
+
+	headers := func(decodedLen string) map[string]string {
+		return map[string]string{
+			"Content-Encoding":             "aws-chunked",
+			"x-amz-decoded-content-length": decodedLen,
+		}
+	}
+
+	// Lying header: body decodes to 4 bytes, header claims 999 → 400.
+	w := mpCallUploadPart(t, "bkt", "obj", "1", uploadID, mpChunkedBody("abcd"), headers("999"))
+	mpAssertS3Error(t, w, http.StatusBadRequest, "InvalidArgument")
+	if _, err := os.Stat(filepath.Join(mpUploadsDir(bucketPath), uploadID+"_parts", "part-1")); !os.IsNotExist(err) {
+		t.Errorf("part file stored despite lying decoded length")
+	}
+
+	// Honest header → success, ETag matches the decoded body.
+	w = mpCallUploadPart(t, "bkt", "obj", "1", uploadID, mpChunkedBody("abcd"), headers("4"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("honest header status = %d, body: %s", w.Code, w.Body.String())
+	}
+	wantETag := `"` + mpHashETag("abcd") + `"`
+	if got := w.Header().Get("ETag"); got != wantETag {
+		t.Errorf("ETag = %s, want %s", got, wantETag)
+	}
+	mp := mpReadUploadMeta(t, bucketPath, uploadID)
+	if pm, ok := mp.Parts[1]; !ok || pm.ETag != mpHashETag("abcd") {
+		t.Fatalf("session part 1 = %+v, want ETag of %q", pm, "abcd")
+	}
+}
+
+func TestUploadPartHandler_ReadOnlyPartsDirNoTempLitter(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-based rejection does not apply to root")
+	}
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	uploadID := newTestUploadID(t)
+	mpWriteUploadMeta(t, bucketPath, uploadID, MultipartUpload{UploadID: uploadID, Key: "obj", Parts: make(map[int]PartMetadata)})
+
+	partsDir := filepath.Join(mpUploadsDir(bucketPath), uploadID+"_parts")
+	if err := os.MkdirAll(partsDir, 0755); err != nil {
+		t.Fatalf("creating parts dir: %v", err)
+	}
+	if err := os.Chmod(partsDir, 0555); err != nil {
+		t.Fatalf("chmod parts dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(partsDir, 0755) })
+
+	w := mpCallUploadPart(t, "bkt", "obj", "1", uploadID, "data", nil)
+	mpAssertS3Error(t, w, http.StatusInternalServerError, "InternalError")
+
+	// Atomic write contract: no half-written part, no temp litter.
+	entries, err := os.ReadDir(partsDir)
+	if err != nil {
+		t.Fatalf("reading parts dir: %v", err)
+	}
+	for _, e := range entries {
+		t.Errorf("litter in read-only parts dir after failure: %s", e.Name())
+	}
+	// Session meta must still show zero parts.
+	mp := mpReadUploadMeta(t, bucketPath, uploadID)
+	if len(mp.Parts) != 0 {
+		t.Fatalf("session Parts = %v, want empty after failed write", mp.Parts)
+	}
+}
+
+// ---- Leaf 4.4: complete error paths ----
+
+func TestCompleteMultipartUploadHandler_EmptyPartsListInvalidPart(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	uploadID := mpSeedUploadWithParts(t, bucketPath, "obj", map[int]string{1: "a"})
+
+	w := httptest.NewRecorder()
+	completeMultipartUploadHandler(w, httptest.NewRequest(http.MethodPost, "/bkt/obj?uploadId="+uploadID, mpCompleteBody()), "bkt", "obj", uploadID)
+
+	mpAssertS3Error(t, w, http.StatusBadRequest, "InvalidPart")
+	// Session must survive the rejection.
+	if _, err := os.Stat(filepath.Join(mpUploadsDir(bucketPath), uploadID+".json")); err != nil {
+		t.Errorf("session removed on empty parts list: %v", err)
+	}
+}
+
+func TestCompleteMultipartUploadHandler_UnknownPartNumber(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	uploadID := mpSeedUploadWithParts(t, bucketPath, "obj", map[int]string{1: "a"})
+
+	body := mpCompleteBody(PartToUpload{PartNumber: 7, ETag: mpHashETag("a")})
+	w := httptest.NewRecorder()
+	completeMultipartUploadHandler(w, httptest.NewRequest(http.MethodPost, "/bkt/obj?uploadId="+uploadID, body), "bkt", "obj", uploadID)
+
+	mpAssertS3Error(t, w, http.StatusBadRequest, "InvalidPart")
+	if !strings.Contains(w.Body.String(), "Part number 7 not found") {
+		t.Fatalf("body missing not-found message: %s", w.Body.String())
+	}
+}
+
+func TestCompleteMultipartUploadHandler_ETagMismatch(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	uploadID := mpSeedUploadWithParts(t, bucketPath, "obj", map[int]string{1: "a"})
+
+	body := mpCompleteBody(PartToUpload{PartNumber: 1, ETag: "deadbeefdeadbeefdeadbeefdeadbeef"})
+	w := httptest.NewRecorder()
+	completeMultipartUploadHandler(w, httptest.NewRequest(http.MethodPost, "/bkt/obj?uploadId="+uploadID, body), "bkt", "obj", uploadID)
+
+	mpAssertS3Error(t, w, http.StatusBadRequest, "InvalidPart")
+	if !strings.Contains(w.Body.String(), "ETag mismatch") {
+		t.Fatalf("body missing ETag mismatch: %s", w.Body.String())
+	}
+	// The real part file must be untouched.
+	partData, err := os.ReadFile(filepath.Join(mpUploadsDir(bucketPath), uploadID+"_parts", "part-1"))
+	if err != nil || string(partData) != "a" {
+		t.Fatalf("part file disturbed: %q err=%v", partData, err)
+	}
+}
+
+func TestCompleteMultipartUploadHandler_PartsOutOfOrder(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+
+	// The EntityTooSmall gate runs before the order check for the first
+	// entry, so the first-listed part must be >= minPartSize for the order
+	// violation to be the failure that trips.
+	big := strings.Repeat("B", minPartSize)
+	uploadID := mpSeedUploadWithParts(t, bucketPath, "obj", map[int]string{1: "a", 2: big})
+
+	body := mpCompleteBody(
+		PartToUpload{PartNumber: 2, ETag: mpHashETag(big)},
+		PartToUpload{PartNumber: 1, ETag: mpHashETag("a")},
+	)
+	w := httptest.NewRecorder()
+	completeMultipartUploadHandler(w, httptest.NewRequest(http.MethodPost, "/bkt/obj?uploadId="+uploadID, body), "bkt", "obj", uploadID)
+
+	mpAssertS3Error(t, w, http.StatusBadRequest, "InvalidPartOrder")
+	if _, err := os.Stat(filepath.Join(bucketPath, "obj")); !os.IsNotExist(err) {
+		t.Errorf("object created despite out-of-order parts")
+	}
+}
+
+func TestCompleteMultipartUploadHandler_NoSuchUploadUnknownOrForeignID(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+
+	// Structurally valid but unknown id.
+	w := httptest.NewRecorder()
+	completeMultipartUploadHandler(w,
+		httptest.NewRequest(http.MethodPost, "/bkt/obj?uploadId=0123456789abcdef0123456789abcdef", mpCompleteBody(PartToUpload{PartNumber: 1, ETag: "x"})),
+		"bkt", "obj", "0123456789abcdef0123456789abcdef")
+	mpAssertS3Error(t, w, http.StatusNotFound, "NoSuchUpload")
+
+	// Valid session, wrong key.
+	uploadID := mpSeedUploadWithParts(t, bucketPath, "real-key", map[int]string{1: "a"})
+	body := mpCompleteBody(PartToUpload{PartNumber: 1, ETag: mpHashETag("a")})
+	w = httptest.NewRecorder()
+	completeMultipartUploadHandler(w, httptest.NewRequest(http.MethodPost, "/bkt/other-key?uploadId="+uploadID, body), "bkt", "other-key", uploadID)
+	mpAssertS3Error(t, w, http.StatusNotFound, "NoSuchUpload")
+}
+
+func TestCompleteMultipartUploadHandler_InvalidObjectKey(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	tmpBucket := mpTestBucket(t, dataDir, "bkt")
+	_ = tmpBucket
+
+	w := httptest.NewRecorder()
+	completeMultipartUploadHandler(w,
+		httptest.NewRequest(http.MethodPost, "/bkt/a/../b?uploadId=0123456789abcdef0123456789abcdef", mpCompleteBody(PartToUpload{PartNumber: 1, ETag: "x"})),
+		"bkt", "a/../b", "0123456789abcdef0123456789abcdef")
+	mpAssertS3Error(t, w, http.StatusBadRequest, "InvalidArgument")
+}
+
+// TestCompleteMultipartUploadHandler_MetaWriteFailureObjectNotVisible pins the
+// finalizeComplete failure ordering: when the final metadata write fails
+// (here: the .meta target is a non-empty directory, so the atomic rename
+// fails), the assembled temp file must NOT be renamed over the object path
+// and must be cleaned up — the object stays invisible and the session lives.
+func TestCompleteMultipartUploadHandler_MetaWriteFailureObjectNotVisible(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	key := "obj"
+	uploadID := mpSeedUploadWithParts(t, bucketPath, key, map[int]string{1: "part-one"})
+
+	// Block the final metadata write: .metadata/obj.meta as a non-empty dir
+	// makes writeFileAtomic's rename fail (file over non-empty dir).
+	metaPath := filepath.Join(bucketPath, ".metadata", key+".meta")
+	if err := os.MkdirAll(filepath.Join(metaPath, "inner"), 0755); err != nil {
+		t.Fatalf("seeding blocking meta dir: %v", err)
+	}
+
+	body := mpCompleteBody(PartToUpload{PartNumber: 1, ETag: mpHashETag("part-one")})
+	w := httptest.NewRecorder()
+	completeMultipartUploadHandler(w, httptest.NewRequest(http.MethodPost, "/bkt/"+key+"?uploadId="+uploadID, body), "bkt", key, uploadID)
+
+	mpAssertS3Error(t, w, http.StatusInternalServerError, "InternalError")
+
+	// The final object must NOT be visible.
+	if _, err := os.Stat(filepath.Join(bucketPath, key)); !os.IsNotExist(err) {
+		t.Errorf("object visible despite meta-write failure")
+	}
+	// No temp assembly file may be left behind.
+	leftovers, _ := filepath.Glob(filepath.Join(bucketPath, "*.tmp-*"))
+	if len(leftovers) != 0 {
+		t.Fatalf("temp assembly files left behind: %v", leftovers)
+	}
+	// The upload session must survive for a retry.
+	if _, err := os.Stat(filepath.Join(mpUploadsDir(bucketPath), uploadID+".json")); err != nil {
+		t.Errorf("session removed despite meta-write failure: %v", err)
+	}
+}
+
+// TestCompleteMultipartUploadHandler_MetaDirCreateFailureObjectNotVisible
+// pins the assembleCompletedObject MkdirAll failure branch: with the key's
+// metadata subdirectory blocked by a regular file, complete fails after
+// assembly and the object must not appear.
+func TestCompleteMultipartUploadHandler_MetaDirCreateFailureObjectNotVisible(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	key := "data/obj"
+	uploadID := mpSeedUploadWithParts(t, bucketPath, key, map[int]string{1: "part-one"})
+
+	// .metadata/data as a regular file → MkdirAll(.metadata/data) fails.
+	if err := os.WriteFile(filepath.Join(bucketPath, ".metadata", "data"), []byte("block"), 0644); err != nil {
+		t.Fatalf("seeding blocking meta path: %v", err)
+	}
+
+	body := mpCompleteBody(PartToUpload{PartNumber: 1, ETag: mpHashETag("part-one")})
+	w := httptest.NewRecorder()
+	completeMultipartUploadHandler(w, httptest.NewRequest(http.MethodPost, "/bkt/"+key+"?uploadId="+uploadID, body), "bkt", key, uploadID)
+
+	mpAssertS3Error(t, w, http.StatusInternalServerError, "InternalError")
+
+	if _, err := os.Stat(filepath.Join(bucketPath, key)); !os.IsNotExist(err) {
+		t.Errorf("object visible despite meta-dir failure")
+	}
+	leftovers, _ := filepath.Glob(filepath.Join(bucketPath, "data", "*.tmp-*"))
+	if len(leftovers) != 0 {
+		t.Fatalf("temp assembly files left behind: %v", leftovers)
+	}
+}
+
+// ---- Leaf 4.4: abort error paths ----
+
+func TestAbortMultipartUploadHandler_AlreadyAbortedIs404(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	uploadID := newTestUploadID(t)
+
+	mp := MultipartUpload{UploadID: uploadID, Key: "obj", Parts: make(map[int]PartMetadata)}
+	mp.Parts[1] = mpStorePart(t, bucketPath, uploadID, 1, "part-one")
+	mpWriteUploadMeta(t, bucketPath, uploadID, mp)
+
+	req := httptest.NewRequest(http.MethodDelete, "/bkt/obj?uploadId="+uploadID, nil)
+	w := httptest.NewRecorder()
+	abortMultipartUploadHandler(w, req, "bkt", "obj", uploadID)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("first abort status = %d, want 204", w.Code)
+	}
+
+	// Second abort: session gone → NoSuchUpload.
+	w = httptest.NewRecorder()
+	abortMultipartUploadHandler(w, req, "bkt", "obj", uploadID)
+	mpAssertS3Error(t, w, http.StatusNotFound, "NoSuchUpload")
+}
+
+// ---- Leaf 4.4: concurrent uploadPart lock path ----
+
+// TestUploadPartHandler_ConcurrentPartsSameSession drives concurrent
+// uploadPart calls for one session (different part numbers) — run under
+// -race this exercises the getMultipartLock read-modify-write path; both
+// parts must land in the session meta.
+func TestUploadPartHandler_ConcurrentPartsSameSession(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	uploadID := newTestUploadID(t)
+	mpWriteUploadMeta(t, bucketPath, uploadID, MultipartUpload{UploadID: uploadID, Key: "obj", Parts: make(map[int]PartMetadata)})
+
+	const workers = 8
+	codes := make([]int, workers)
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			content := fmt.Sprintf("part-%d-data", i)
+			w := mpCallUploadPart(t, "bkt", "obj", strconv.Itoa(i+1), uploadID, content, nil)
+			codes[i] = w.Code
+		}(i)
+	}
+	wg.Wait()
+
+	for i, c := range codes {
+		if c != http.StatusOK {
+			t.Fatalf("part %d status = %d, want 200", i+1, c)
+		}
+	}
+
+	mp := mpReadUploadMeta(t, bucketPath, uploadID)
+	if len(mp.Parts) != workers {
+		t.Fatalf("session Parts = %d entries, want %d (lost update?)", len(mp.Parts), workers)
+	}
+	for i := range workers {
+		content := fmt.Sprintf("part-%d-data", i)
+		pm, ok := mp.Parts[i+1]
+		if !ok {
+			t.Fatalf("part %d missing from session meta", i+1)
+		}
+		if pm.ETag != mpHashETag(content) {
+			t.Errorf("part %d ETag = %s, want %s", i+1, pm.ETag, mpHashETag(content))
+		}
+		if pm.Size != int64(len(content)) {
+			t.Errorf("part %d Size = %d, want %d", i+1, pm.Size, len(content))
+		}
+	}
 }
