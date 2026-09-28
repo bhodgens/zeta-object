@@ -83,7 +83,7 @@ W4: 4.10 + integration gate
 | 4.4 | COMPLETE | daf60a8 | multipart error matrix; key symbols +10-20pts |
 | 4.5 | COMPLETE | daf60a8 | copy/delete edges; deleteObjectHandler 100% |
 | 4.6 | COMPLETE | daf60a8 | rename-cleanup without euid skip; +race fix in actions_test |
-| 4.7 | PENDING | | |
-| 4.8 | PENDING | | |
-| 4.9 | PENDING | | |
+| 4.7 | COMPLETE | 28dfecd | 4 fuzz targets + make fuzz; 1 unreachable-domain crasher pinned |
+| 4.8 | COMPLETE | 28dfecd | 2 REAL races found and fixed (delete-vs-PUT prune, create-vs-delete bucket) |
+| 4.9 | COMPLETE | 28dfecd | 121 mutations, zero accepted |
 | 4.10 | PENDING | | |
