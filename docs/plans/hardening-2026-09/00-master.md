@@ -104,7 +104,7 @@ W6: 3.6, final gates
 | 2.1 | COMPLETE | 6d43ddb | split verified 60/60 identical; +staticcheck cleanups |
 | 2.2 | COMPLETE | 14574d8 | +orchestrator: getSigningKey region-for-service regression fixed w/ golden test |
 | 2.3 | COMPLETE | 14574d8 | storage.go frozen contract landed |
-| 2.4 | PENDING | | |
+| 2.4 | COMPLETE | 9ed81b2 | +orchestrator: uploadPart VerifyDecodedLength wiring; xmlns-constant pin test |
 | 2.5 | COMPLETE | 14574d8 | |
 | 2.6 | COMPLETE | 14574d8 | live smoke: TLS1.2 floor, SIGTERM clean, PORT wiring proven |
 | 2.7 | PENDING | | |
