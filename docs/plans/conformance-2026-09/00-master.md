@@ -44,5 +44,5 @@ docs/, coverage floor holds.
 
 | Leaf | Status | Commit | Notes |
 |---|---|---|---|
-| 5.1 | PENDING | | |
-| 5.2 | PENDING | | |
+| 5.1 | COMPLETE | ddb609e | 277 in-scope; 4 real bugs fixed; matrix+ratchet committed |
+| 5.2 | COMPLETE | 27524bc | boto3+mc 27/27 each; 155/155 e2e |
