@@ -1444,8 +1444,14 @@ func TestErrorXMLHeaderAndXMLNS(t *testing.T) {
 	if !strings.HasPrefix(body, xml.Header) {
 		t.Errorf("error response missing xml.Header prolog, got: %q", body[:min(len(body), 80)])
 	}
-	if !strings.Contains(body, `xmlns="http://s3.amazonaws.com/doc/2006-03-01/"`) {
-		t.Errorf("error response missing S3 xmlns, got: %s", body)
+	// Real S3 error documents carry NO xmlns: botocore's S3 error parser
+	// requires a bare <Error> root (leaf-3.6 e2e finding). All other
+	// response documents keep the namespace.
+	if strings.Contains(body, `xmlns=`) {
+		t.Errorf("error response must NOT carry xmlns (breaks botocore parsing), got: %s", body)
+	}
+	if !strings.Contains(body, "<Error>") {
+		t.Errorf("error response root must be bare <Error>, got: %s", body)
 	}
 }
 
@@ -1622,7 +1628,10 @@ func TestListObjectsV2_EncodingTypeURL(t *testing.T) {
 	}
 	foundKey := false
 	for _, obj := range result.Contents {
-		if obj.Key == "file+with+space%2Bplus.txt" {
+		// S3 encoding-type=url uses RFC 3986 unreserved encoding: space is
+		// %20 (never '+'), literal + is %2B, '/' stays literal (leaf-3.6
+		// e2e finding).
+		if obj.Key == "file%20with%20space%2Bplus.txt" {
 			foundKey = true
 		}
 		if obj.Key == "file with space+plus.txt" {
@@ -1630,13 +1639,13 @@ func TestListObjectsV2_EncodingTypeURL(t *testing.T) {
 		}
 	}
 	if !foundKey {
-		t.Errorf("expected URL-encoded key 'file+with+space%%2Bplus.txt' in Contents, got: %+v", result.Contents)
+		t.Errorf("expected URL-encoded key 'file%%20with%%20space%%2Bplus.txt' in Contents, got: %+v", result.Contents)
 	}
 	if len(result.CommonPrefixes) != 1 {
 		t.Fatalf("CommonPrefixes = %+v, want 1 entry", result.CommonPrefixes)
 	}
-	if result.CommonPrefixes[0].Prefix != "dir+with+space/" {
-		t.Errorf("CommonPrefix = %q, want %q", result.CommonPrefixes[0].Prefix, "dir+with+space/")
+	if result.CommonPrefixes[0].Prefix != "dir%20with%20space/" {
+		t.Errorf("CommonPrefix = %q, want %q", result.CommonPrefixes[0].Prefix, "dir%20with%20space/")
 	}
 }
 

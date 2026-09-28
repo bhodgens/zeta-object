@@ -690,7 +690,9 @@ func headObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 // encodes every byte except unreserved chars and "/", so a path stays a
 // path. (url.QueryEscape then restore "/" — leaf 2.4 fix 15.)
 func s3URLEncode(key string) string {
-	return strings.ReplaceAll(url.QueryEscape(key), "%2F", "/")
+	// S3 encoding-type=url encodes per RFC 3986 unreserved set: space is %20,
+	// never '+' (bug found by the leaf-3.6 e2e suite); '/' stays literal.
+	return strings.ReplaceAll(strings.ReplaceAll(url.QueryEscape(key), "+", "%20"), "%2F", "/")
 }
 
 // listObjectsV2Handler implementation
@@ -865,10 +867,20 @@ func listObjectsFromKeys(allObjectKeys []string, p listObjectsParams, bucketName
 	processedCount := 0
 	seenPrefixes := make(map[string]struct{})
 
-	// keyAtOrBeforeStart reports whether objectKey is excluded by the
-	// continuation/start-after cursor.
-	keyAtOrBeforeStart := func(objectKey string) bool {
-		return startKey != "" && objectKey <= startKey
+	// Cursor exclusion semantics differ per parameter (AWS behavior, leaf-3.6
+	// e2e finding):
+	//   - continuation-token: the token IS the first key of the next page, so
+	//     the boundary key must be LISTED — exclude strictly below it (<).
+	//   - start-after: exclusive marker — exclude everything at or below it
+	//     (<=), including the marker key itself.
+	keyExcluded := func(objectKey string) bool {
+		if startKey == "" {
+			return false
+		}
+		if p.continuationToken != "" {
+			return objectKey < p.continuationToken
+		}
+		return objectKey <= p.startAfter
 	}
 	// keyMatchesPrefix reports whether objectKey passes the prefix filter.
 	keyMatchesPrefix := func(objectKey string) bool {
@@ -876,7 +888,7 @@ func listObjectsFromKeys(allObjectKeys []string, p listObjectsParams, bucketName
 	}
 
 	for _, objectKey := range allObjectKeys {
-		if keyAtOrBeforeStart(objectKey) {
+		if keyExcluded(objectKey) {
 			continue
 		}
 		if !keyMatchesPrefix(objectKey) {

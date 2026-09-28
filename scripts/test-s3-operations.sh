@@ -1,4 +1,5 @@
 #!/bin/bash
+# Superseded by scripts/e2e/ — kept for reference.
 # Manual test script for mini-s3 server
 # This script tests basic S3 operations using AWS CLI
 #

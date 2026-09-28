@@ -11,7 +11,10 @@ import (
 
 // S3Error defines the structure for S3 compatible XML error responses
 type S3Error struct {
-	XMLName   xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ Error"`
+	// Real S3 error documents carry NO xmlns: botocore's error parser
+	// requires a bare <Error> root. Every other response document keeps the
+	// namespace (bug found by the leaf-3.6 e2e suite).
+	XMLName   xml.Name `xml:"Error"`
 	Code      string   `xml:"Code"`
 	Message   string   `xml:"Message"`
 	RequestID string   `xml:"RequestId,omitempty"` // Optional
