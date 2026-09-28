@@ -168,6 +168,48 @@ type ListMultipartUploadsResult struct {
 	Upload             []MultipartUploadEntry `xml:"Upload"`
 }
 
+// Leaf 3.5 — CopyObject / DeleteObjects XML documents
+
+// CopyObjectResult is the 200-response XML body for CopyObject (S3 quirk:
+// a 200 response with an XML body).
+type CopyObjectResult struct {
+	XMLName      xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ CopyObjectResult"`
+	ETag         string   `xml:"ETag"`         // quoted, e.g. "\"<md5hex>\""
+	LastModified string   `xml:"LastModified"` // S3 timestamp: 2006-01-02T15:04:05.000Z
+}
+
+// DeleteRequest is the request body for POST /bucket?delete.
+type DeleteRequest struct {
+	XMLName xml.Name           `xml:"Delete"`
+	Quiet   bool               `xml:"Quiet"`
+	Objects []DeleteRequestObj `xml:"Object"`
+}
+
+// DeleteRequestObj is a single <Object><Key>k</Key></Object> entry.
+type DeleteRequestObj struct {
+	Key string `xml:"Key"`
+}
+
+// DeletedEntry is a single <Deleted><Key>k</Key></Deleted> entry.
+type DeletedEntry struct {
+	Key string `xml:"Key"`
+}
+
+// DeleteErrorEntry is a single per-key <Error> entry in a DeleteResult.
+type DeleteErrorEntry struct {
+	Key     string `xml:"Key"`
+	Code    string `xml:"Code"`
+	Message string `xml:"Message,omitempty"`
+}
+
+// DeleteResult is the XML response for POST /bucket?delete. In Quiet mode
+// only Error entries appear (successful deletions are suppressed).
+type DeleteResult struct {
+	XMLName xml.Name           `xml:"http://s3.amazonaws.com/doc/2006-03-01/ DeleteResult"`
+	Deleted []DeletedEntry     `xml:"Deleted,omitempty"`
+	Error   []DeleteErrorEntry `xml:"Error,omitempty"`
+}
+
 // PartEntry is a single part in a ListPartsResult.
 type PartEntry struct {
 	PartNumber   int    `xml:"PartNumber"`

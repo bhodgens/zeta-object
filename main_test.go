@@ -616,7 +616,14 @@ func TestAuthUnknownStreamingHashRejected(t *testing.T) {
 }
 
 func TestAuthKnownStreamingHashAccepted(t *testing.T) {
-	for _, v := range []string{"STREAMING-UNSIGNED-PAYLOAD-TRAILER", streamingPayload} {
+	// STREAMING-UNSIGNED-PAYLOAD-TRAILER: framing is decoded but chunk
+	// signatures are not verified — a plain (unframed is fine for this
+	// decode path) body is accepted.
+	// STREAMING-AWS4-HMAC-SHA256-PAYLOAD: leaf 3.4 verifies the chunk
+	// signature chain, so a plain unframed body is now REJECTED (403) —
+	// that behavior is pinned by TestDecodeAndVerifyChunked_AWSGoldenVectors
+	// and the handler wiring tests in sigv4_chunked_test.go.
+	for _, v := range []string{"STREAMING-UNSIGNED-PAYLOAD-TRAILER"} {
 		req, _ := buildSignedRequest(t, map[string]string{"payloadHash": v})
 		if got := runAuth(req); got != http.StatusOK {
 			t.Errorf("known streaming hash %s: got status %d, want 200", v, got)

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -36,6 +37,33 @@ var canonicalWSRegex = regexp.MustCompile(`\s+`)
 var streamingPayloadAllowlist = map[string]bool{
 	"STREAMING-UNSIGNED-PAYLOAD-TRAILER": true,
 	"STREAMING-AWS4-HMAC-SHA256-PAYLOAD": true,
+}
+
+// Leaf 3.4: the x-amz-content-sha256 constant selecting signed chunked
+// streaming (chunk-signature chain verified), and the chunk string-to-sign
+// algorithm prefix from the AWS SigV4 streaming spec.
+const (
+	streamingSignedPayload = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
+	chunkSigAlgorithm      = "AWS4-HMAC-SHA256-PAYLOAD"
+)
+
+// decodedStreamingContextKey is the request-context key marking a body that
+// authenticateRequest already decoded (and, for the signed variant,
+// signature-verified) so handlers skip their own aws-chunked decode pass.
+type decodedStreamingContextKey struct{}
+
+// withDecodedStreaming marks a request context as carrying an already-decoded
+// aws-chunked body.
+func withDecodedStreaming(ctx context.Context) context.Context {
+	return context.WithValue(ctx, decodedStreamingContextKey{}, true)
+}
+
+// isDecodedStreaming reports whether the request context was marked by
+// withDecodedStreaming (body already decoded — and for
+// STREAMING-AWS4-HMAC-SHA256-PAYLOAD, signature-verified — during auth).
+func isDecodedStreaming(ctx context.Context) bool {
+	v, _ := ctx.Value(decodedStreamingContextKey{}).(bool)
+	return v
 }
 
 // debugAuthEnabled reports whether verbose auth debugging is on (fix 9).
@@ -106,6 +134,114 @@ func decodeAWSChunked(body []byte) ([]byte, error) {
 		result.Write(chunkData)
 
 		// Read the trailing \r\n after chunk data
+		if _, err := reader.ReadString('\n'); err == io.EOF {
+			return nil, fmt.Errorf("truncated aws-chunked body: EOF after chunk data")
+		}
+	}
+
+	return result.Bytes(), nil
+}
+
+// emptyPayloadSHA256 is the well-known hex(sha256("")) used as the fourth
+// line of every chunk string-to-sign per the AWS SigV4 streaming spec.
+const emptyPayloadSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+// decodeAndVerifyChunked decodes an aws-chunked body and verifies the
+// SigV4 chunk-signature chain (leaf 3.4).
+//
+// Framing: `<hex-size>;chunk-signature=<64hex>\r\n<data>\r\n` repeated, ending
+// with a final zero-size chunk `0;chunk-signature=<64hex>\r\n` (trailers may
+// follow). seedSignature is the signature of the header request (the
+// Authorization header signature); chunk signatures chain from it.
+//
+// Per-chunk string-to-sign (verified against the AWS "Transferring payload in
+// multiple chunks" example vectors):
+//
+//	AWS4-HMAC-SHA256-PAYLOAD\n
+//	<timestamp>\n
+//	<scope>\n
+//	<prev-sig>\n
+//	<hex(sha256(""))>\n
+//	<hex(sha256(chunk-data))>
+//
+// i.e. SIX newline-separated lines with NO empty line (the leaf plan sketched
+// an empty line between prev-sig and the empty-hash; the AWS spec and its
+// published golden vectors have none — AWS wins, deviation noted in the leaf
+// report). Each chunk signature is compared constant-time via hmac.Equal on
+// the raw HMAC bytes.
+//
+// Errors on: any chunk signature mismatch, a missing/malformed chunk
+// signature field, a truncated stream (no final zero-size chunk), or corrupt
+// framing. The caller checks the size sum against x-amz-decoded-content-length
+// via VerifyDecodedLength.
+func decodeAndVerifyChunked(body []byte, seedSignature string, signingKey []byte, timestamp string, scope string) ([]byte, error) {
+	var result bytes.Buffer
+	reader := bufio.NewReader(bytes.NewReader(body))
+
+	prevSig := seedSignature
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil, fmt.Errorf("truncated aws-chunked body: EOF before final zero-size chunk")
+			}
+			return nil, fmt.Errorf("error reading chunk header: %w", err)
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			continue
+		}
+
+		// Parse "<hex-size>;chunk-signature=<64hex>".
+		parts := strings.SplitN(line, ";", 2)
+		sizeStr := strings.TrimSpace(parts[0])
+		chunkSize, err := strconv.ParseInt(sizeStr, 16, 64)
+		if err != nil {
+			return nil, fmt.Errorf("corrupt aws-chunked body: invalid chunk size %q", sizeStr)
+		}
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("corrupt aws-chunked body: missing chunk-signature field")
+		}
+		sigParts := strings.SplitN(strings.TrimSpace(parts[1]), "=", 2)
+		if len(sigParts) != 2 || strings.TrimSpace(sigParts[0]) != "chunk-signature" {
+			return nil, fmt.Errorf("corrupt aws-chunked body: malformed chunk-signature field %q", sizeStr) //nolint:gosec // G706: constant prefix + size string
+		}
+		chunkSig := strings.TrimSpace(sigParts[1])
+		if !isLowercaseHex64(chunkSig) {
+			return nil, fmt.Errorf("corrupt aws-chunked body: chunk signature is not 64 lowercase hex chars")
+		}
+
+		// Read the chunk data.
+		chunkData := make([]byte, chunkSize)
+		if _, err := io.ReadFull(reader, chunkData); err != nil {
+			return nil, fmt.Errorf("truncated aws-chunked body: error reading chunk data: %w", err)
+		}
+
+		// Verify this chunk's signature BEFORE accepting its data.
+		stringToSign := strings.Join([]string{
+			chunkSigAlgorithm,
+			timestamp,
+			scope,
+			prevSig,
+			emptyPayloadSHA256,
+			hashSHA256(chunkData),
+		}, "\n")
+		expected := hmacSHA256(signingKey, stringToSign)
+		provided, err := hex.DecodeString(chunkSig)
+		if err != nil || !hmac.Equal(expected, provided) {
+			return nil, fmt.Errorf("chunk signature mismatch at offset %d", result.Len())
+		}
+		prevSig = chunkSig
+
+		if chunkSize == 0 {
+			// Final chunk verified; trailers may follow — we are done.
+			break
+		}
+
+		result.Write(chunkData)
+
+		// Consume the trailing \r\n after the chunk data.
 		if _, err := reader.ReadString('\n'); err == io.EOF {
 			return nil, fmt.Errorf("truncated aws-chunked body: EOF after chunk data")
 		}
@@ -262,7 +398,7 @@ func getPayloadHash(r *http.Request) (string, []byte, error) {
 		return unsignedPayload, nil, nil
 	}
 	// Fix 6: accept ONLY the known STREAMING-* constants; anything else
-	// STREAMING-* is rejected. (Full chunk-signature verification is leaf 3.4.)
+	// STREAMING-* is rejected.
 	if strings.HasPrefix(xAmzContentSHA256, "STREAMING-") {
 		if !streamingPayloadAllowlist[xAmzContentSHA256] {
 			return "", nil, fmt.Errorf("unsupported streaming payload hash %q", xAmzContentSHA256)
@@ -433,6 +569,40 @@ func authenticateRequest(w http.ResponseWriter, r *http.Request) bool {
 		}
 		writeS3Error(w, "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.", http.StatusForbidden)
 		return false
+	}
+
+	// Leaf 3.4: for signed chunked streaming the header signature is the seed
+	// of the chunk-signature chain — verify every chunk now, while the seed,
+	// signing key, timestamp and scope are in scope. On success the request
+	// body is replaced with the decoded bytes and the context is flagged so
+	// handlers skip their own aws-chunked decode pass.
+	if payloadHash == streamingSignedPayload {
+		bodyBytes, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			log.Printf("Authentication Error: failed to read streaming body: %v", readErr)
+			writeS3Error(w, "InvalidArgument", "Error reading request body.", http.StatusBadRequest)
+			return false
+		}
+		decoded, verifyErr := decodeAndVerifyChunked(bodyBytes, serverSignature, signingKey,
+			requestTimestamp.UTC().Format(iso8601Format), credentialScope)
+		if verifyErr != nil {
+			log.Printf("Authentication Error: chunk signature verification failed: %v", verifyErr)
+			writeS3Error(w, "SignatureDoesNotMatch", "Chunk signature verification failed.", http.StatusForbidden)
+			return false
+		}
+		// Leaf 2.2 helper: decoded size must match x-amz-decoded-content-length.
+		if lenErr := VerifyDecodedLength(r.Header.Get("x-amz-decoded-content-length"), len(decoded)); lenErr != nil {
+			log.Printf("Authentication Error: %v", lenErr)
+			writeS3Error(w, "InvalidArgument", "Decoded content length mismatch.", http.StatusBadRequest)
+			return false
+		}
+		r.Body = io.NopCloser(bytes.NewBuffer(decoded))
+		// authenticateRequest receives *http.Request by value; write the
+		// context-flagged request back in place so rootHandler's copy (and
+		// therefore the object/multipart handlers) sees the flag too — same
+		// in-place pattern as the r.Body replacement above.
+		newReq := r.WithContext(withDecodedStreaming(r.Context()))
+		*r = *newReq
 	}
 
 	log.Println("Authentication Successful: SigV4 signature verified.")

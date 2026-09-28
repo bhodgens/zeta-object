@@ -4,9 +4,11 @@ import (
 	"crypto/md5" //nolint:gosec // G501: MD5 is the S3 ETag algorithm — protocol requirement, not crypto.
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +22,12 @@ import (
 // object_handlers.go — S3 object-level operation handlers
 
 func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
+	// Leaf 3.5: x-amz-copy-source header → CopyObject (server-side copy).
+	if r.Header.Get("x-amz-copy-source") != "" {
+		copyObjectHandler(w, r, bucketName, objectName)
+		return
+	}
+
 	bucketPath := getBucketPath(bucketName)
 	// Object data is stored directly in the bucket directory
 	objectDataPath := filepath.Join(bucketPath, objectName)
@@ -50,9 +58,11 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	}
 	defer r.Body.Close()
 
-	// Handle aws-chunked Content-Encoding (used by AWS CLI v2)
+	// Handle aws-chunked Content-Encoding (used by AWS CLI v2). Signed
+	// streaming bodies were already decoded + signature-verified in
+	// authenticateRequest (leaf 3.4) — skip the second decode pass then.
 	contentEncoding := r.Header.Get("Content-Encoding")
-	if strings.Contains(contentEncoding, "aws-chunked") {
+	if strings.Contains(contentEncoding, "aws-chunked") && !isDecodedStreaming(r.Context()) {
 		decodedBody, err := decodeAWSChunked(body)
 		if err != nil {
 			log.Printf("Error decoding aws-chunked body for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), err)
@@ -502,8 +512,6 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 
 func deleteObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
 	bucketPath := getBucketPath(bucketName)
-	objectMetadataPath := filepath.Join(bucketPath, ".metadata", objectName+".meta")
-	objectDataPath := filepath.Join(bucketPath, objectName)
 
 	// Leaf 2.4 fix 3: a missing bucket is a real 404 (missing KEY in an
 	// existing bucket still stays 204 per S3 semantics).
@@ -512,6 +520,23 @@ func deleteObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, obj
 		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return
 	}
+
+	if err := deleteObjectCore(bucketPath, bucketName, objectName); err != nil {
+		log.Printf("Error deleting object %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), err)
+		writeS3Error(w, "InternalError", "Error deleting object data.", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent) // S3 spec: 204 No Content
+}
+
+// deleteObjectCore is the shared deletion logic for DeleteObject (single,
+// leaf 2.4) and DeleteObjects (batch, leaf 3.5). The bucket's existence must
+// be checked by the caller. A missing key deletes nothing and succeeds (S3
+// semantics). Returns an error only on real I/O failure of the data file.
+func deleteObjectCore(bucketPath, bucketName, objectName string) error {
+	objectMetadataPath := filepath.Join(bucketPath, ".metadata", objectName+".meta")
+	objectDataPath := filepath.Join(bucketPath, objectName)
 
 	// Try to read metadata to get actual storage path
 	var actualDataPath string
@@ -532,8 +557,7 @@ func deleteObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, obj
 	if err := os.Remove(actualDataPath); err != nil { //nolint:gosec // G703: actualDataPath derived from validated objectName; no traversal possible.
 		if !os.IsNotExist(err) {
 			log.Printf("Error deleting object data file %s: %v", strconv.Quote(actualDataPath), err)
-			writeS3Error(w, "InternalError", "Error deleting object data.", http.StatusInternalServerError)
-			return
+			return fmt.Errorf("deleting object data %s: %w", actualDataPath, err)
 		}
 	} else {
 		dataDeleted = true
@@ -569,7 +593,7 @@ func deleteObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, obj
 		log.Printf("Object %s/%s did not exist for deletion", strconv.Quote(bucketName), strconv.Quote(objectName))
 	}
 
-	w.WriteHeader(http.StatusNoContent) // S3 spec: 204 No Content
+	return nil
 }
 
 func headObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
@@ -975,4 +999,281 @@ func cleanupEmptyDirs(dir, stopAt string) {
 		}
 		dir = filepath.Dir(dir)
 	}
+}
+
+// Leaf 3.5 — CopyObject + DeleteObjects (batch)
+
+// maxBatchDeleteKeys is the S3 cap on the number of keys per DeleteObjects
+// request; more than this is MalformedXML.
+const maxBatchDeleteKeys = 1000
+
+// parseCopySource parses an x-amz-copy-source header value of the form
+// "bucket/key" or "/bucket/key", optionally with a "?versionId=..." suffix.
+// Returns the source bucket, source key, and whether a versionId suffix was
+// present (rejected with 501 by the caller — no versioning here).
+func parseCopySource(copySource string) (srcBucket, srcKey string, hasVersionID bool) {
+	if q := strings.IndexRune(copySource, '?'); q != -1 {
+		if strings.Contains(copySource[q:], "versionId=") {
+			hasVersionID = true
+		}
+		copySource = copySource[:q]
+	}
+	copySource = strings.TrimPrefix(copySource, "/")
+	srcBucket, srcKey, _ = strings.Cut(copySource, "/")
+	return srcBucket, srcKey, hasVersionID
+}
+
+// buildCopyMetadata constructs the destination ObjectMetadata for a copy.
+// COPY (default) preserves the source Content-Type and x-amz-meta-*;
+// REPLACE takes Content-Type and x-amz-meta-* from the request headers.
+func buildCopyMetadata(srcMeta *ObjectMetadata, r *http.Request, data []byte, eTag, dstDataPath string) ObjectMetadata {
+	meta := ObjectMetadata{
+		ContentLength:  int64(len(data)),
+		ETag:           eTag,
+		CustomMetadata: make(map[string]string),
+		LastModified:   time.Now().UTC(),
+		StoragePath:    dstDataPath,
+	}
+	directive := r.Header.Get("x-amz-metadata-directive")
+	if directive == "" {
+		directive = "COPY"
+	}
+	switch directive {
+	case "REPLACE":
+		meta.ContentType = r.Header.Get("Content-Type")
+		for headerName, headerValues := range r.Header {
+			if strings.HasPrefix(strings.ToLower(headerName), "x-amz-meta-") {
+				meta.CustomMetadata[headerName] = strings.Join(headerValues, ", ")
+			}
+		}
+	default: // COPY
+		meta.ContentType = srcMeta.ContentType
+		maps.Copy(meta.CustomMetadata, srcMeta.CustomMetadata)
+	}
+	return meta
+}
+
+// copyObjectHandler implements CopyObject: a PUT with x-amz-copy-source.
+// The object data is copied server-side (source data + meta read, then
+// written to the destination via the storage.go atomic helpers), and the
+// response is the S3 quirk 200-with-XML-body CopyObjectResult.
+func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
+	if err := validateObjectKey(objectName); err != nil {
+		log.Printf("Invalid object key %s for CopyObject: %v", strconv.Quote(objectName), err)
+		writeS3Error(w, "InvalidArgument", err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	copySource := r.Header.Get("x-amz-copy-source")
+	decoded, err := url.PathUnescape(copySource)
+	if err != nil {
+		log.Printf("Invalid x-amz-copy-source header %s: %v", strconv.Quote(copySource), err)
+		writeS3Error(w, "InvalidArgument", "Invalid x-amz-copy-source header.", http.StatusBadRequest)
+		return
+	}
+	srcBucket, srcKey, hasVersionID := parseCopySource(decoded)
+	if hasVersionID {
+		log.Printf("CopyObject with versionId not supported (source %s)", strconv.Quote(decoded))
+		writeS3Error(w, "NotImplemented", "Copy from a specific version is not implemented.", http.StatusNotImplemented)
+		return
+	}
+	if srcBucket == "" || srcKey == "" {
+		log.Printf("Invalid x-amz-copy-source header %s: expected bucket/key", strconv.Quote(decoded))
+		writeS3Error(w, "InvalidArgument", "x-amz-copy-source must be of the form bucket/key.", http.StatusBadRequest)
+		return
+	}
+	if err := validateObjectKey(srcKey); err != nil {
+		log.Printf("Invalid source key %s for CopyObject: %v", strconv.Quote(srcKey), err)
+		writeS3Error(w, "InvalidArgument", err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// S3 rejects a copy where source and destination are the same object
+	// (without a directive changing the copy semantics).
+	if srcBucket == bucketName && srcKey == objectName {
+		log.Printf("CopyObject source and destination are identical: %s/%s", strconv.Quote(bucketName), strconv.Quote(objectName))
+		writeS3Error(w, "InvalidRequest", "This copy request is illegal because it is trying to copy an object to itself.", http.StatusBadRequest)
+		return
+	}
+
+	// Metadata directive: COPY (default) preserves the source metadata;
+	// REPLACE uses the request headers. Anything else is InvalidArgument.
+	directive := r.Header.Get("x-amz-metadata-directive")
+	if directive == "" {
+		directive = "COPY"
+	}
+	switch directive {
+	case "COPY", "REPLACE":
+	default:
+		log.Printf("Invalid x-amz-metadata-directive %s for CopyObject", strconv.Quote(directive))
+		writeS3Error(w, "InvalidArgument", "Unknown metadata directive.", http.StatusBadRequest)
+		return
+	}
+
+	srcBucketPath := getBucketPath(srcBucket)
+	if _, err := os.Stat(srcBucketPath); os.IsNotExist(err) {
+		log.Printf("Source bucket %s does not exist for CopyObject", strconv.Quote(srcBucket))
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
+		return
+	}
+
+	srcMetaPath := filepath.Join(srcBucketPath, ".metadata", srcKey+".meta")
+	srcMetaJSON, err := os.ReadFile(srcMetaPath) //nolint:gosec // G703: srcKey validated by validateObjectKey; no traversal possible.
+	if os.IsNotExist(err) {
+		log.Printf("Source object %s/%s does not exist for CopyObject", strconv.Quote(srcBucket), strconv.Quote(srcKey))
+		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("Error reading source metadata %s: %v", strconv.Quote(srcMetaPath), err)
+		writeS3Error(w, "InternalError", "Error reading source object metadata.", http.StatusInternalServerError)
+		return
+	}
+	var srcMeta ObjectMetadata
+	if err := json.Unmarshal(srcMetaJSON, &srcMeta); err != nil {
+		log.Printf("Error parsing source metadata %s: %v", strconv.Quote(srcMetaPath), err)
+		writeS3Error(w, "InternalError", "Error parsing source object metadata.", http.StatusInternalServerError)
+		return
+	}
+	srcDataPath := resolveObjectDataPath(srcBucketPath, srcKey, &srcMeta)
+
+	// Read the source data. Lock both source and destination so a concurrent
+	// writer cannot tear the copy.
+	srcUnlock := lockObject(srcDataPath)
+	defer srcUnlock()
+
+	data, err := os.ReadFile(srcDataPath) //nolint:gosec // G703: srcDataPath derived from validated srcKey; no traversal possible.
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Printf("Source object data %s does not exist for CopyObject", strconv.Quote(srcDataPath))
+			writeS3Error(w, "NoSuchKey", "The specified key does not exist.", http.StatusNotFound)
+			return
+		}
+		log.Printf("Error reading source object data %s: %v", strconv.Quote(srcDataPath), err)
+		writeS3Error(w, "InternalError", "Error reading source object data.", http.StatusInternalServerError)
+		return
+	}
+
+	// S3 computes a fresh ETag for the new object.
+	hash := md5.Sum(data) //nolint:gosec // G401: S3 ETags are defined as MD5; protocol requirement, not crypto.
+	eTag := hex.EncodeToString(hash[:])
+
+	dstBucketPath := getBucketPath(bucketName)
+	dstDataPath := filepath.Join(dstBucketPath, objectName)
+	dstMetaPath := filepath.Join(dstBucketPath, ".metadata", objectName+".meta")
+
+	dstUnlock := lockObject(dstDataPath)
+	defer dstUnlock()
+
+	if err := os.MkdirAll(filepath.Dir(dstDataPath), 0755); err != nil { //nolint:gosec // G703: objectName validated by validateObjectKey; no traversal possible.
+		log.Printf("Error creating destination directories for %s: %v", strconv.Quote(dstDataPath), err)
+		writeS3Error(w, "InternalError", "Error creating object storage.", http.StatusInternalServerError)
+		return
+	}
+	if err := writeFileAtomic(dstDataPath, data, 0644); err != nil { //nolint:gosec // G703: objectName validated by validateObjectKey; no traversal possible.
+		log.Printf("Error writing destination object data %s: %v", strconv.Quote(dstDataPath), err)
+		writeS3Error(w, "InternalError", "Error writing object data.", http.StatusInternalServerError)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(dstMetaPath), 0755); err != nil { //nolint:gosec // G703: objectName validated by validateObjectKey; no traversal possible.
+		log.Printf("Error creating destination metadata storage for %s: %v", strconv.Quote(dstMetaPath), err)
+		writeS3Error(w, "InternalError", "Error creating metadata storage.", http.StatusInternalServerError)
+		return
+	}
+
+	// Build the destination metadata per the directive.
+	meta := buildCopyMetadata(&srcMeta, r, data, eTag, dstDataPath)
+
+	if err := writeFileAtomicJSON(dstMetaPath, meta, 0644); err != nil {
+		log.Printf("Error writing destination metadata %s: %v", strconv.Quote(dstMetaPath), err)
+		writeS3Error(w, "InternalError", "Error writing metadata.", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Successfully copied %s/%s to %s/%s, ETag: %s",
+		strconv.Quote(srcBucket), strconv.Quote(srcKey), strconv.Quote(bucketName), strconv.Quote(objectName), eTag)
+
+	// S3 quirk: a 200 response with an XML body.
+	writeXML(w, http.StatusOK, CopyObjectResult{
+		ETag:         fmt.Sprintf("%q", eTag),
+		LastModified: meta.LastModified.UTC().Format("2006-01-02T15:04:05.000Z"),
+	})
+
+	// Trigger after_upload actions for the new object.
+	go triggerActions("after_upload", ActionContext{
+		FilePath:     dstDataPath,
+		MetadataPath: dstMetaPath,
+		BucketName:   bucketName,
+		BucketPath:   dstBucketPath,
+		ObjectKey:    objectName,
+		ContentType:  meta.ContentType,
+		ETag:         eTag,
+		Size:         meta.ContentLength,
+	})
+}
+
+// deleteObjectsHandler implements DeleteObjects (POST /bucket?delete): batch
+// deletion of up to 1000 keys with a DeleteResult XML response. In Quiet
+// mode only errors are reported.
+func deleteObjectsHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
+	bucketPath := getBucketPath(bucketName)
+	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
+		log.Printf("Bucket %s does not exist for DeleteObjects", strconv.Quote(bucketName))
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("Error reading DeleteObjects body for bucket %s: %v", strconv.Quote(bucketName), err)
+		writeS3Error(w, "InternalError", "Error reading request body.", http.StatusInternalServerError)
+		return
+	}
+	defer r.Body.Close()
+
+	var req DeleteRequest
+	if err := xml.Unmarshal(body, &req); err != nil {
+		log.Printf("MalformedXML in DeleteObjects request for bucket %s: %v", strconv.Quote(bucketName), err)
+		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed or did not validate against our published schema.", http.StatusBadRequest)
+		return
+	}
+	// S3 rule: empty key list or more than 1000 keys is MalformedXML.
+	if len(req.Objects) == 0 || len(req.Objects) > maxBatchDeleteKeys {
+		log.Printf("DeleteObjects for bucket %s: invalid object count %d", strconv.Quote(bucketName), len(req.Objects))
+		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed or did not validate against our published schema.", http.StatusBadRequest)
+		return
+	}
+
+	result := DeleteResult{}
+	for _, obj := range req.Objects {
+		if err := validateObjectKey(obj.Key); err != nil {
+			log.Printf("Invalid key %s in DeleteObjects for bucket %s: %v", strconv.Quote(obj.Key), strconv.Quote(bucketName), err)
+			result.Error = append(result.Error, DeleteErrorEntry{
+				Key:     obj.Key,
+				Code:    "InvalidArgument",
+				Message: err.Error(),
+			})
+			continue
+		}
+		if err := deleteObjectCore(bucketPath, bucketName, obj.Key); err != nil {
+			log.Printf("Error deleting %s/%s in DeleteObjects: %v", strconv.Quote(bucketName), strconv.Quote(obj.Key), err)
+			result.Error = append(result.Error, DeleteErrorEntry{
+				Key:     obj.Key,
+				Code:    "InternalError",
+				Message: "Error deleting object data.",
+			})
+			continue
+		}
+		// S3 semantics: a missing key still reports Deleted.
+		result.Deleted = append(result.Deleted, DeletedEntry(obj))
+	}
+
+	if req.Quiet {
+		// Quiet mode: successful deletions are suppressed, errors only.
+		result.Deleted = nil
+	}
+
+	writeXML(w, http.StatusOK, result)
+	log.Printf("Successfully served DeleteObjects for bucket %s (%d keys, quiet=%t)",
+		strconv.Quote(bucketName), len(req.Objects), req.Quiet)
 }

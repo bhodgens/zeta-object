@@ -224,9 +224,11 @@ func uploadPartHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 	}
 	defer r.Body.Close()
 
-	// Handle aws-chunked Content-Encoding (used by AWS CLI v2)
+	// Handle aws-chunked Content-Encoding (used by AWS CLI v2). Signed
+	// streaming bodies were already decoded + signature-verified in
+	// authenticateRequest (leaf 3.4) — skip the second decode pass then.
 	contentEncoding := r.Header.Get("Content-Encoding")
-	if strings.Contains(contentEncoding, "aws-chunked") {
+	if strings.Contains(contentEncoding, "aws-chunked") && !isDecodedStreaming(r.Context()) {
 		decodedBody, decodeErr := decodeAWSChunked(body)
 		if decodeErr != nil {
 			//nolint:gosec // G706 false positive: sanitized via strconv.Quote.

@@ -190,6 +190,11 @@ func bucketLevelDispatch(w http.ResponseWriter, r *http.Request, bucketName stri
 		listMultipartUploadsHandler(w, r, bucketName)
 		return
 	}
+	// Leaf 3.5: DeleteObjects sub-resource (POST /bucket?delete)
+	if _, ok := r.URL.Query()["delete"]; ok && r.Method == "POST" {
+		deleteObjectsHandler(w, r, bucketName)
+		return
+	}
 
 	switch r.Method {
 	case "PUT":
