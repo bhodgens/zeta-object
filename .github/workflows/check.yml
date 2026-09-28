@@ -1,0 +1,66 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Mirrors `make check` stage by stage so a CI failure names the same
+      # stage a local run would.
+      - name: Build + vet
+        run: |
+          go build ./...
+          go vet ./...
+
+      - name: Lint (golangci-lint)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          args: ./...
+
+      - name: Test + race + coverage floor
+        run: |
+          go test ./... -count=1 -coverprofile=coverage.out
+          go test -race -count=1 ./...
+          go tool cover -func=coverage.out | tee /dev/stderr | awk '/^total:/ {gsub(/%/,"",$3); if ($3+0 < 70) {print "coverage " $3 "% below floor 70"; exit 1}}'
+
+      - name: Module tidiness + vulnerabilities
+        run: |
+          go mod verify
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Secrets (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # The e2e suite drives the real AWS CLI.
+      - name: Install AWS CLI v2
+        run: |
+          curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          sudo /tmp/aws/install --update
+          aws --version
+
+      - name: E2E suite
+        run: make e2e

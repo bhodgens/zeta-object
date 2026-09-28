@@ -1,0 +1,47 @@
+name: fuzz
+
+on:
+  # Nightly fuzzing: fuzzing is a time-budget tool, not a per-push gate.
+  # Crashers open a failing run; corpus growth is committed by hand.
+  schedule:
+    - cron: "0 7 * * *"   # 07:00 UTC daily
+  workflow_dispatch: {}   # manual runs
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Seeds run as unit tests first: catches corpus regressions before
+      # spending fuzz time.
+      - name: Fuzz seed corpus (unit mode)
+        run: go test -run 'Fuzz' -count=1 ./...
+
+      - name: Fuzz stripJSON5Comments
+        run: go test -fuzz=FuzzStripJSON5Comments -fuzztime=2m .
+      - name: Fuzz parseRangeHeader
+        run: go test -fuzz=FuzzParseRangeHeader -fuzztime=2m .
+      - name: Fuzz matchPathGlob
+        run: go test -fuzz=FuzzMatchPathGlob -fuzztime=2m .
+      - name: Fuzz parseCopySource
+        run: go test -fuzz=FuzzParseCopySource -fuzztime=2m .
+
+      # A failing fuzz run leaves the crashing input under
+      # testdata/fuzz/<Target>/<hash>. Upload it as an artifact so the input
+      # survives the runner teardown and can be committed as a regression seed.
+      - name: Collect crashers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashers
+          path: testdata/fuzz/
+          if-no-files-found: ignore
