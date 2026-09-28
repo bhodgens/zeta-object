@@ -84,7 +84,9 @@ trap cleanup EXIT
 # shellcheck source=lib.sh
 source "$E2E_ROOT/lib.sh"
 
-ENDPOINT="https://localhost:$FREE_PORT"
+# 127.0.0.1, not localhost: mc resolves localhost to ::1 first and never
+# falls back to IPv4, while the server may bind v4-only (leaf 5.2 finding).
+ENDPOINT="https://127.0.0.1:$FREE_PORT"
 BASE_URL="$ENDPOINT"
 # The host shell may carry AWS_PROFILE / AWS_REGION (e.g. a production
 # profile); those override the exported credentials in the aws CLI
@@ -108,9 +110,50 @@ CASE_RESULTS=()   # "name:PASS:FAIL"
 CASE_NAMES=()
 # Run each case in a nested bash so variable leakage cannot cross cases,
 # then fold its counters back via the tally file it writes.
+# launch_server — (re)start the suite server on a fresh free port; updates
+# ENDPOINT/BASE_URL/config in place. Needed because case 11's graceful-
+# shutdown proof SIGTERMs the server BY DESIGN ("must run LAST") — with the
+# leaf-5.2 interop cases 12/13 sorted after it, the harness must be able to
+# bring a server back for the remaining cases.
+launch_server() {
+	FREE_PORT=$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)
+	cat > "$WORK/config.json" <<EOF
+{
+  "dataDir": "$E2E_DATA_DIR",
+  "listenAddr": "127.0.0.1:$FREE_PORT",
+  "certFile": "$WORK/cert.pem",
+  "keyFile": "$WORK/key.pem"
+}
+EOF
+	MINIS3_CONFIG="$WORK/config.json" ./mini-s3-server >>"$WORK/server.log" 2>&1 &
+	SERVER_PID=$!
+	E2E_SERVER_PID="$SERVER_PID"
+	# 127.0.0.1, not localhost: mc resolves localhost to ::1 first and never
+	# falls back to IPv4, while the server binds v4 (leaf 5.2 finding).
+	ENDPOINT="https://127.0.0.1:$FREE_PORT"
+	BASE_URL="$ENDPOINT"
+	export E2E_SERVER_PID E2E_ENDPOINT="$ENDPOINT"
+	wait_for_port 127.0.0.1 "$FREE_PORT" 15 || {
+		echo 'FATAL: relaunched server did not start listening'
+		exit 1
+	}
+}
+
 for case_file in "$E2E_ROOT"/cases/*.sh; do
 	[ -e "$case_file" ] || { echo 'FATAL: no cases found'; exit 1; }
 	name=$(basename "$case_file" .sh)
+	# A previous case may have shut the server down by design (case 11).
+	if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+		echo '  (server down — relaunching for remaining cases)'
+		launch_server
+	fi
 	echo
 	echo "== case $name =="
 	if bash -c "
