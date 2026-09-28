@@ -27,11 +27,13 @@
       // escaping), so values cannot break out of quoting or inject
       // commands. Reference variables UNQUOTED in your command; wrapping
       // them in your own quotes ("$OBJECT_KEY") adds literal quote
-      // characters to the argument — harmless but usually not intended.
+      // characters to the argument - harmless but usually not intended.
       "command": "/usr/local/bin/generate-thumbnail.sh $FILE_PATH $BUCKET_PATH/.thumbs/",
       // Run asynchronously (non-blocking). Default: true
       "async": true,
-      // Timeout in seconds (0 or omitted = 30s default)
+      // Timeout in seconds (0 or omitted = 30s default). On timeout the
+      // whole process group is killed. Captured output is truncated at
+      // 1MB per stream.
       "timeout": 60,
       // Enable/disable this action. Default: true
       "enabled": true
