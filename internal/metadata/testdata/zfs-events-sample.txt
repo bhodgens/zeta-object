@@ -1,0 +1,12 @@
+[{"txg":1201,"object":256,"op":"CREATE","name":"report.pdf"},
+{"txg":1205,"object":256,"op":"SETATTR","name":"report.pdf"},
+{"txg":1240,"object":256,"op":"TRUNCATE","name":"report.pdf","old_size":1024,"new_size":2048},
+{"txg":1244,"object":260,"op":"CREATE","name":"notes.txt"},
+{"txg":1247,"object":260,"op":"LINK","name":"notes-hardlink.txt","parent":2},
+{"txg":1251,"object":300,"op":"RENAME","name":"new.txt","old_name":"old.txt","old_parent":2},
+{"txg":1253,"object":301,"op":"SYMLINK","name":"latest","target":"report.pdf"},
+{"txg":1258,"object":300,"op":"REMOVE","name":"new.txt"},
+{"txg":1260,"object":260,"op":"REMOVE","name":"notes-hardlink.txt"},
+{"txg":1261,"object":256,"op":"TRUNCATE","name":"report.pdf","old_size":2048,"new_size":0},
+{"txg":1262,"object":256,"op":"REMOVE","name":"report.pdf"}]
+3 record(s) lost to log wraparound
