@@ -114,7 +114,7 @@ const parityAttachMarker = ".parity-provider"
 func (f *parityFakeProvider) Name() string { return f.name }
 func (f *parityFakeProvider) Probe(ctx context.Context, bucketPath string) (ProbeResult, error) {
 	if _, err := os.Stat(filepath.Join(bucketPath, parityAttachMarker)); err != nil {
-		return ProbeResult{Available: false, Reason: "no provider marker"}, nil
+		return ProbeResult{Available: false, Reason: "no provider marker"}, nil //nolint:nilerr // unattached is a ProbeResult status, not a failure
 	}
 	return ProbeResult{Available: true, Dataset: "tank/parity"}, nil
 }

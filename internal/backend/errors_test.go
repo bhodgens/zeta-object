@@ -42,13 +42,13 @@ func TestErrorMapping(t *testing.T) {
 
 // wrapped builds a non-nil chain wrapping cause, to prove %w reachability.
 func wrapped(cause error) error {
-	return &chainErr{cause}
+	return &wrappedError{cause}
 }
 
-type chainErr struct{ cause error }
+type wrappedError struct{ cause error }
 
-func (e *chainErr) Error() string { return "wrapped: " + e.cause.Error() }
-func (e *chainErr) Unwrap() error { return e.cause }
+func (e *wrappedError) Error() string { return "wrapped: " + e.cause.Error() }
+func (e *wrappedError) Unwrap() error { return e.cause }
 
 func TestSentinels(t *testing.T) {
 	if !errors.Is(ErrNotSupported, ErrNotSupported) {

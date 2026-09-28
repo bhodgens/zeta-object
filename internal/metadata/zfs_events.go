@@ -143,9 +143,9 @@ func parseEventsOutput(out string) ([]ObjectEvent, uint64, error) {
 			e.SizeOld, e.SizeNew = r.OldSize, r.NewSize
 		}
 		if r.TimeNs != 0 {
-			e.Timestamp = time.Unix(0, int64(r.TimeNs))
+			e.Timestamp = time.Unix(0, int64(r.TimeNs)) //nolint:gosec // G115: zfs events -j emits ns offsets that fit int64 for real timestamps
 		}
-		e.UID, e.GID = uint32(r.UID), uint32(r.GID)
+		e.UID, e.GID = uint32(r.UID), uint32(r.GID) //nolint:gosec // G115: uid/gid are 32-bit on every platform zfs events reports; truncation matches zfs behavior
 		events = append(events, e)
 	}
 	return events, lost, nil
@@ -236,7 +236,7 @@ func (p *zfsEventsProvider) probeCore(ctx context.Context, bucketPath, dataset s
 	_ = bucketPath
 	out, stderr, err := runZFS(ctx, "get", "-H", "-o", "value", "events", dataset)
 	if err != nil {
-		return ProbeResult{Available: false, Reason: "feature check: " + err.Error() + ": " + stderr}, nil
+		return ProbeResult{Available: false, Reason: "feature check: " + err.Error() + ": " + stderr}, nil //nolint:nilerr // unavailable is a ProbeResult status, not a failure (contract comment above)
 	}
 	if strings.TrimSpace(string(out)) != "on" {
 		return ProbeResult{Available: false, Reason: "dataset property events is not 'on'", Dataset: dataset}, nil
@@ -250,18 +250,18 @@ func (p *zfsEventsProvider) probeCore(ctx context.Context, bucketPath, dataset s
 func (p *zfsEventsProvider) Probe(ctx context.Context, bucketPath string) (ProbeResult, error) {
 	resolved, err := filepath.EvalSymlinks(bucketPath)
 	if err != nil {
-		return ProbeResult{Available: false, Reason: "path resolve: " + err.Error()}, nil
+		return ProbeResult{Available: false, Reason: "path resolve: " + err.Error()}, nil //nolint:nilerr // unavailable is a status, not a failure
 	}
 	isZFS, err := DetectZFS(resolved)
 	if err != nil {
-		return ProbeResult{Available: false, Reason: "statfs: " + err.Error()}, nil
+		return ProbeResult{Available: false, Reason: "statfs: " + err.Error()}, nil //nolint:nilerr // unavailable is a status, not a failure
 	}
 	if !isZFS {
 		return ProbeResult{Available: false, Reason: "filesystem is not ZFS"}, nil
 	}
 	ds, err := resolveDatasetFn(ctx, resolved)
 	if err != nil {
-		return ProbeResult{Available: false, Reason: "dataset resolve: " + err.Error()}, nil
+		return ProbeResult{Available: false, Reason: "dataset resolve: " + err.Error()}, nil //nolint:nilerr // unavailable is a status, not a failure
 	}
 	return p.probeCore(ctx, resolved, ds)
 }

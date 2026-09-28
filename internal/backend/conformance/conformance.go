@@ -306,7 +306,7 @@ func testListPagination(t *testing.T, factory func(*testing.T) backend.Backend) 
 			}
 			seen[o.Key] = true
 		}
-		if len(page.Objects) != 2 && !(!page.IsTruncated && pages > 1) {
+		if len(page.Objects) != 2 && (page.IsTruncated || pages <= 1) {
 			t.Fatalf("page %d = %d objects, want 2 except final short page", pages, len(page.Objects))
 		}
 		if !page.IsTruncated {
@@ -411,11 +411,11 @@ func testConcurrentSameKey(t *testing.T, factory func(*testing.T) backend.Backen
 	const workers, iters = 8, 15
 	var wg sync.WaitGroup
 	errs := make(chan error, workers*iters)
-	for w := 0; w < workers; w++ {
+	for w := range workers {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			for i := 0; i < iters; i++ {
+			for i := range iters {
 				switch (w + i) % 3 {
 				case 0:
 					if _, err := b.Put(ctx, bucket, "hot", strings.NewReader("payload"), 7, objectmodel.PutOptions{}); err != nil {
