@@ -45,6 +45,7 @@ help:
 	@echo "  vuln             govulncheck ./..."
 	@echo "  secrets          gitleaks detect (scripts/.gitleaks.toml)"
 	@echo "  e2e              Run scripts/e2e/run-e2e.sh (created by leaf 3.6)"
+	@echo "  conformance      Run ceph/s3-tests subset (leaf 5.1); ratchets vs scripts/conformance/baseline.txt"
 	@echo ""
 	@echo "Modules:"
 	@echo "  mod-tidy         go mod tidy"
@@ -172,9 +173,15 @@ mod-verify:
 	@go mod verify
 
 # Fast gate: what every commit should pass.
-precommit: build vet fmt-check lint test mod-tidy-check
+precommit: build vet fmt-check lint test parity-test mod-tidy-check
 	@echo ""
 	@echo "precommit gate passed."
+
+# S3 metadata parity gate (metadata-zfs-2026-09 leaf 03): the canonical S3
+# metadata surface must be identical for plain-FS and provider-attached
+# buckets. Runs the leaf's TestParity* suite.
+parity-test: ## Run the S3 metadata parity gate (FS vs provider-enabled)
+	go test ./internal/metadata/ -run 'TestParity' -count=1 -v
 
 # Full local gate: what a push should pass.
 check: precommit test-race vuln secrets
@@ -203,6 +210,14 @@ e2e:
 		echo "The e2e suite is created by leaf 3.6 (hardening plan) and will exist by end of campaign."; \
 		exit 1; \
 	fi
+
+# =============================================================================
+# Conformance (leaf 5.1 — ceph/s3-tests baseline, informational, NOT in check)
+# =============================================================================
+
+.PHONY: conformance
+conformance: ## Run the vendored ceph/s3-tests subset; fails on regressions vs baseline.txt
+	@bash scripts/conformance/run-conformance.sh
 
 # =============================================================================
 # Fuzz (leaf 4.7 — native fuzzing over the hand-rolled parsers)

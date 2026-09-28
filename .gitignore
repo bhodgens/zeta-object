@@ -6,3 +6,8 @@ coverage/
 .dev/
 certs/
 data/
+vendor/boto3-venv/
+vendor/mc
+vendor/mc-
+vendor/s3-tests/
+vendor/s3-tests-venv/

@@ -293,6 +293,23 @@ Run integration tests (requires server to be running):
 ./scripts/test-s3-operations.sh
 ```
 
+## Protocol Conformance
+
+mini-s3 is baselined against the industry-standard
+[ceph/s3-tests](https://github.com/ceph/s3-tests) suite (leaf 5.1 of the
+conformance plan). `make conformance` builds the server, launches it on a
+free HTTPS port with a throwaway self-signed cert, runs the in-scope pytest
+subset (277 tests — features mini-s3 claims: buckets, objects, listing,
+multipart, copy, conditional, range, presigned; out-of-scope features are
+deselected via pytest markers), prints a per-group pass/fail table, and
+exits non-zero only when a previously-passing test regresses against the
+committed ratchet `scripts/conformance/baseline.txt`. The full pass/fail
+matrix with per-failure triage lives in
+[docs/conformance/2026-09-28-matrix.md](docs/conformance/2026-09-28-matrix.md).
+The vendored suite lives in gitignored `vendor/s3-tests` (cloned
+automatically on first run); the target is informational and is not part of
+`make check`/CI.
+
 ## Development History
 
 See [docs/gap-closure.md](docs/gap-closure.md) for the history of issues that were identified and fixed during development, including the 2026-09 hardening campaign.
