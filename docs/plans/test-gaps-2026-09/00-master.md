@@ -87,3 +87,10 @@ W4: 4.10 + integration gate
 | 4.8 | COMPLETE | 28dfecd | 2 REAL races found and fixed (delete-vs-PUT prune, create-vs-delete bucket) |
 | 4.9 | COMPLETE | 28dfecd | 121 mutations, zero accepted |
 | 4.10 | COMPLETE | (uncommitted) | bench_test.go (4 benches) + COVER_MIN 50->70 (actual 83.6%) + make bench; all gates green |
+
+
+## Completion
+
+All 10 leaves COMPLETE as of 2026-09-28. Final: 306 unit tests + 101 e2e
+asserts, coverage 83.6% (floor raised 50 -> 70), make check/lint/e2e green,
+2 production races found by the stress suite and fixed.
