@@ -86,13 +86,19 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 
 	// Leaf 2.4 fix 1: serialize writers per object and write data + metadata
 	// atomically via the storage.go helpers (no torn reads/partial files).
+	objectDataParentDir := filepath.Dir(objectDataPath)
 	unlock := lockObject(objectDataPath)
 	defer unlock()
+	// Leaf-4.8 stress fix: also hold the parent-DIR lock so a concurrent
+	// deleteObjectCore's cleanupEmptyDirs prune cannot remove the directory
+	// between this PUT's MkdirAll and writeFileAtomic (that race surfaced as
+	// spurious PUT 500s in the stress suite).
+	unlockDataDir := lockObject(objectDataParentDir)
+	defer unlockDataDir()
 
 	// Create parent directories for the object data if they don't exist.
 	// objectDataPath embeds objectName, validated by validateObjectKey (no
 	// ".." segments) — cannot escape the bucket; G703 false positive.
-	objectDataParentDir := filepath.Dir(objectDataPath)
 	if err := os.MkdirAll(objectDataParentDir, 0755); err != nil { //nolint:gosec // G703: objectName validated by validateObjectKey; no traversal possible.
 		log.Printf("Error creating parent directories for object data %s: %v", strconv.Quote(objectDataPath), err)
 		writeS3Error(w, "InternalError", "Error creating object storage.", http.StatusInternalServerError)
@@ -409,6 +415,14 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	// Leaf 2.4 fix 6: fall back to the canonical path on corrupt StoragePath
 	objectDataPath := resolveObjectDataPath(bucketPath, objectName, &meta)
 
+	// Leaf-4.8 stress fix: hold the data+meta dir locks across stat→open→copy
+	// so a concurrent deleteObjectCore cannot prune the directories out from
+	// under this read (that race produced spurious GET 500s).
+	unlockDataDir := lockObject(filepath.Dir(objectDataPath))
+	defer unlockDataDir()
+	unlockMetaDir := lockObject(filepath.Dir(objectMetadataPath))
+	defer unlockMetaDir()
+
 	// Check if actual object data file exists
 	if _, err := os.Stat(objectDataPath); os.IsNotExist(err) {
 		log.Printf("Object data file %s not found for %s/%s", objectDataPath, bucketName, objectName)
@@ -538,6 +552,17 @@ func deleteObjectCore(bucketPath, bucketName, objectName string) error {
 	objectMetadataPath := filepath.Join(bucketPath, ".metadata", objectName+".meta")
 	objectDataPath := filepath.Join(bucketPath, objectName)
 
+	// Leaf-4.8 stress fix: serialize against concurrent writers on this key
+	// AND against empty-dir pruning. cleanupEmptyDirs has a check-then-act
+	// window (ReadDir empty -> Remove) that can delete a directory a
+	// concurrent PUT's MkdirAll just created, turning that PUT's atomic
+	// write into a 500. Holding the parent-dir lock across the delete +
+	// prune closes the window against PUTs into the same directory.
+	unlockDataDir := lockObject(filepath.Dir(objectDataPath))
+	defer unlockDataDir()
+	unlockMetaDir := lockObject(filepath.Dir(objectMetadataPath))
+	defer unlockMetaDir()
+
 	// Try to read metadata to get actual storage path
 	var actualDataPath string
 	metaJSON, err := os.ReadFile(objectMetadataPath) //nolint:gosec // G703: objectName validated by validateObjectKey; no traversal possible.
@@ -630,6 +655,14 @@ func headObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 
 	// Leaf 2.4 fix 6: fall back to the canonical path on corrupt StoragePath
 	objectDataPath := resolveObjectDataPath(bucketPath, objectName, &meta)
+
+	// Leaf-4.8 stress fix: hold the data+meta dir locks across stat→open→copy
+	// so a concurrent deleteObjectCore cannot prune the directories out from
+	// under this read (that race produced spurious GET 500s).
+	unlockDataDir := lockObject(filepath.Dir(objectDataPath))
+	defer unlockDataDir()
+	unlockMetaDir := lockObject(filepath.Dir(objectMetadataPath))
+	defer unlockMetaDir()
 
 	// Check if actual object data file exists
 	if _, err := os.Stat(objectDataPath); os.IsNotExist(err) {

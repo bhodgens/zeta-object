@@ -13,7 +13,7 @@ NEW_FROM_REV ?=
 GO_TOOLS_MISSING :=
 
 .PHONY: help build run certs data_dir clean \
-        test test-verbose test-race test-cover test-cover-enforce \
+        test test-verbose test-race test-cover test-cover-enforce fuzz \
         lint vet fmt fmt-check mod-tidy mod-tidy-check mod-verify \
         precommit check vuln secrets e2e hooks
 
@@ -32,6 +32,7 @@ help:
 	@echo "  test-race        Run tests with the race detector"
 	@echo "  test-cover       Run tests with HTML coverage report"
 	@echo "  test-cover-enforce  Fail if coverage drops below $(COVER_MIN)%"
+	@echo "  fuzz             Run fuzz targets (30s each)"
 	@echo ""
 	@echo "Quality gates:"
 	@echo "  precommit        build + vet + fmt-check + lint + test + mod-tidy-check"
@@ -201,6 +202,16 @@ e2e:
 		echo "The e2e suite is created by leaf 3.6 (hardening plan) and will exist by end of campaign."; \
 		exit 1; \
 	fi
+
+# =============================================================================
+# Fuzz (leaf 4.7 — native fuzzing over the hand-rolled parsers)
+# =============================================================================
+
+fuzz: ## Run fuzz targets briefly (30s each). Full runs: go test -fuzz=. -fuzztime=10m ./...
+	go test -fuzz=FuzzStripJSON5Comments -fuzztime=30s .
+	go test -fuzz=FuzzParseRangeHeader    -fuzztime=30s .
+	go test -fuzz=FuzzMatchPathGlob       -fuzztime=30s .
+	go test -fuzz=FuzzParseCopySource     -fuzztime=30s .
 
 # =============================================================================
 # Git hooks

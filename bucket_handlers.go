@@ -148,6 +148,13 @@ func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 	bucketPath := getBucketPath(bucketName)
 	metadataPath := filepath.Join(bucketPath, ".metadata")
 
+	// Leaf-4.8 stress fix: serialize create against deleteBucket on the same
+	// bucket name — a concurrent delete could remove the directory between
+	// this create's Mkdir(bucket) and Mkdir(.metadata), turning the create
+	// into a spurious 500.
+	unlockBucket := lockObject(bucketPath)
+	defer unlockBucket()
+
 	// Check if bucket already exists (leaf 2.4 fix 8 error semantics).
 	// Stat error that is neither nil nor IsNotExist → 500.
 	info, err := os.Stat(bucketPath)
@@ -215,6 +222,10 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 
 	bucketPath := getBucketPath(bucketName)
 	metadataPath := filepath.Join(bucketPath, ".metadata")
+
+	// Leaf-4.8 stress fix: serialize against createBucket (same lock).
+	unlockBucket := lockObject(bucketPath)
+	defer unlockBucket()
 
 	// Check if bucket exists
 	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
