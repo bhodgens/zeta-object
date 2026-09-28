@@ -80,9 +80,9 @@ W4: 4.10 + integration gate
 | 4.1 | COMPLETE | 933aa25 | executeAction 0->100%; timer drain pinned |
 | 4.2 | COMPLETE | 933aa25 | sweepAllBucketsOnce 0->91.7% |
 | 4.3 | COMPLETE | 933aa25 | dispatch trio + handleACL 100%; zero findings |
-| 4.4 | PENDING | | |
-| 4.5 | PENDING | | |
-| 4.6 | PENDING | | |
+| 4.4 | COMPLETE | daf60a8 | multipart error matrix; key symbols +10-20pts |
+| 4.5 | COMPLETE | daf60a8 | copy/delete edges; deleteObjectHandler 100% |
+| 4.6 | COMPLETE | daf60a8 | rename-cleanup without euid skip; +race fix in actions_test |
 | 4.7 | PENDING | | |
 | 4.8 | PENDING | | |
 | 4.9 | PENDING | | |
