@@ -100,14 +100,14 @@ W6: 3.6, final gates
 | Leaf | Status | Commit | Notes |
 |---|---|---|---|
 | 1.1 | COMPLETE | 6d43ddb | tooling stack landed; make lint backlog=44 (leaf 1.2) |
-| 1.2 | PENDING | | |
+| 1.2 | COMPLETE | cd938cd | 39→0; +pre-commit-errors w.Write exemption & blocking-exit fix |
 | 2.1 | COMPLETE | 6d43ddb | split verified 60/60 identical; +staticcheck cleanups |
 | 2.2 | COMPLETE | 14574d8 | +orchestrator: getSigningKey region-for-service regression fixed w/ golden test |
 | 2.3 | COMPLETE | 14574d8 | storage.go frozen contract landed |
 | 2.4 | COMPLETE | 9ed81b2 | +orchestrator: uploadPart VerifyDecodedLength wiring; xmlns-constant pin test |
 | 2.5 | COMPLETE | 14574d8 | |
 | 2.6 | COMPLETE | 14574d8 | live smoke: TLS1.2 floor, SIGTERM clean, PORT wiring proven |
-| 2.7 | PENDING | | |
+| 2.7 | COMPLETE | 2b79f1e | all code claims grep-verified |
 | 3.1 | PENDING | | |
 | 3.2 | PENDING | | |
 | 3.3 | PENDING | | |
