@@ -29,8 +29,11 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	}
 
 	bucketPath := getBucketPath(bucketName)
-	// Object data is stored directly in the bucket directory
-	objectDataPath := filepath.Join(bucketPath, objectName)
+	// Object data is stored directly in the bucket directory, OR in the shadow
+	// data dir when the flat path is unusable (another key occupies a path
+	// component — leaf 5.1 [a]-1 key/directory collision fix). The chosen path
+	// is recorded in metadata StoragePath either way.
+	objectDataPath := objectDataPathFor(bucketPath, objectName)
 	// Metadata is stored in .metadata subdirectory
 	objectMetadataDir := filepath.Join(bucketPath, ".metadata")
 	objectMetadataPath := filepath.Join(objectMetadataDir, objectName+".meta")
@@ -770,7 +773,7 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 
 	// Leaf 2.4 fix 14: IsTruncated=true must carry a non-empty token; if the
 	// token is empty, no next page exists → report IsTruncated=false.
-	truncated, nextToken, objects, commonPrefixes := listObjectsFromKeys(allObjectKeys, params, bucketName, metadataDir)
+	truncated, nextToken, objects, commonPrefixes, lastItem := listObjectsFromKeys(allObjectKeys, params, bucketName, metadataDir)
 	if truncated && nextToken == "" {
 		truncated = false
 	}
@@ -799,6 +802,14 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 		ContinuationToken:     params.continuationToken,
 		NextContinuationToken: nextToken,
 		StartAfter:            params.startAfter,
+		Marker:                params.marker,
+	}
+	// Leaf 5.1 [a]-3/[a]-4: AWS V1 rule — NextMarker is returned only when
+	// the response is truncated AND a delimiter was requested; its value is
+	// the page's last emitted item in MERGED key order (a key that sorts
+	// before a roll-up wins the slot).
+	if truncated && params.delimiter != "" && lastItem != "" {
+		result.NextMarker = lastItem
 	}
 	if params.encodeKeys {
 		result.EncodingType = "url"
@@ -814,6 +825,7 @@ type listObjectsParams struct {
 	delimiter         string
 	continuationToken string
 	startAfter        string
+	marker            string // ListObjects V1 marker (leaf 5.1 [a]-3)
 	encodeKeys        bool
 	maxKeys           int
 }
@@ -827,6 +839,7 @@ func parseListObjectsParams(r *http.Request) listObjectsParams {
 		delimiter:         r.URL.Query().Get("delimiter"),
 		continuationToken: r.URL.Query().Get("continuation-token"),
 		startAfter:        r.URL.Query().Get("start-after"),
+		marker:            r.URL.Query().Get("marker"),
 		encodeKeys:        r.URL.Query().Get("encoding-type") == "url",
 		maxKeys:           1000,
 	}
@@ -891,98 +904,281 @@ func collectObjectKeys(metadataDir string) ([]string, error) {
 // delimiter roll-up and maxKeys truncation (leaf 2.4 fixes 12/13). Returns
 // the truncation flag, next continuation token, object entries, and the
 // first-seen common prefixes (deduplicated, in first-seen order).
-func listObjectsFromKeys(allObjectKeys []string, p listObjectsParams, bucketName, metadataDir string) (truncated bool, nextToken string, objects []Object, commonPrefixes []string) {
-	startKey := p.continuationToken
-	if startKey == "" {
-		startKey = p.startAfter
-	}
-
+func listObjectsFromKeys(allObjectKeys []string, p listObjectsParams, bucketName, metadataDir string) (truncated bool, nextToken string, objects []Object, commonPrefixes []string, lastItemOut string) {
 	processedCount := 0
 	seenPrefixes := make(map[string]struct{})
 
-	// Cursor exclusion semantics differ per parameter (AWS behavior, leaf-3.6
-	// e2e finding):
-	//   - continuation-token: the token IS the first key of the next page, so
-	//     the boundary key must be LISTED — exclude strictly below it (<).
-	//   - start-after: exclusive marker — exclude everything at or below it
-	//     (<=), including the marker key itself.
-	keyExcluded := func(objectKey string) bool {
-		if startKey == "" {
-			return false
-		}
-		if p.continuationToken != "" {
-			return objectKey < p.continuationToken
-		}
-		return objectKey <= p.startAfter
-	}
-	// keyMatchesPrefix reports whether objectKey passes the prefix filter.
-	keyMatchesPrefix := func(objectKey string) bool {
-		return p.prefix == "" || strings.HasPrefix(objectKey, p.prefix)
-	}
+	// Batch meta reads (design Option A): the filter+truncate walk and the
+	// batched meta fetch live in appendEntries. listObjectsFromKeys keeps
+	// only cursor setup and returns. lastItem carries the page's final
+	// emitted item (key or prefix) for the V1 NextMarker field.
+	var lastItem string
+	truncated, nextToken, objects, commonPrefixes = appendEntries(&p, allObjectKeys, bucketName, metadataDir, truncated, nextToken, objects, commonPrefixes, &processedCount, seenPrefixes, &lastItem)
+	return truncated, nextToken, objects, commonPrefixes, lastItem
+}
 
-	for _, objectKey := range allObjectKeys {
-		if keyExcluded(objectKey) {
-			continue
-		}
-		if !keyMatchesPrefix(objectKey) {
-			continue
-		}
-
-		// Leaf 2.4 fix 12: truncation check runs BEFORE adding either an
-		// object or a new common prefix.
-		if processedCount >= p.maxKeys {
-			truncated = true
-			nextToken = objectKey
+func appendEntries(p *listObjectsParams, allObjectKeys []string, bucketName, metadataDir string, truncated bool, nextToken string, objects []Object, commonPrefixes []string, processedCount *int, seenPrefixes map[string]struct{}, lastEmitted *string) (bool, string, []Object, []string) {
+	i := 0
+	for i < len(allObjectKeys) {
+		need := p.maxKeys - *processedCount
+		if need <= 0 {
 			break
 		}
 
-		if p.delimiter != "" {
-			keyPartAfterRequestPrefix := objectKey
-			if strings.HasPrefix(objectKey, p.prefix) {
-				keyPartAfterRequestPrefix = objectKey[len(p.prefix):]
-			} else if p.prefix != "" {
-				continue
-			}
+		window := gatherListWindow(allObjectKeys, i, p, processedCount, seenPrefixes, commonPrefixes, &truncated, &nextToken)
+		i = window.advanced
+		commonPrefixes = window.commonPrefixes
+		if len(window.items) == 0 {
+			// Nothing page-eligible left in the key space.
+			break
+		}
 
-			if idx := strings.Index(keyPartAfterRequestPrefix, p.delimiter); idx != -1 {
-				commonPrefixValue := p.prefix + keyPartAfterRequestPrefix[:idx+len(p.delimiter)]
-				if _, exists := seenPrefixes[commonPrefixValue]; !exists {
-					// First-seen roll-up counts toward maxKeys (fix 12);
-					// duplicates are free (dedupe before counting).
-					seenPrefixes[commonPrefixValue] = struct{}{}
-					commonPrefixes = append(commonPrefixes, commonPrefixValue)
-					processedCount++
+		// Batch-read the window's key metas concurrently (Option A).
+		paths := make([]string, len(window.entries))
+		for j, e := range window.entries {
+			paths[j] = filepath.Join(metadataDir, e.objectKey+".meta")
+		}
+		metas := readMetasBatch(paths, batchWorkerCount())
+
+		// Emit items in MERGED KEY ORDER (leaf 5.1 [a]-4): a key that sorts
+		// before a roll-up consumes the page budget first, matching AWS.
+		// Keys whose meta is unreadable/unparsable are skipped with the same
+		// per-key log lines as the serial loop (they never counted).
+		// lastEmittedItem records the final item of the page (key or prefix,
+		// raw) for the V1 NextMarker response field.
+		metaIdx := 0
+		lastEmittedItem := ""
+		for _, item := range window.items {
+			if *processedCount >= p.maxKeys {
+				// Budget exhausted mid-window. The next page resumes after
+				// the LAST EMITTED item (leaf 5.1 [a]-4): the token is the
+				// raw key/prefix last emitted, so a roll-up group the
+				// previous page emitted is consumed by the next page.
+				truncated = true
+				if lastEmittedItem != "" {
+					nextToken = lastEmittedItem
 				}
+				break
+			}
+			if item.isPrefix {
+				// Raw prefix; the handler applies encoding-type=url once
+				// when building the response.
+				commonPrefixes = append(commonPrefixes, item.prefix)
+				lastEmittedItem = item.prefix
+				*processedCount++
 				continue
 			}
+			e := window.entries[item.entryIdx]
+			res := metas[metaIdx]
+			metaIdx++
+			if res.readErr != nil {
+				log.Printf("Error reading metadata for %s/%s: %v. Skipping.", strconv.Quote(bucketName), strconv.Quote(e.objectKey), res.readErr)
+				continue
+			}
+			if res.parseErr != nil {
+				log.Printf("Error unmarshalling metadata for %s/%s: %v. Skipping.", strconv.Quote(bucketName), strconv.Quote(e.objectKey), res.parseErr)
+				continue
+			}
+			objectKeyOut := e.objectKey
+			if p.encodeKeys {
+				objectKeyOut = s3URLEncode(objectKeyOut)
+			}
+			objects = append(objects, Object{
+				Key:          objectKeyOut,
+				LastModified: res.meta.LastModified.UTC().Format("2006-01-02T15:04:05.000Z"),
+				ETag:         fmt.Sprintf("\"%s\"", res.meta.ETag),
+				Size:         res.meta.ContentLength,
+				StorageClass: "STANDARD",
+			})
+			lastEmittedItem = e.objectKey
+			*processedCount++
 		}
-
-		metaJSON, err := os.ReadFile(filepath.Join(metadataDir, objectKey+".meta"))
-		if err != nil {
-			log.Printf("Error reading metadata for %s/%s: %v. Skipping.", strconv.Quote(bucketName), strconv.Quote(objectKey), err)
-			continue
+		// Leaf 5.1 [a]-4: the V1 NextMarker is the page's last emitted
+		// item (key or prefix) in merged order.
+		*lastEmitted = lastEmittedItem
+		if *processedCount >= p.maxKeys {
+			break
 		}
-		var meta ObjectMetadata
-		if err := json.Unmarshal(metaJSON, &meta); err != nil {
-			log.Printf("Error unmarshalling metadata for %s/%s: %v. Skipping.", strconv.Quote(bucketName), strconv.Quote(objectKey), err)
-			continue
-		}
-
-		objectKeyOut := objectKey
-		if p.encodeKeys {
-			objectKeyOut = s3URLEncode(objectKey)
-		}
-		objects = append(objects, Object{
-			Key:          objectKeyOut,
-			LastModified: meta.LastModified.UTC().Format("2006-01-02T15:04:05.000Z"),
-			ETag:         fmt.Sprintf("\"%s\"", meta.ETag),
-			Size:         meta.ContentLength,
-			StorageClass: "STANDARD",
-		})
-		processedCount++
 	}
 
 	return truncated, nextToken, objects, commonPrefixes
+}
+
+// listWindow is one batch-gather window: page-eligible items (keys and
+// delimiter roll-ups) in merged KEY ORDER, plus gather-loop bookkeeping.
+type listWindow struct {
+	entries []listEntry
+	// items is the merged-order page: prefix items reference the prefix,
+	// key items reference entries[entryIdx]. Preserves AWS ordering so a
+	// key gathered before a roll-up fills the page first (leaf 5.1 [a]-4).
+	items []listItem
+	// advanced is the index into allObjectKeys just past the last key this
+	// window examined.
+	advanced int
+	// commonPrefixes carries the updated roll-up list (append passthrough).
+	commonPrefixes []string
+}
+
+type listItem struct {
+	isPrefix bool
+	prefix   string
+	entryIdx int // index into window.entries when isPrefix == false
+}
+
+// gatherListWindow collects the next window of page-eligible items
+// (cursor/prefix/delimiter pre-filter — no meta I/O) in merged key order.
+// Delimiter roll-ups and keys count toward maxKeys in the order they appear
+// in the sorted key space (AWS merged-order semantics; leaf 5.1 [a]-4).
+func gatherListWindow(allObjectKeys []string, start int, p *listObjectsParams, processedCount *int, seenPrefixes map[string]struct{}, commonPrefixes []string, truncated *bool, nextToken *string) (window listWindow) {
+	need := p.maxKeys - *processedCount
+	if need <= 0 {
+		window.advanced = start
+		window.commonPrefixes = commonPrefixes
+		return window
+	}
+
+	i := start
+	for i < len(allObjectKeys) {
+		if len(window.items) >= need {
+			// Page budget consumed in merged order.
+			window.advanced, window.commonPrefixes = noteBudgetExhausted(allObjectKeys, i, p, seenPrefixes, commonPrefixes, truncated, nextToken)
+			return window
+		}
+		objectKey := allObjectKeys[i]
+		i++
+		if keyExcludedByCursor(objectKey, p) {
+			continue
+		}
+		if !keyMatchesPrefixFilter(objectKey, p) {
+			continue
+		}
+		if p.delimiter != "" {
+			if gatherDelimiterKey(&window, objectKey, p, seenPrefixes) {
+				continue
+			}
+		}
+		window.entries = append(window.entries, listEntry{objectKey: objectKey})
+		window.items = append(window.items, listItem{entryIdx: len(window.entries) - 1})
+	}
+	window.advanced = i
+	window.commonPrefixes = commonPrefixes
+	return window
+}
+
+// gatherDelimiterKey folds one delimiter-delimited key into the window: it
+// registers the key's roll-up prefix as a page item, or skips it as already
+// seen/cursor-consumed/outside the request prefix (consumed=true), or
+// reports consumed=false meaning the key is a plain page entry.
+func gatherDelimiterKey(window *listWindow, objectKey string, p *listObjectsParams, seenPrefixes map[string]struct{}) (consumed bool) {
+	keyPartAfterRequestPrefix := objectKey
+	if strings.HasPrefix(objectKey, p.prefix) {
+		keyPartAfterRequestPrefix = objectKey[len(p.prefix):]
+	} else if p.prefix != "" {
+		return true // outside the request prefix: excluded
+	}
+	idx := strings.Index(keyPartAfterRequestPrefix, p.delimiter)
+	if idx == -1 {
+		return false // no delimiter after the prefix: plain key
+	}
+	commonPrefixValue := p.prefix + keyPartAfterRequestPrefix[:idx+len(p.delimiter)]
+	if _, exists := seenPrefixes[commonPrefixValue]; exists {
+		return true // duplicate roll-up: free (dedupe before counting)
+	}
+	// Leaf 5.1 [a]-4: a cursor at or beyond the roll-up consumed the whole
+	// group (V1 marker semantics; V2 token INSIDE the group likewise).
+	if groupConsumedByCursor(commonPrefixValue, p) {
+		return true
+	}
+	// First-seen roll-up is one page item (leaf-2.4 fix 12). The emit loop
+	// appends to commonPrefixes (it owns encoding); gather only dedupes and
+	// orders.
+	seenPrefixes[commonPrefixValue] = struct{}{}
+	window.items = append(window.items, listItem{isPrefix: true, prefix: commonPrefixValue})
+	return true
+}
+
+// groupConsumedByCursor reports whether a delimiter roll-up group was fully
+// consumed by the request cursor (leaf 5.1 [a]-4): AWS V1 — the roll-up
+// itself at or below the marker/start-after cursor; V2 — the opaque
+// continuation token lies INSIDE the prefix group, meaning the page that
+// issued the token already emitted the group.
+func groupConsumedByCursor(commonPrefixValue string, p *listObjectsParams) bool {
+	if p.continuationToken != "" {
+		return strings.HasPrefix(p.continuationToken, commonPrefixValue)
+	}
+	return keyExcludedByCursor(commonPrefixValue, p)
+}
+
+// noteBudgetExhausted finalizes the window once the merged-order page budget
+// is consumed: truncated only if some LATER key still yields a NEW page item
+// (leaf 5.1 [a]-4: marker='boo/' with only already-emitted groups left must
+// NOT be truncated). The token is the first unconsumed key as a fallback;
+// the emit loop refines it to the last emitted item.
+func noteBudgetExhausted(allObjectKeys []string, i int, p *listObjectsParams, seenPrefixes map[string]struct{}, commonPrefixes []string, truncated *bool, nextToken *string) (advanced int, outPrefixes []string) {
+	hasMore := false
+	for _, later := range allObjectKeys[i:] {
+		if keyExcludedByCursor(later, p) || !keyMatchesPrefixFilter(later, p) {
+			continue
+		}
+		if p.delimiter != "" {
+			// The key folds into a roll-up; it yields a NEW item only if
+			// that roll-up is unseen and unconsumed.
+			after := later
+			if strings.HasPrefix(later, p.prefix) {
+				after = later[len(p.prefix):]
+			}
+			if idx := strings.Index(after, p.delimiter); idx != -1 {
+				pv := p.prefix + after[:idx+len(p.delimiter)]
+				if _, seen := seenPrefixes[pv]; seen {
+					continue
+				}
+				if groupConsumedByCursor(pv, p) {
+					continue
+				}
+				hasMore = true
+				break
+			}
+		}
+		hasMore = true // plain key → new item
+		break
+	}
+	if hasMore {
+		*truncated = true
+		// Fallback token = first unconsumed key; the emit loop refines it
+		// to the last emitted item (leaf 5.1 [a]-4).
+		if i < len(allObjectKeys) {
+			*nextToken = allObjectKeys[i]
+		}
+	}
+	return i, commonPrefixes
+}
+
+// keyExcludedByCursor reports whether objectKey is excluded by the
+// continuation/start-after/marker cursor. Semantics differ per parameter
+// (AWS behavior, leaf-3.6 e2e finding; V1 marker added by leaf 5.1 [a]-3):
+//   - continuation-token: the token IS the first key of the next page, so
+//     the boundary key must be LISTED — exclude strictly below it (<).
+//   - start-after: exclusive marker — exclude everything at or below it
+//     (<=), including the marker key itself.
+//   - marker (ListObjects V1): exclusive like start-after — exclude keys
+//     at or below it (<=). AWS V1: "Specifies the key to start with";
+//     the marker itself is never listed.
+func keyExcludedByCursor(objectKey string, p *listObjectsParams) bool {
+	if p.continuationToken != "" {
+		return objectKey < p.continuationToken
+	}
+	if p.startAfter != "" {
+		return objectKey <= p.startAfter
+	}
+	if p.marker != "" {
+		return objectKey <= p.marker
+	}
+	return false
+}
+
+// keyMatchesPrefixFilter reports whether objectKey passes the prefix filter.
+func keyMatchesPrefixFilter(objectKey string, p *listObjectsParams) bool {
+	return p.prefix == "" || strings.HasPrefix(objectKey, p.prefix)
 }
 
 // parseInt converts a string to an integer, rejecting partial parses like "5a"
@@ -1204,7 +1400,8 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 	eTag := hex.EncodeToString(hash[:])
 
 	dstBucketPath := getBucketPath(bucketName)
-	dstDataPath := filepath.Join(dstBucketPath, objectName)
+	// Shadow-aware data path (leaf 5.1 [a]-1): same collision rules as PUT.
+	dstDataPath := objectDataPathFor(dstBucketPath, objectName)
 	dstMetaPath := filepath.Join(dstBucketPath, ".metadata", objectName+".meta")
 
 	dstUnlock := lockObject(dstDataPath)

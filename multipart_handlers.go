@@ -424,10 +424,12 @@ func completeMultipartUploadHandler(w http.ResponseWriter, r *http.Request, buck
 // so the caller's failCleanup defer can remove any created temp file.
 func assembleCompletedObject(w http.ResponseWriter, r *http.Request, bucketPath, objectName, uploadID string, mpUpload MultipartUpload, completeRequest CompleteMultipartUpload) (finalObjectPath, objectMetadataPath string, meta ObjectMetadata, finalETag string, totalSize int64, ok bool) {
 	// Verify parts and prepare for assembly
-	// Object data stored directly in bucket (consistent with putObjectHandler)
+	// Object data stored directly in the bucket (consistent with putObjectHandler)
 	// objectName was validated by validateObjectKey above (no ".." segments) —
 	// the path cannot escape bucketPath; G703 false positive.
-	finalObjectPath = filepath.Join(bucketPath, objectName)
+	// Shadow-aware (leaf 5.1 [a]-1): a colliding key stores under the shadow
+	// data dir exactly like putObjectHandler.
+	finalObjectPath = objectDataPathFor(bucketPath, objectName)
 
 	// Create parent directories if needed
 	if err := os.MkdirAll(filepath.Dir(finalObjectPath), 0755); err != nil { //nolint:gosec // G703: objectName validated by validateObjectKey; no traversal possible.

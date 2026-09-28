@@ -190,6 +190,12 @@ func bucketLevelDispatch(w http.ResponseWriter, r *http.Request, bucketName stri
 		listMultipartUploadsHandler(w, r, bucketName)
 		return
 	}
+	// Leaf 5.1 [a]-2: ListObjectVersions sub-resource (GET /bucket?versions).
+	// Unversioned wire shape: every object = one version with the null ID.
+	if _, ok := r.URL.Query()["versions"]; ok && r.Method == "GET" {
+		listObjectVersionsHandler(w, r, bucketName)
+		return
+	}
 	// Leaf 3.5: DeleteObjects sub-resource (POST /bucket?delete)
 	if _, ok := r.URL.Query()["delete"]; ok && r.Method == "POST" {
 		deleteObjectsHandler(w, r, bucketName)

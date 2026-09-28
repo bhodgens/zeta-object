@@ -73,6 +73,8 @@ type ListBucketResult struct {
 	ContinuationToken     string         `xml:"ContinuationToken,omitempty"`
 	NextContinuationToken string         `xml:"NextContinuationToken,omitempty"`
 	StartAfter            string         `xml:"StartAfter,omitempty"`
+	Marker                string         `xml:"Marker,omitempty"`     // ListObjects V1 (leaf 5.1 [a]-3)
+	NextMarker            string         `xml:"NextMarker,omitempty"` // V1: present when truncated and delimiter set
 }
 
 // Object represents a single object in the ListBucketResult
@@ -88,6 +90,33 @@ type Object struct {
 // CommonPrefix represents a prefix rolled up by a delimiter
 type CommonPrefix struct {
 	Prefix string `xml:"Prefix"`
+}
+
+// ObjectVersion is one <Version> entry in the ListVersionsResult (leaf 5.1
+// [a]-2 fix: the ?versions sub-resource). mini-s3 is not versioned, so every
+// object is reported as a single version with the fixed null version ID —
+// the wire shape real S3 produces for an unversioned bucket.
+type ObjectVersion struct {
+	Key          string `xml:"Key"`
+	VersionID    string `xml:"VersionId"`
+	IsLatest     bool   `xml:"IsLatest"`
+	LastModified string `xml:"LastModified"` // Format: 2006-01-02T15:04:05.000Z
+	ETag         string `xml:"ETag"`
+	Size         int64  `xml:"Size"`
+	StorageClass string `xml:"StorageClass"`
+	Owner        Owner  `xml:"Owner"`
+}
+
+// ListVersionsResult is the S3 response structure for GET /bucket?versions.
+type ListVersionsResult struct {
+	XMLName         xml.Name        `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListVersionsResult"`
+	Name            string          `xml:"Name"`
+	Prefix          string          `xml:"Prefix"`
+	KeyMarker       string          `xml:"KeyMarker"`
+	VersionIDMarker string          `xml:"VersionIdMarker"`
+	MaxKeys         int             `xml:"MaxKeys"`
+	IsTruncated     bool            `xml:"IsTruncated"`
+	Versions        []ObjectVersion `xml:"Version"`
 }
 
 // LocationConstraint is for GetBucketLocation

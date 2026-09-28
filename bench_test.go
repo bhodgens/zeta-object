@@ -48,7 +48,7 @@ func benchmarkListObjectsFromKeys(b *testing.B, p listObjectsParams) {
 	for b.Loop() {
 		// Assert nothing: results are discarded; the bench measures the
 		// walk/roll-up/read cost only.
-		_, _, _, _ = listObjectsFromKeys(keys, p, "bench-bucket", metadataDir)
+		_, _, _, _, _ = listObjectsFromKeys(keys, p, "bench-bucket", metadataDir)
 	}
 }
 
