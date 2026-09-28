@@ -11,9 +11,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // multipart_handlers_test.go — tests for storage.go atomic helpers and
@@ -54,6 +56,14 @@ func mpUploadsDir(bucketPath string) string {
 func newTestUploadID(t *testing.T) string {
 	t.Helper()
 	sum := md5.Sum([]byte(t.Name()))
+	return hex.EncodeToString(sum[:])
+}
+
+// newTestUploadIDSuffix returns a distinct structurally valid upload ID for
+// the test plus a suffix (newTestUploadID is constant per test name).
+func newTestUploadIDSuffix(t *testing.T, suffix string) string {
+	t.Helper()
+	sum := md5.Sum([]byte(t.Name() + "/" + suffix))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -484,4 +494,425 @@ func TestCompleteMultipartUploadHandler_SuccessAndContentType(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(mpUploadsDir(bucketPath), uploadID+"_parts")); !os.IsNotExist(err) {
 		t.Errorf("parts dir still exists after complete")
 	}
+}
+
+// ---- Leaf 3.3: ListMultipartUploads ----
+
+// mpCallListUploads invokes listMultipartUploadsHandler with a query string.
+func mpCallListUploads(t *testing.T, bucketName, rawQuery string) *httptest.ResponseRecorder {
+	t.Helper()
+	url := "/" + bucketName
+	if rawQuery != "" {
+		url += "?" + rawQuery
+	}
+	r := httptest.NewRequest(http.MethodGet, url, nil)
+	w := httptest.NewRecorder()
+	listMultipartUploadsHandler(w, r, bucketName)
+	return w
+}
+
+func TestListMultipartUploadsHandler_EmptyBucket(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	mpTestBucket(t, dataDir, "bkt")
+
+	w := mpCallListUploads(t, "bkt", "uploads")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), xml.Header) {
+		t.Errorf("missing xml prolog: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `<ListMultipartUploadsResult xmlns="`+s3XMLNamespace+`">`) {
+		t.Errorf("missing ListMultipartUploadsResult/ns: %s", w.Body.String())
+	}
+	var result ListMultipartUploadsResult
+	if err := xml.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if result.IsTruncated {
+		t.Errorf("IsTruncated = true, want false")
+	}
+	if result.MaxUploads != 1000 {
+		t.Errorf("MaxUploads = %d, want default 1000", result.MaxUploads)
+	}
+	if len(result.Upload) != 0 {
+		t.Errorf("Upload = %+v, want empty", result.Upload)
+	}
+}
+
+func TestListMultipartUploadsHandler_OrderingByKeyThenUploadID(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+
+	// Insert out of lexicographic order to prove sorting.
+	idB := newTestUploadIDSuffix(t, "zeta")
+	mpWriteUploadMeta(t, bucketPath, idB, MultipartUpload{UploadID: idB, Key: "zeta", Initiated: time.Now().UTC(), Parts: make(map[int]PartMetadata)})
+	idA := newTestUploadIDSuffix(t, "alpha")
+	mpWriteUploadMeta(t, bucketPath, idA, MultipartUpload{UploadID: idA, Key: "alpha", Initiated: time.Now().UTC(), Parts: make(map[int]PartMetadata)})
+	idC := newTestUploadIDSuffix(t, "zeta2")
+	mpWriteUploadMeta(t, bucketPath, idC, MultipartUpload{UploadID: idC, Key: "zeta", Initiated: time.Now().UTC(), Parts: make(map[int]PartMetadata)})
+	// Same-key ordering is by UploadId, which is content-derived — compute
+	// the expected order instead of assuming which id sorts first.
+	zetaIDs := []string{idB, idC}
+	sort.Strings(zetaIDs)
+
+	w := mpCallListUploads(t, "bkt", "uploads")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", w.Code, w.Body.String())
+	}
+	var result ListMultipartUploadsResult
+	if err := xml.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(result.Upload) != 3 {
+		t.Fatalf("got %d uploads, want 3: %+v", len(result.Upload), result.Upload)
+	}
+	wantOrder := []struct{ key, id string }{{"alpha", idA}, {"zeta", zetaIDs[0]}, {"zeta", zetaIDs[1]}}
+	for i, want := range wantOrder {
+		if result.Upload[i].Key != want.key || result.Upload[i].UploadID != want.id {
+			t.Errorf("upload[%d] = (%s,%s), want (%s,%s)", i, result.Upload[i].Key, result.Upload[i].UploadID, want.key, want.id)
+		}
+		if result.Upload[i].Initiated == "" {
+			t.Errorf("upload[%d] missing Initiated", i)
+		}
+	}
+	if result.Bucket != "bkt" {
+		t.Errorf("Bucket = %q, want bkt", result.Bucket)
+	}
+}
+
+func TestListMultipartUploadsHandler_PrefixFilter(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+
+	idMatch := newTestUploadIDSuffix(t, "match")
+	mpWriteUploadMeta(t, bucketPath, idMatch, MultipartUpload{UploadID: idMatch, Key: "logs/2026/a", Parts: make(map[int]PartMetadata)})
+	idNo := newTestUploadIDSuffix(t, "no")
+	mpWriteUploadMeta(t, bucketPath, idNo, MultipartUpload{UploadID: idNo, Key: "photos/x", Parts: make(map[int]PartMetadata)})
+
+	w := mpCallListUploads(t, "bkt", "uploads&prefix=logs/")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var result ListMultipartUploadsResult
+	if err := xml.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(result.Upload) != 1 || result.Upload[0].UploadID != idMatch {
+		t.Fatalf("uploads = %+v, want only %s", result.Upload, idMatch)
+	}
+	if result.Prefix != "logs/" {
+		t.Errorf("Prefix = %q, want logs/", result.Prefix)
+	}
+}
+
+func TestListMultipartUploadsHandler_MarkerPagination(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+
+	ids := make([]string, 3)
+	keys := []string{"a", "b", "c"}
+	for i, key := range keys {
+		ids[i] = newTestUploadIDSuffix(t, key)
+		mpWriteUploadMeta(t, bucketPath, ids[i], MultipartUpload{UploadID: ids[i], Key: key, Parts: make(map[int]PartMetadata)})
+	}
+
+	// Page 1: max-uploads=1 → only "a", truncated, NextKeyMarker="a".
+	w := mpCallListUploads(t, "bkt", "uploads&max-uploads=1")
+	var p1 ListMultipartUploadsResult
+	if err := xml.Unmarshal(w.Body.Bytes(), &p1); err != nil {
+		t.Fatalf("unmarshal page1: %v", err)
+	}
+	if len(p1.Upload) != 1 || p1.Upload[0].Key != "a" {
+		t.Fatalf("page1 uploads = %+v, want [a]", p1.Upload)
+	}
+	if !p1.IsTruncated {
+		t.Errorf("page1 IsTruncated = false, want true")
+	}
+	if p1.MaxUploads != 1 {
+		t.Errorf("page1 MaxUploads = %d, want 1", p1.MaxUploads)
+	}
+	if p1.NextKeyMarker != "a" {
+		t.Errorf("page1 NextKeyMarker = %q, want a", p1.NextKeyMarker)
+	}
+
+	// Page 2: key-marker=a → b, c; not truncated.
+	w = mpCallListUploads(t, "bkt", "uploads&key-marker=a")
+	var p2 ListMultipartUploadsResult
+	if err := xml.Unmarshal(w.Body.Bytes(), &p2); err != nil {
+		t.Fatalf("unmarshal page2: %v", err)
+	}
+	if len(p2.Upload) != 2 || p2.Upload[0].Key != "b" || p2.Upload[1].Key != "c" {
+		t.Fatalf("page2 uploads = %+v, want [b c]", p2.Upload)
+	}
+	if p2.IsTruncated {
+		t.Errorf("page2 IsTruncated = true, want false")
+	}
+	if p2.KeyMarker != "a" {
+		t.Errorf("page2 KeyMarker = %q, want a", p2.KeyMarker)
+	}
+}
+
+func TestListMultipartUploadsHandler_NoSuchBucket(t *testing.T) {
+	mpTestConfig(t)
+	w := mpCallListUploads(t, "missing-bucket", "uploads")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "NoSuchBucket") {
+		t.Fatalf("body missing NoSuchBucket: %s", w.Body.String())
+	}
+}
+
+// ---- Leaf 3.3: ListParts ----
+
+// mpSeedUploadWithParts creates a session meta plus part files for the given
+// part numbers/content and returns the upload id.
+func mpSeedUploadWithParts(t *testing.T, bucketPath, key string, parts map[int]string) string {
+	t.Helper()
+	uploadID := newTestUploadID(t)
+	mp := MultipartUpload{UploadID: uploadID, Key: key, Initiated: time.Now().UTC(), Parts: make(map[int]PartMetadata)}
+	for num, content := range parts {
+		mp.Parts[num] = mpStorePart(t, bucketPath, uploadID, num, content)
+	}
+	mpWriteUploadMeta(t, bucketPath, uploadID, mp)
+	return uploadID
+}
+
+func mpCallListParts(t *testing.T, bucketName, objectName, rawQuery string) *httptest.ResponseRecorder {
+	t.Helper()
+	url := "/" + bucketName + "/" + objectName
+	if rawQuery != "" {
+		url += "?" + rawQuery
+	}
+	r := httptest.NewRequest(http.MethodGet, url, nil)
+	w := httptest.NewRecorder()
+	listPartsHandler(w, r, bucketName, objectName, r.URL.Query().Get("uploadId"))
+	return w
+}
+
+func TestListPartsHandler_PartsSortedWithFields(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	uploadID := mpSeedUploadWithParts(t, bucketPath, "obj", map[int]string{3: "ccc", 1: "a", 2: "bb"})
+
+	w := mpCallListParts(t, "bkt", "obj", "uploadId="+uploadID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", w.Code, w.Body.String())
+	}
+	var result ListPartsResult
+	if err := xml.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(result.Part) != 3 {
+		t.Fatalf("got %d parts, want 3: %+v", len(result.Part), result.Part)
+	}
+	for i, p := range result.Part {
+		if p.PartNumber != i+1 {
+			t.Errorf("part[%d].PartNumber = %d, want %d", i, p.PartNumber, i+1)
+		}
+		if !strings.HasPrefix(p.ETag, `"`) || !strings.HasSuffix(p.ETag, `"`) {
+			t.Errorf("part[%d].ETag = %q, want quoted", i, p.ETag)
+		}
+		if p.Size <= 0 {
+			t.Errorf("part[%d].Size = %d, want > 0", i, p.Size)
+		}
+		if p.LastModified == "" {
+			t.Errorf("part[%d].LastModified empty", i)
+		}
+	}
+	if result.Bucket != "bkt" || result.Key != "obj" || result.UploadID != uploadID {
+		t.Errorf("identity = (%q,%q,%q)", result.Bucket, result.Key, result.UploadID)
+	}
+	if result.MaxParts != 1000 {
+		t.Errorf("MaxParts = %d, want default 1000", result.MaxParts)
+	}
+	if result.PartNumberMarker != 0 {
+		t.Errorf("PartNumberMarker = %d, want 0", result.PartNumberMarker)
+	}
+	if result.IsTruncated {
+		t.Errorf("IsTruncated = true, want false")
+	}
+}
+
+func TestListPartsHandler_MarkerAndMaxPartsPagination(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	uploadID := mpSeedUploadWithParts(t, bucketPath, "obj", map[int]string{1: "a", 2: "bb", 3: "ccc", 4: "dddd"})
+
+	// Page 1: max-parts=2 → parts 1,2; truncated; NextPartNumberMarker=2.
+	w := mpCallListParts(t, "bkt", "obj", "uploadId="+uploadID+"&max-parts=2")
+	var p1 ListPartsResult
+	if err := xml.Unmarshal(w.Body.Bytes(), &p1); err != nil {
+		t.Fatalf("unmarshal page1: %v", err)
+	}
+	if len(p1.Part) != 2 || p1.Part[0].PartNumber != 1 || p1.Part[1].PartNumber != 2 {
+		t.Fatalf("page1 parts = %+v, want [1 2]", p1.Part)
+	}
+	if !p1.IsTruncated {
+		t.Errorf("page1 IsTruncated = false, want true")
+	}
+	if p1.NextPartNumberMarker != 2 {
+		t.Errorf("page1 NextPartNumberMarker = %d, want 2", p1.NextPartNumberMarker)
+	}
+	if p1.MaxParts != 2 {
+		t.Errorf("page1 MaxParts = %d, want 2", p1.MaxParts)
+	}
+
+	// Page 2: part-number-marker=2 → parts after 2.
+	w = mpCallListParts(t, "bkt", "obj", "uploadId="+uploadID+"&part-number-marker=2")
+	var p2 ListPartsResult
+	if err := xml.Unmarshal(w.Body.Bytes(), &p2); err != nil {
+		t.Fatalf("unmarshal page2: %v", err)
+	}
+	if len(p2.Part) != 2 || p2.Part[0].PartNumber != 3 || p2.Part[1].PartNumber != 4 {
+		t.Fatalf("page2 parts = %+v, want [3 4]", p2.Part)
+	}
+	if p2.IsTruncated {
+		t.Errorf("page2 IsTruncated = true, want false")
+	}
+	if p2.PartNumberMarker != 2 {
+		t.Errorf("page2 PartNumberMarker = %d, want 2", p2.PartNumberMarker)
+	}
+}
+
+func TestListPartsHandler_NoSuchUploadBadID(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	mpTestBucket(t, dataDir, "bkt")
+
+	// Nonexistent but structurally valid id.
+	w := mpCallListParts(t, "bkt", "obj", "uploadId=0123456789abcdef0123456789abcdef")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "NoSuchUpload") {
+		t.Fatalf("body missing NoSuchUpload: %s", w.Body.String())
+	}
+
+	// Malformed id → InvalidArgument (validateUploadID gate).
+	w = mpCallListParts(t, "bkt", "obj", "uploadId=../evil")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("malformed id status = %d, want 400", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "InvalidArgument") {
+		t.Fatalf("malformed id body missing InvalidArgument: %s", w.Body.String())
+	}
+}
+
+func TestListPartsHandler_KeyMismatchIsNoSuchUpload(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	uploadID := mpSeedUploadWithParts(t, bucketPath, "real-key", map[int]string{1: "a"})
+
+	w := mpCallListParts(t, "bkt", "other-key", "uploadId="+uploadID)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "NoSuchUpload") {
+		t.Fatalf("body missing NoSuchUpload: %s", w.Body.String())
+	}
+}
+
+// ---- Leaf 3.3: expiry sweep ----
+
+func TestSweepExpiredUploads_RemovesOldKeepsFresh(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+
+	// Expired session: backdated Initiated, with a parts dir on disk.
+	oldID := newTestUploadIDSuffix(t, "old")
+	oldMP := MultipartUpload{UploadID: oldID, Key: "obj", Initiated: time.Now().UTC().Add(-multipartUploadExpiry - time.Hour), Parts: make(map[int]PartMetadata)}
+	oldMP.Parts[1] = mpStorePart(t, bucketPath, oldID, 1, "stale")
+	mpWriteUploadMeta(t, bucketPath, oldID, oldMP)
+
+	// Fresh session must be untouched.
+	freshID := newTestUploadIDSuffix(t, "fresh")
+	mpWriteUploadMeta(t, bucketPath, freshID, MultipartUpload{UploadID: freshID, Key: "obj", Initiated: time.Now().UTC(), Parts: make(map[int]PartMetadata)})
+
+	removed := sweepExpiredUploads(bucketPath)
+	if removed != 1 {
+		t.Fatalf("sweepExpiredUploads = %d, want 1", removed)
+	}
+	if _, err := os.Stat(filepath.Join(mpUploadsDir(bucketPath), oldID+".json")); !os.IsNotExist(err) {
+		t.Errorf("expired upload meta still exists")
+	}
+	if _, err := os.Stat(filepath.Join(mpUploadsDir(bucketPath), oldID+"_parts")); !os.IsNotExist(err) {
+		t.Errorf("expired parts dir still exists")
+	}
+	if _, err := os.Stat(filepath.Join(mpUploadsDir(bucketPath), freshID+".json")); err != nil {
+		t.Errorf("fresh upload meta removed: %v", err)
+	}
+}
+
+func TestSweepExpiredUploads_EmptyBucketReturnsZero(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	if got := sweepExpiredUploads(bucketPath); got != 0 {
+		t.Fatalf("sweepExpiredUploads = %d, want 0", got)
+	}
+}
+
+// ---- Leaf 3.3: EntityTooSmall on non-final parts ----
+
+func TestCompleteMultipartUploadHandler_EntityTooSmallNonFinalPart(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	key := "obj"
+
+	// Two small parts (both < 5MiB); part 1 is non-final → reject.
+	uploadID := mpSeedUploadWithParts(t, bucketPath, key, map[int]string{1: "small-one", 2: "small-two"})
+
+	body := mpCompleteBody(
+		PartToUpload{PartNumber: 1, ETag: mpHashETag("small-one")},
+		PartToUpload{PartNumber: 2, ETag: mpHashETag("small-two")},
+	)
+	r := httptest.NewRequest(http.MethodPost, "/bkt/"+key+"?uploadId="+uploadID, body)
+	w := httptest.NewRecorder()
+	completeMultipartUploadHandler(w, r, "bkt", key, uploadID)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "EntityTooSmall") {
+		t.Fatalf("body missing EntityTooSmall: %s", w.Body.String())
+	}
+	// The upload session must survive a rejected complete.
+	if _, err := os.Stat(filepath.Join(mpUploadsDir(bucketPath), uploadID+".json")); err != nil {
+		t.Errorf("upload session removed on EntityTooSmall: %v", err)
+	}
+}
+
+func TestCompleteMultipartUploadHandler_SmallFinalPartAllowed(t *testing.T) {
+	dataDir := mpTestConfig(t)
+	bucketPath := mpTestBucket(t, dataDir, "bkt")
+	key := "obj"
+
+	// Small non-final part padded to >= minPartSize, small final part → OK.
+	big := strings.Repeat("B", minPartSize)
+	uploadID := mpSeedUploadWithParts(t, bucketPath, key, map[int]string{1: big, 2: "tiny-last"})
+
+	body := mpCompleteBody(
+		PartToUpload{PartNumber: 1, ETag: mpHashETag(big)},
+		PartToUpload{PartNumber: 2, ETag: mpHashETag("tiny-last")},
+	)
+	r := httptest.NewRequest(http.MethodPost, "/bkt/"+key+"?uploadId="+uploadID, body)
+	w := httptest.NewRecorder()
+	completeMultipartUploadHandler(w, r, "bkt", key, uploadID)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", w.Code, w.Body.String())
+	}
+	got, err := os.ReadFile(filepath.Join(bucketPath, key))
+	if err != nil {
+		t.Fatalf("reading completed object: %v", err)
+	}
+	if string(got) != big+"tiny-last" {
+		t.Fatalf("object content wrong: %d bytes", len(got))
+	}
+}
+
+// mpHashETag returns the md5 hex ETag of content (what uploadPartHandler stores).
+func mpHashETag(content string) string {
+	sum := md5.Sum([]byte(content))
+	return hex.EncodeToString(sum[:])
 }

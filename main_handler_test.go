@@ -801,8 +801,10 @@ func TestCompleteMultipartUploadHandler_Success(t *testing.T) {
 	var initResult InitiateMultipartUploadResult
 	xml.Unmarshal(w.Body.Bytes(), &initResult)
 
-	// Upload parts
-	for i, partContent := range []string{"Hello ", "World!"} {
+	// Upload parts. Part 1 is padded to the 5MiB non-final minimum
+	// (EntityTooSmall rule, leaf 3.3); part 2 is the small final part.
+	bigPart := "Hello " + strings.Repeat("x", minPartSize)
+	for i, partContent := range []string{bigPart, "World!"} {
 		partNum := i + 1
 		w2 := httptest.NewRecorder()
 		req2 := httptest.NewRequest("PUT",
@@ -842,8 +844,9 @@ func TestCompleteMultipartUploadHandler_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read assembled object: %v", err)
 	}
-	if string(assembled) != "Hello World!" {
-		t.Errorf("assembled content = %q, want %q", string(assembled), "Hello World!")
+	wantAssembled := bigPart + "World!"
+	if string(assembled) != wantAssembled {
+		t.Errorf("assembled content = %d bytes, want %d bytes", len(assembled), len(wantAssembled))
 	}
 
 	// Verify upload metadata cleaned up

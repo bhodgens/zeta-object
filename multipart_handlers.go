@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,15 @@ import (
 )
 
 // multipart_handlers.go — S3 multipart upload handlers
+
+// multipartUploadExpiry is how long an in-progress multipart upload session
+// may sit untouched before the lazy expiry sweep aborts and deletes it
+// (leaf 3.3; mirrors real S3's 7-day abort rule).
+const multipartUploadExpiry = 7 * 24 * time.Hour
+
+// minPartSize is the S3 minimum size for every part except the final one;
+// smaller non-final parts are rejected with EntityTooSmall at complete.
+const minPartSize = 5 * 1024 * 1024
 
 // multipartLocks protects concurrent read-modify-write operations on multipart upload metadata
 var multipartLocks sync.Map // map[string]*sync.Mutex — keyed by upload metadata file path
@@ -510,6 +520,20 @@ func copyPartsToAssembly(w http.ResponseWriter, uploadID string, mpUpload Multip
 			return 0, nil, false
 		}
 
+		// S3 minimum part size: every part except the LAST one in the
+		// complete request must be >= minPartSize (leaf 3.3). Checked before
+		// any I/O so the rejection is cheap and the session stays intact.
+		isFinalPart := i == len(completeRequest.Parts)-1
+		if !isFinalPart {
+			if stored, found := mpUpload.Parts[partToUpload.PartNumber]; found && stored.Size < minPartSize {
+				log.Printf("Part %d of upload %s is %d bytes, below the %d-byte non-final minimum", partToUpload.PartNumber, strconv.Quote(uploadID), stored.Size, minPartSize)
+				w.Header().Set("Content-Type", "application/xml")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(errorToXML("EntityTooSmall", fmt.Sprintf("Your proposed upload is smaller than the minimum allowed size. Each part must be at least %d bytes in size, except the last part.", minPartSize))))
+				return 0, nil, false
+			}
+		}
+
 		storedPartMeta, found := mpUpload.Parts[partToUpload.PartNumber]
 		if !found {
 			log.Printf("Part number %d not found in multipart upload %s", partToUpload.PartNumber, strconv.Quote(uploadID))
@@ -703,4 +727,314 @@ func abortMultipartUploadHandler(w http.ResponseWriter, r *http.Request, bucketN
 
 	w.WriteHeader(http.StatusNoContent)
 	log.Printf("Successfully aborted multipart upload for %s/%s, UploadID: %s", strconv.Quote(bucketName), strconv.Quote(objectName), strconv.Quote(uploadID))
+}
+
+// s3Timestamp formats a time in the S3 XML timestamp layout.
+func s3Timestamp(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05.000Z")
+}
+
+// listMultipartUploadsHandler implements ListMultipartUploads
+// (GET /bucket?uploads): XML ListMultipartUploadsResult of all in-progress
+// upload sessions in the bucket, sorted lexicographically by Key then
+// UploadId, honoring prefix / key-marker / max-uploads.
+func listMultipartUploadsHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
+	bucketPath := getBucketPath(bucketName)
+	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
+		log.Printf("Bucket %s does not exist for ListMultipartUploads", strconv.Quote(bucketName))
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
+		return
+	}
+
+	query := r.URL.Query()
+	prefix := query.Get("prefix")
+	keyMarker := query.Get("key-marker")
+	maxUploads := 1000
+	if v := query.Get("max-uploads"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxUploads = n
+		}
+	}
+
+	uploadsDir := filepath.Join(bucketPath, ".metadata", ".uploads")
+	entries, err := os.ReadDir(uploadsDir)
+	if err != nil && !os.IsNotExist(err) {
+		log.Printf("Error reading uploads dir %s: %v", strconv.Quote(uploadsDir), err)
+		writeS3Error(w, "InternalError", "Error listing uploads.", http.StatusInternalServerError)
+		return
+	}
+
+	type uploadRef struct {
+		key, id string
+		meta    MultipartUpload
+	}
+	var uploads []uploadRef
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		metaPath := filepath.Join(uploadsDir, entry.Name())
+		data, err := os.ReadFile(metaPath) //nolint:gosec // G703: entry names come from ReadDir, not request input.
+		if err != nil {
+			log.Printf("Skipping unreadable upload meta %s: %v", strconv.Quote(metaPath), err)
+			continue
+		}
+		var mp MultipartUpload
+		if err := json.Unmarshal(data, &mp); err != nil {
+			log.Printf("Skipping corrupt upload meta %s: %v", strconv.Quote(metaPath), err)
+			continue
+		}
+		if prefix != "" && !strings.HasPrefix(mp.Key, prefix) {
+			continue
+		}
+		if keyMarker != "" {
+			// S3 semantics: listing begins AFTER the marker. Without an
+			// upload-id-marker, sessions with key == key-marker are excluded;
+			// with one, only sessions with UploadId strictly greater count.
+			if mp.Key < keyMarker {
+				continue
+			}
+			if mp.Key == keyMarker {
+				uploadIDMarker := query.Get("upload-id-marker")
+				if uploadIDMarker == "" || mp.UploadID <= uploadIDMarker {
+					continue
+				}
+			}
+		}
+		uploads = append(uploads, uploadRef{key: mp.Key, id: mp.UploadID, meta: mp})
+	}
+
+	sort.Slice(uploads, func(i, j int) bool {
+		if uploads[i].key != uploads[j].key {
+			return uploads[i].key < uploads[j].key
+		}
+		return uploads[i].id < uploads[j].id
+	})
+
+	result := ListMultipartUploadsResult{
+		Bucket:      bucketName,
+		KeyMarker:   keyMarker,
+		Prefix:      prefix,
+		MaxUploads:  maxUploads,
+		IsTruncated: len(uploads) > maxUploads,
+	}
+	listed := uploads
+	if result.IsTruncated {
+		listed = uploads[:maxUploads]
+		last := uploads[maxUploads-1]
+		result.NextKeyMarker = last.key
+		result.NextUploadIDMarker = last.id
+	}
+	for _, u := range listed {
+		result.Upload = append(result.Upload, MultipartUploadEntry{
+			Key:       u.key,
+			UploadID:  u.id,
+			Initiated: s3Timestamp(u.meta.Initiated),
+		})
+	}
+
+	writeXML(w, http.StatusOK, result)
+	log.Printf("Listed %d multipart uploads in %s (truncated=%v)", len(result.Upload), strconv.Quote(bucketName), result.IsTruncated)
+}
+
+// listPartsHandler implements ListParts (GET /object?uploadId=...): XML
+// ListPartsResult of the parts recorded for the upload session, sorted by
+// part number, honoring part-number-marker / max-parts. The uploadId and
+// key must match the session exactly (NoSuchUpload otherwise).
+func listPartsHandler(w http.ResponseWriter, r *http.Request, bucketName, objectName, uploadID string) {
+	// Validate uploadID BEFORE any path join (same gate as uploadPart).
+	validatedID, err := validateUploadID(uploadID)
+	if err != nil {
+		log.Printf("Invalid uploadId in ListParts: %v", err)
+		writeS3Error(w, "InvalidArgument", "Invalid upload id.", http.StatusBadRequest)
+		return
+	}
+	if err := validateObjectKey(objectName); err != nil {
+		log.Printf("Invalid object key %s in ListParts: %v", strconv.Quote(objectName), err)
+		writeS3Error(w, "InvalidArgument", "Invalid object key.", http.StatusBadRequest)
+		return
+	}
+
+	bucketPath := getBucketPath(bucketName)
+	uploadID = validatedID
+	mpUploadMetaPath := filepath.Join(bucketPath, ".metadata", ".uploads", uploadID+".json")
+
+	uploadLock := getMultipartLock(mpUploadMetaPath)
+	uploadLock.Lock()
+	defer uploadLock.Unlock()
+
+	// Read the session meta; mpUploadMetaPath embeds uploadID (validated
+	// 32-hex) — no traversal possible; G703 false positive.
+	metaJSON, err := os.ReadFile(mpUploadMetaPath) //nolint:gosec // G703: uploadID validated 32-hex; no traversal possible.
+	if os.IsNotExist(err) {
+		log.Printf("Multipart upload metadata %s not found for UploadID %s (ListParts)", strconv.Quote(mpUploadMetaPath), strconv.Quote(uploadID))
+		writeS3Error(w, "NoSuchUpload", "The specified multipart upload does not exist.", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("Error reading multipart upload metadata %s: %v", strconv.Quote(mpUploadMetaPath), err)
+		writeS3Error(w, "InternalError", "Error reading upload metadata.", http.StatusInternalServerError)
+		return
+	}
+	var mpUpload MultipartUpload
+	if err := json.Unmarshal(metaJSON, &mpUpload); err != nil {
+		log.Printf("Error unmarshalling multipart upload metadata from %s: %v", strconv.Quote(mpUploadMetaPath), err)
+		writeS3Error(w, "InternalError", "Error parsing upload metadata.", http.StatusInternalServerError)
+		return
+	}
+	// Key must match the session, else the upload "does not exist" for this
+	// object (mirrors uploadPart/complete/abort).
+	if mpUpload.Key != objectName {
+		log.Printf("Object name mismatch for UploadID %s during ListParts. Expected %s, got %s", strconv.Quote(uploadID), strconv.Quote(mpUpload.Key), strconv.Quote(objectName))
+		writeS3Error(w, "NoSuchUpload", "The specified multipart upload does not exist.", http.StatusNotFound)
+		return
+	}
+
+	query := r.URL.Query()
+	maxParts := 1000
+	if v := query.Get("max-parts"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxParts = n
+		}
+	}
+	partNumberMarker := 0
+	if v := query.Get("part-number-marker"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			partNumberMarker = n
+		}
+	}
+
+	// Sort part numbers ascending, then filter to those after the marker.
+	partNumbers := make([]int, 0, len(mpUpload.Parts))
+	for num := range mpUpload.Parts {
+		if num > partNumberMarker {
+			partNumbers = append(partNumbers, num)
+		}
+	}
+	sort.Ints(partNumbers)
+
+	result := ListPartsResult{
+		Bucket:           bucketName,
+		Key:              objectName,
+		UploadID:         uploadID,
+		Initiated:        s3Timestamp(mpUpload.Initiated),
+		PartNumberMarker: partNumberMarker,
+		MaxParts:         maxParts,
+		IsTruncated:      len(partNumbers) > maxParts,
+	}
+	listed := partNumbers
+	if result.IsTruncated {
+		listed = partNumbers[:maxParts]
+		result.NextPartNumberMarker = listed[len(listed)-1]
+	}
+	for _, num := range listed {
+		pm := mpUpload.Parts[num]
+		result.Part = append(result.Part, PartEntry{
+			PartNumber:   pm.PartNumber,
+			ETag:         fmt.Sprintf("%q", pm.ETag),
+			Size:         pm.Size,
+			LastModified: s3Timestamp(mpUpload.Initiated),
+		})
+	}
+
+	writeXML(w, http.StatusOK, result)
+	log.Printf("Listed %d parts of upload %s for %s/%s", len(result.Part), strconv.Quote(uploadID), strconv.Quote(bucketName), strconv.Quote(objectName))
+}
+
+// sweepExpiredUploads lazily aborts multipart upload sessions whose Initiated
+// timestamp is older than multipartUploadExpiry: the session JSON and its
+// _parts dir are removed. It scans the bucket's .metadata/.uploads dir and
+// returns the number of sessions removed. Called hourly from main() and
+// exported for tests.
+func sweepExpiredUploads(bucketPath string) int {
+	uploadsDir := filepath.Join(bucketPath, ".metadata", ".uploads")
+	entries, err := os.ReadDir(uploadsDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("Expiry sweep: cannot read uploads dir %s: %v", strconv.Quote(uploadsDir), err)
+		}
+		return 0
+	}
+
+	cutoff := time.Now().UTC().Add(-multipartUploadExpiry)
+	removed := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		metaPath := filepath.Join(uploadsDir, entry.Name())
+		data, err := os.ReadFile(metaPath) //nolint:gosec // G703: entry names come from ReadDir, not request input.
+		if err != nil {
+			log.Printf("Expiry sweep: skipping unreadable upload meta %s: %v", strconv.Quote(metaPath), err)
+			continue
+		}
+		var mp MultipartUpload
+		if err := json.Unmarshal(data, &mp); err != nil {
+			log.Printf("Expiry sweep: skipping corrupt upload meta %s: %v", strconv.Quote(metaPath), err)
+			continue
+		}
+		if mp.Initiated.After(cutoff) {
+			continue
+		}
+
+		uploadID := strings.TrimSuffix(entry.Name(), ".json")
+		// Serialize against concurrent part uploads/completes on this session.
+		uploadLock := getMultipartLock(metaPath)
+		uploadLock.Lock()
+		// Re-check under the lock: the session may have been completed or
+		// aborted while we waited.
+		if data, err := os.ReadFile(metaPath); err == nil {
+			var fresh MultipartUpload
+			if json.Unmarshal(data, &fresh) == nil && fresh.Initiated.After(cutoff) {
+				uploadLock.Unlock()
+				continue
+			}
+		}
+		if err := os.Remove(metaPath); err != nil && !os.IsNotExist(err) { //nolint:gosec // G703: uploadID from session filename; no traversal.
+			log.Printf("Expiry sweep: error removing %s: %v", strconv.Quote(metaPath), err)
+			uploadLock.Unlock()
+			continue
+		}
+		partsDir := filepath.Join(uploadsDir, uploadID+"_parts")
+		if err := os.RemoveAll(partsDir); err != nil { //nolint:gosec // G703: uploadID validated below; no traversal.
+			log.Printf("Expiry sweep: error removing parts dir %s: %v", strconv.Quote(partsDir), err)
+		}
+		uploadLock.Unlock()
+		removed++
+		log.Printf("Expiry sweep: removed expired multipart upload %s (key %s, initiated %s)", strconv.Quote(uploadID), strconv.Quote(mp.Key), mp.Initiated.Format(time.RFC3339))
+	}
+	return removed
+}
+
+// startMultipartExpirySweeper runs sweepExpiredUploads over every discovered
+// bucket every hour, forever. Started once from main().
+func startMultipartExpirySweeper() {
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			sweepAllBuckets()
+		}
+	}()
+}
+
+// sweepAllBuckets sweeps the dataDir buckets plus any configured custom
+// buckets; returns the total number of sessions removed.
+func sweepAllBuckets() int {
+	total := 0
+	bucketRoots := filepath.Join(serverConfig.DataDir, "*")
+	paths, _ := filepath.Glob(bucketRoots)
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		total += sweepExpiredUploads(p)
+	}
+	for _, p := range serverConfig.Buckets {
+		if info, err := os.Stat(p); err == nil && info.IsDir() {
+			total += sweepExpiredUploads(p)
+		}
+	}
+	return total
 }

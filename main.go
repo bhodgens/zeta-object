@@ -82,6 +82,9 @@ func main() {
 	InitInactivityTracker()
 	initializeInactivityTimers()
 
+	// Leaf 3.3: hourly lazy expiry of abandoned multipart uploads (>7d old)
+	startMultipartExpirySweeper()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", rootHandler)
 	srv := newServer(serverConfig.ListenAddr, mux, serverConfig.CertFile, serverConfig.KeyFile)
@@ -131,8 +134,14 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Request: %s %s, Bucket: '%s', Object: '%s'", strconv.Quote(r.Method), strconv.Quote(r.URL.Path), strconv.Quote(bucketName), strconv.Quote(objectName))
 
-	// Authenticate request (placeholder - to be implemented with AWS SigV4)
-	if !authenticateRequest(w, r) {
+	// Authenticate request: presigned query auth when X-Amz-* params present
+	// and no Authorization header; header auth wins otherwise (leaf 3.2).
+	if isPresignedRequest(r) {
+		if !authenticatePresigned(w, r) {
+			// authenticatePresigned writes the error response on failure.
+			return
+		}
+	} else if !authenticateRequest(w, r) {
 		// authenticateRequest will write the error response if authentication fails
 		return
 	}
@@ -176,6 +185,11 @@ func bucketLevelDispatch(w http.ResponseWriter, r *http.Request, bucketName stri
 		listObjectsV2Handler(w, r, bucketName)
 		return
 	}
+	// Leaf 3.3: ListMultipartUploads sub-resource
+	if _, ok := r.URL.Query()["uploads"]; ok && r.Method == "GET" {
+		listMultipartUploadsHandler(w, r, bucketName)
+		return
+	}
 
 	switch r.Method {
 	case "PUT":
@@ -214,6 +228,11 @@ func objectLevelDispatch(w http.ResponseWriter, r *http.Request, bucketName, obj
 	}
 	if uploadID, ok := r.URL.Query()["uploadId"]; ok && r.Method == "DELETE" {
 		abortMultipartUploadHandler(w, r, bucketName, objectName, uploadID[0])
+		return
+	}
+	// Leaf 3.3: ListParts sub-resource
+	if uploadID, ok := r.URL.Query()["uploadId"]; ok && r.Method == "GET" {
+		listPartsHandler(w, r, bucketName, objectName, uploadID[0])
 		return
 	}
 

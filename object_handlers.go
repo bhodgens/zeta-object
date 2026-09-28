@@ -163,6 +163,207 @@ func resolveObjectDataPath(bucketPath, objectName string, meta *ObjectMetadata) 
 	return meta.StoragePath
 }
 
+// leaf 3.1: Range request parsing and conditional (If-*) request evaluation.
+// Conditionals are evaluated BEFORE Range processing (RFC 7232 §6 ordering);
+// Range only applies to a 200/206 outcome.
+
+// rangeOutcome classifies the result of parsing a Range header against an
+// object size.
+type rangeOutcome int
+
+const (
+	rangeFull          rangeOutcome = iota // serve 200 with the full body
+	rangePartial                           // serve 206 with the byte slice
+	rangeUnsatisfiable                     // serve 416 InvalidRange
+)
+
+// rangeRequest is the parsed Range outcome: what to serve and, for
+// rangePartial, which byte slice (start..start+length-1).
+type rangeRequest struct {
+	outcome rangeOutcome
+	start   int64
+	length  int64
+}
+
+// parseRangeHeader parses a Range header value for an object of the given
+// size. Per the leaf 3.1 contract: only `bytes=<start>-<end>`,
+// `bytes=<start>-`, and `bytes=-<suffix>` single ranges are honored. Anything
+// else — wrong unit, unparsable numbers, inverted ranges (`bytes=5-2`),
+// empty spec (`bytes=-`) — is MALFORMED and ignored (200 full body), matching
+// S3's lenient behavior. A multi-range spec (`bytes=0-1,3-4`) also falls back
+// to a full-body 200: simplest legal fallback; we do not emit
+// multipart/byteranges. A syntactically valid range that cannot intersect the
+// object (start >= size, suffix length 0) is UNSATISFIABLE → 416.
+func parseRangeHeader(spec string, size int64) rangeRequest {
+	const unit = "bytes="
+	if !strings.HasPrefix(spec, unit) {
+		return rangeRequest{outcome: rangeFull}
+	}
+	specPart := strings.TrimSpace(spec[len(unit):])
+	// Multi-range: comma present → fall back to a full-body 200 (documented
+	// choice; S3 itself returns 200 for spec forms it won't honor).
+	if strings.Contains(specPart, ",") {
+		return rangeRequest{outcome: rangeFull}
+	}
+	startStr, endStr, found := strings.Cut(specPart, "-")
+	if !found {
+		return rangeRequest{outcome: rangeFull}
+	}
+	startStr = strings.TrimSpace(startStr)
+	endStr = strings.TrimSpace(endStr)
+
+	switch {
+	case startStr == "" && endStr == "":
+		// "bytes=-" — no numbers at all: malformed.
+		return rangeRequest{outcome: rangeFull}
+	case startStr == "":
+		// Suffix form: last <endStr> bytes.
+		suffixLen, err := strconv.ParseInt(endStr, 10, 64)
+		if err != nil || suffixLen < 0 {
+			return rangeRequest{outcome: rangeFull}
+		}
+		if suffixLen == 0 || size == 0 {
+			return rangeRequest{outcome: rangeUnsatisfiable}
+		}
+		if suffixLen > size {
+			suffixLen = size // "-N" beyond EOF → whole object
+		}
+		return rangeRequest{outcome: rangePartial, start: size - suffixLen, length: suffixLen}
+	default:
+		start, err := strconv.ParseInt(startStr, 10, 64)
+		if err != nil || start < 0 {
+			return rangeRequest{outcome: rangeFull}
+		}
+		if start >= size {
+			return rangeRequest{outcome: rangeUnsatisfiable}
+		}
+		end := size - 1
+		if endStr != "" {
+			parsedEnd, err := strconv.ParseInt(endStr, 10, 64)
+			if err != nil || parsedEnd < start {
+				// "5-2" (inverted) or garbage end: malformed.
+				return rangeRequest{outcome: rangeFull}
+			}
+			if parsedEnd < end {
+				end = parsedEnd
+			}
+		}
+		return rangeRequest{outcome: rangePartial, start: start, length: end - start + 1}
+	}
+}
+
+// etagMatches reports whether an If-(None-)Match header value matches the
+// stored ETag (raw, unquoted hex). Comparison is per RFC 7232: "*" matches
+// any current representation, list members are comma-separated, the weak
+// validator prefix "W/" is ignored, and quoting is not significant.
+func etagMatches(headerValue, etag string) bool {
+	if headerValue == "*" {
+		return true
+	}
+	for member := range strings.SplitSeq(headerValue, ",") {
+		candidate := strings.TrimSpace(member)
+		candidate = strings.TrimPrefix(candidate, "W/")
+		candidate = strings.Trim(candidate, `"`)
+		if candidate == etag {
+			return true
+		}
+	}
+	return false
+}
+
+// evaluatePreconditions evaluates the RFC 7232 conditional request headers in
+// the mandated order against the object's ETag (raw, unquoted) and
+// Last-Modified time. If a precondition fails or short-circuits, it returns
+// the response status with done=true; otherwise (0, false) — the caller
+// proceeds with the normal GET/HEAD (and then Range) handling.
+//
+// Order (RFC 7232 §6):
+//  1. If-Match: no match → 412. Present and matching → If-Unmodified-Since
+//     is NOT evaluated.
+//  2. If-Unmodified-Since (only when If-Match absent): modified since → 412.
+//  3. If-None-Match: match → 304 for GET/HEAD. Present but not matching →
+//     If-Modified-Since is NOT evaluated.
+//  4. If-Modified-Since (only when If-None-Match absent): not modified → 304.
+//
+// Dates compare at second granularity (http.TimeFormat has no sub-second
+// precision).
+func evaluatePreconditions(r *http.Request, etag string, lastModified time.Time) (status int, done bool) {
+	modTime := lastModified.Truncate(time.Second)
+
+	if ifMatch := r.Header.Get("If-Match"); ifMatch != "" {
+		if !etagMatches(ifMatch, etag) {
+			return http.StatusPreconditionFailed, true
+		}
+	} else if ius := r.Header.Get("If-Unmodified-Since"); ius != "" {
+		if t, err := http.ParseTime(ius); err == nil && modTime.After(t) {
+			return http.StatusPreconditionFailed, true
+		}
+	}
+
+	if inm := r.Header.Get("If-None-Match"); inm != "" {
+		if etagMatches(inm, etag) {
+			return http.StatusNotModified, true
+		}
+	} else if ims := r.Header.Get("If-Modified-Since"); ims != "" {
+		if t, err := http.ParseTime(ims); err == nil && !modTime.After(t) {
+			return http.StatusNotModified, true
+		}
+	}
+
+	return 0, false
+}
+
+// checkObjectPreconditions applies evaluatePreconditions to a GET/HEAD object
+// request and writes the terminating response (304 or 412) when a condition
+// short-circuits. Returns true when the caller must stop. A 304 carries ETag
+// + Last-Modified and no body; Content-Length is removed (it described the
+// full entity, which a 304 must not re-advertise).
+func checkObjectPreconditions(w http.ResponseWriter, r *http.Request, etag string, lastModified time.Time) bool {
+	status, done := evaluatePreconditions(r, etag, lastModified)
+	if !done {
+		return false
+	}
+	if status == http.StatusNotModified {
+		w.Header().Del("Content-Length")
+		w.WriteHeader(http.StatusNotModified)
+		return true
+	}
+	writeS3Error(w, "PreconditionFailed", "At least one of the pre-conditions you specified did not hold", status)
+	return true
+}
+
+// serveObjectRange applies the parsed Range outcome to the response for an
+// object of actualSize bytes whose data file is already open. For rangeFull
+// it returns false so the caller serves the normal full-body 200. For
+// rangeUnsatisfiable it writes 416 InvalidRange with `Content-Range: bytes
+// */<total>`. For rangePartial it writes 206 with Content-Range and the
+// sliced Content-Length, seeking into the file; isHead suppresses the body.
+// Returns true when the response is fully written.
+func serveObjectRange(w http.ResponseWriter, file *os.File, rr rangeRequest, actualSize int64, isHead bool, logPrefix string) bool {
+	switch rr.outcome {
+	case rangeUnsatisfiable:
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", actualSize))
+		writeS3Error(w, "InvalidRange", "The requested range is not satisfiable", http.StatusRequestedRangeNotSatisfiable)
+		return true
+	case rangePartial:
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rr.start, rr.start+rr.length-1, actualSize))
+		w.Header().Set("Content-Length", strconv.FormatInt(rr.length, 10))
+		w.WriteHeader(http.StatusPartialContent)
+		if !isHead {
+			if _, err := file.Seek(rr.start, io.SeekStart); err != nil {
+				log.Printf("%s: error seeking to range start %d: %v", logPrefix, rr.start, err) //nolint:gosec // G706: logPrefix is handler-constructed, not client input.
+				return true
+			}
+			if _, err := io.CopyN(w, file, rr.length); err != nil {
+				log.Printf("%s: error streaming range to client: %v", logPrefix, err) //nolint:gosec // G706: logPrefix is handler-constructed, not client input.
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
 	bucketPath := getBucketPath(bucketName)
 	objectMetadataPath := filepath.Join(bucketPath, ".metadata", objectName+".meta")
@@ -224,10 +425,47 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	if contentType == "" {
 		contentType = "binary/octet-stream"
 	}
+	// Leaf 3.1 fix 7: conditional headers are evaluated BEFORE Range.
+	// The validator headers (ETag, Last-Modified) must be set first so a
+	// 304 response carries them.
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", actualSize))
 	w.Header().Set("ETag", fmt.Sprintf("\"%s\"", meta.ETag))
 	w.Header().Set("Last-Modified", meta.LastModified.UTC().Format(http.TimeFormat))
+	if checkObjectPreconditions(w, r, meta.ETag, meta.LastModified) {
+		return
+	}
+
+	// Leaf 3.1 fix 5: advertise byte-range support on every 200/206.
+	w.Header().Set("Accept-Ranges", "bytes")
+	rr := parseRangeHeader(r.Header.Get("Range"), actualSize)
+	if rr.outcome != rangeFull {
+		// Open AFTER headers are computed but write the status only once we
+		// know the file opens; a failed open becomes NoSuchKey/404 rather
+		// than a 206/416 with headers half-set.
+		file, err := os.Open(objectDataPath)
+		if err != nil {
+			log.Printf("Error opening object data file %s: %v", objectDataPath, err)
+			writeS3Error(w, "NoSuchKey", "The specified key does not exist.", http.StatusNotFound)
+			return
+		}
+		defer file.Close()
+		if serveObjectRange(w, file, rr, actualSize, false, fmt.Sprintf("GetObject %s/%s", bucketName, objectName)) {
+			log.Printf("Served range request for object %s/%s (%s)", strconv.Quote(bucketName), strconv.Quote(objectName), strconv.Quote(r.Header.Get("Range"))) //nolint:gosec // G706: Range is strconv.Quote-escaped.
+			go triggerActions("after_download", ActionContext{
+				FilePath:     objectDataPath,
+				MetadataPath: objectMetadataPath,
+				BucketName:   bucketName,
+				BucketPath:   bucketPath,
+				ObjectKey:    objectName,
+				ContentType:  meta.ContentType,
+				ETag:         meta.ETag,
+				Size:         meta.ContentLength,
+			})
+			return
+		}
+	}
+
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", actualSize))
 	for k, v := range meta.CustomMetadata {
 		w.Header().Set(k, v)
 	}
@@ -394,10 +632,28 @@ func headObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 	if contentType == "" {
 		contentType = "binary/octet-stream"
 	}
+	// Leaf 3.1 fix 7: conditional headers are evaluated BEFORE Range.
+	// Validator headers (ETag, Last-Modified) are set first so a 304
+	// carries them.
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", actualSize))
 	w.Header().Set("ETag", fmt.Sprintf("\"%s\"", meta.ETag))
 	w.Header().Set("Last-Modified", meta.LastModified.UTC().Format(http.TimeFormat))
+	if checkObjectPreconditions(w, r, meta.ETag, meta.LastModified) {
+		return
+	}
+
+	// Leaf 3.1 fix 5: advertise byte-range support on 200/206 HEAD.
+	w.Header().Set("Accept-Ranges", "bytes")
+	rr := parseRangeHeader(r.Header.Get("Range"), actualSize)
+	if rr.outcome != rangeFull {
+		// HEAD never streams the data file — headers only (leaf 3.1 fix 6).
+		if serveObjectRange(w, nil, rr, actualSize, true, fmt.Sprintf("HeadObject %s/%s", bucketName, objectName)) {
+			log.Printf("Served range HEAD for object %s/%s (%s)", strconv.Quote(bucketName), strconv.Quote(objectName), strconv.Quote(r.Header.Get("Range"))) //nolint:gosec // G706: Range is strconv.Quote-escaped.
+			return
+		}
+	}
+
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", actualSize))
 	for k, v := range meta.CustomMetadata {
 		w.Header().Set(k, v)
 	}

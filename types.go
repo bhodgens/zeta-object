@@ -140,3 +140,52 @@ type CompletedMultipartUploadResult struct {
 	Key      string   `xml:"Key"`
 	ETag     string   `xml:"ETag"` // ETag of the assembled object (often MD5 of part ETags + count)
 }
+
+// Leaf 3.3 — ListMultipartUploads / ListParts XML documents
+
+// MultipartUploadEntry is a single in-progress upload in a
+// ListMultipartUploadsResult.
+type MultipartUploadEntry struct {
+	Key       string `xml:"Key"`
+	UploadID  string `xml:"UploadId"`
+	Initiated string `xml:"Initiated"` // S3 timestamp: 2006-01-02T15:04:05.000Z
+}
+
+// ListMultipartUploadsResult is the XML response for GET /bucket?uploads.
+// The S3 xmlns is pinned via the XMLName tag literal (Go's encoder only
+// honors the tag, not runtime XMLName values) — same pattern as the other
+// result structs above.
+type ListMultipartUploadsResult struct {
+	XMLName            xml.Name               `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListMultipartUploadsResult"`
+	Bucket             string                 `xml:"Bucket"`
+	KeyMarker          string                 `xml:"KeyMarker"`
+	UploadIDMarker     string                 `xml:"UploadIdMarker,omitempty"`
+	NextKeyMarker      string                 `xml:"NextKeyMarker,omitempty"`
+	NextUploadIDMarker string                 `xml:"NextUploadIdMarker,omitempty"`
+	Prefix             string                 `xml:"Prefix"`
+	MaxUploads         int                    `xml:"MaxUploads"`
+	IsTruncated        bool                   `xml:"IsTruncated"`
+	Upload             []MultipartUploadEntry `xml:"Upload"`
+}
+
+// PartEntry is a single part in a ListPartsResult.
+type PartEntry struct {
+	PartNumber   int    `xml:"PartNumber"`
+	ETag         string `xml:"ETag"` // quoted, e.g. "\"<md5hex>\""
+	Size         int64  `xml:"Size"`
+	LastModified string `xml:"LastModified"` // S3 timestamp: 2006-01-02T15:04:05.000Z
+}
+
+// ListPartsResult is the XML response for GET /object?uploadId=...
+type ListPartsResult struct {
+	XMLName              xml.Name    `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListPartsResult"`
+	Bucket               string      `xml:"Bucket"`
+	Key                  string      `xml:"Key"`
+	UploadID             string      `xml:"UploadId"`
+	Initiated            string      `xml:"Initiated"`
+	PartNumberMarker     int         `xml:"PartNumberMarker"`
+	NextPartNumberMarker int         `xml:"NextPartNumberMarker,omitempty"`
+	MaxParts             int         `xml:"MaxParts"`
+	IsTruncated          bool        `xml:"IsTruncated"`
+	Part                 []PartEntry `xml:"Part"`
+}
