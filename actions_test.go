@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -664,5 +666,265 @@ func TestInitInactivityTrackerGuard(t *testing.T) {
 	InitInactivityTracker()
 	if inactivityTracker != first {
 		t.Error("second InitInactivityTracker call re-assigned the global tracker (double-init guard missing)")
+	}
+}
+
+// --- Leaf 4.1: triggerActions / executeAction runtime tests ---
+
+// runnerCapture is a thread-safe recorder swapped in for actionCommandRunner.
+type runnerCapture struct {
+	mu      sync.Mutex
+	invokes []runnerInvoke
+}
+
+type runnerInvoke struct {
+	name    string
+	cmd     string
+	timeout int
+	workDir string
+}
+
+func (r *runnerCapture) run(name, cmd string, timeout int, workDir string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.invokes = append(r.invokes, runnerInvoke{name: name, cmd: cmd, timeout: timeout, workDir: workDir})
+}
+
+func (r *runnerCapture) calls() []runnerInvoke {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]runnerInvoke(nil), r.invokes...)
+}
+
+func (r *runnerCapture) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.invokes)
+}
+
+// swapActionRunner replaces actionCommandRunner for the duration of the test
+// (restored via t.Cleanup). Frozen-seam swap per docs/plans/test-gaps-2026-09/.
+func swapActionRunner(t *testing.T, runner func(name, cmd string, timeout int, workDir string)) {
+	t.Helper()
+	orig := actionCommandRunner
+	actionCommandRunner = runner
+	t.Cleanup(func() { actionCommandRunner = orig })
+}
+
+// setInactivityTrackerNil isolates triggerActions tests from the global
+// tracker (restored via t.Cleanup).
+func setInactivityTrackerNil(t *testing.T) {
+	t.Helper()
+	orig := inactivityTracker
+	inactivityTracker = nil
+	t.Cleanup(func() { inactivityTracker = orig })
+}
+
+func writeActionsConfig(t *testing.T, dir, content string) {
+	t.Helper()
+	path := filepath.Join(dir, actionsFileName)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write %s: %v", path, err)
+	}
+}
+
+func TestTriggerActions(t *testing.T) {
+	boolFalse := false
+
+	tests := []struct {
+		name      string
+		config    string // .bucket-actions content ("" = no file at all)
+		objectKey string
+		wantCalls int
+		wantNames []string // expected runner invocations, in order
+		wantCmds  []string // expected (substituted) commands, aligned with wantNames
+	}{
+		{
+			// Pins: pattern match → action runs with substituted AND
+			// shell-quoted values arriving at the runner.
+			name: "matching pattern runs with substituted quoted values",
+			config: `{
+				"version": "1.0",
+				"after_upload": [
+					{"name": "thumb", "patterns": ["*.jpg"], "command": "echo $OBJECT_KEY"}
+				]
+			}`,
+			objectKey: "photo.jpg",
+			wantCalls: 1,
+			wantNames: []string{"thumb"},
+			wantCmds:  []string{"echo 'photo.jpg'"},
+		},
+		{
+			// Pins: non-matching pattern runs nothing.
+			name: "non-matching pattern runs nothing",
+			config: `{
+				"after_upload": [
+					{"name": "thumb", "patterns": ["*.png"], "command": "echo $OBJECT_KEY"}
+				]
+			}`,
+			objectKey: "photo.jpg",
+			wantCalls: 0,
+		},
+		{
+			// Pins: enabled:false action never runs even when pattern matches.
+			name: "enabled false never runs",
+			config: `{
+				"after_upload": [
+					{"name": "off", "patterns": ["*.jpg"], "command": "echo hi", "enabled": false}
+				]
+			}`,
+			objectKey: "photo.jpg",
+			wantCalls: 0,
+		},
+		{
+			// Pins: multiple matching actions run in config order (async
+			// disabled so the runs are serialized through the runner).
+			name: "multiple matches run in config order",
+			config: `{
+				"after_upload": [
+					{"name": "first", "patterns": ["*.log"], "command": "echo 1", "async": false},
+					{"name": "second", "patterns": ["*.log"], "command": "echo 2", "async": false},
+					{"name": "third", "patterns": ["*.log"], "command": "echo 3", "async": false}
+				]
+			}`,
+			objectKey: "a.log",
+			wantCalls: 3,
+			wantNames: []string{"first", "second", "third"},
+			wantCmds:  []string{"echo 1", "echo 2", "echo 3"},
+		},
+		{
+			// Pins: missing .bucket-actions file → no panic, no run
+			// (covers the loadActionsForPath nil-return path).
+			name:      "missing config file no panic no run",
+			config:    "",
+			objectKey: "photo.jpg",
+			wantCalls: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setInactivityTrackerNil(t)
+
+			bucketDir := t.TempDir()
+			if tt.config != "" {
+				writeActionsConfig(t, bucketDir, tt.config)
+			}
+
+			// Channel-ordered capture: default async actions run in goroutines, so a
+			// mutex-protected slice does not pin arrival order — the channel does.
+			ordered := make(chan runnerInvoke, 8)
+			swapActionRunner(t, func(name, cmd string, timeout int, workDir string) {
+				ordered <- runnerInvoke{name: name, cmd: cmd, timeout: timeout, workDir: workDir}
+			})
+
+			ctx := ActionContext{
+				BucketName: "b",
+				BucketPath: bucketDir,
+				ObjectKey:  tt.objectKey,
+			}
+			triggerActions("after_upload", ctx)
+
+			for i := range tt.wantCalls {
+				select {
+				case inv := <-ordered:
+					if inv.name != tt.wantNames[i] {
+						t.Errorf("call %d name = %q, want %q", i, inv.name, tt.wantNames[i])
+					}
+					if inv.cmd != tt.wantCmds[i] {
+						t.Errorf("call %d cmd = %q, want %q (substituted+quoted)", i, inv.cmd, tt.wantCmds[i])
+					}
+					if inv.workDir != bucketDir {
+						t.Errorf("call %d workDir = %q, want %q", i, inv.workDir, bucketDir)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatalf("only %d of %d expected runner invocations arrived within 2s", i, tt.wantCalls)
+				}
+			}
+			// Extra invocations beyond the expectation would arrive on the buffered
+			// channel; for wantCalls==0 assert none arrived promptly.
+			if tt.wantCalls == 0 {
+				select {
+				case inv := <-ordered:
+					t.Errorf("unexpected runner invocation: %+v", inv)
+				case <-time.After(50 * time.Millisecond):
+				}
+			}
+		})
+	}
+
+	// executeAction enabled:false is also reachable directly (no patterns):
+	// keeps the guard pinned independent of triggerActions wiring.
+	t.Run("executeAction enabled false direct", func(t *testing.T) {
+		capture := &runnerCapture{}
+		swapActionRunner(t, capture.run)
+		executeAction(ActionConfig{Name: "off", Command: "echo hi", Enabled: &boolFalse}, ActionContext{})
+		if capture.count() != 0 {
+			t.Errorf("disabled action ran: %+v", capture.calls())
+		}
+	})
+}
+
+func TestExecuteActionAsyncDoesNotBlock(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	var once sync.Once
+
+	swapActionRunner(t, func(name, cmd string, timeout int, workDir string) {
+		once.Do(func() { close(started) })
+		<-release // runner blocked here: a sync executeAction could NOT return
+		close(finished)
+	})
+
+	done := make(chan struct{})
+	go func() {
+		// Async is the default (Async == nil): must return without waiting.
+		executeAction(ActionConfig{Name: "async-action", Command: "echo hi"}, ActionContext{BucketPath: t.TempDir()})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// executeAction returned while the runner is still blocked — proves
+		// the async path does not wait for command completion.
+	case <-time.After(2 * time.Second):
+		t.Fatal("executeAction did not return within 2s — async:true blocked the caller")
+	}
+
+	select {
+	case <-finished:
+		t.Fatal("runner finished before release — executeAction waited for it (not async)")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Release the runner and prove the goroutine eventually ran.
+	close(release)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("async goroutine never invoked the runner")
+	}
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner never finished after release")
+	}
+}
+
+func TestExecuteActionSyncBlocks(t *testing.T) {
+	var counter atomic.Int32
+
+	swapActionRunner(t, func(name, cmd string, timeout int, workDir string) {
+		counter.Add(1)
+	})
+
+	asyncFalse := false
+	// Sync (async:false): when executeAction returns, the runner MUST have
+	// completed — no goroutine deferral.
+	executeAction(ActionConfig{Name: "sync-action", Command: "echo hi", Async: &asyncFalse}, ActionContext{BucketPath: t.TempDir()})
+
+	if got := counter.Load(); got != 1 {
+		t.Fatalf("counter = %d at executeAction return, want 1 — async:false did not block until completion", got)
 	}
 }

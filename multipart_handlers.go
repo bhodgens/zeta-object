@@ -1008,21 +1008,30 @@ func sweepExpiredUploads(bucketPath string) int {
 	return removed
 }
 
-// startMultipartExpirySweeper runs sweepExpiredUploads over every discovered
-// bucket every hour, forever. Started once from main().
+// sweepInterval is how often startMultipartExpirySweeper runs a sweep pass.
+// A var (not const) so tests can shorten it if ever needed; production keeps
+// the hourly default.
+var sweepInterval = time.Hour
+
+// startMultipartExpirySweeper runs sweepAllBucketsOnce every sweepInterval,
+// forever. Started once from main(). The goroutine body is intentionally a
+// thin ticker wrapper — the per-pass logic is in sweepAllBucketsOnce, which
+// tests drive directly; with the real 1h interval nothing fires during a test.
 func startMultipartExpirySweeper() {
 	go func() {
-		ticker := time.NewTicker(time.Hour)
+		ticker := time.NewTicker(sweepInterval)
 		defer ticker.Stop()
 		for range ticker.C {
-			sweepAllBuckets()
+			sweepAllBucketsOnce()
 		}
 	}()
 }
 
-// sweepAllBuckets sweeps the dataDir buckets plus any configured custom
-// buckets; returns the total number of sessions removed.
-func sweepAllBuckets() int {
+// sweepAllBucketsOnce performs a single expiry-sweep pass over every
+// discovered bucket: the dataDir buckets plus any configured custom buckets.
+// It returns the total number of sessions removed across all buckets.
+// (Extracted verbatim from the former sweepAllBuckets body.)
+func sweepAllBucketsOnce() int {
 	total := 0
 	bucketRoots := filepath.Join(serverConfig.DataDir, "*")
 	paths, _ := filepath.Glob(bucketRoots)

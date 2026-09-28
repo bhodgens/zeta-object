@@ -81,6 +81,12 @@ type InactivityTracker struct {
 
 var inactivityTracker *InactivityTracker
 
+// actionCommandRunner is the frozen test seam for command execution: both
+// executeAction and executeInactivityAction route through it instead of
+// calling runCommand directly. Production keeps the default; tests swap it
+// and restore with defer. (Frozen seam from docs/plans/test-gaps-2026-09/.)
+var actionCommandRunner = runCommand
+
 // InitInactivityTracker initializes the global inactivity tracker.
 // Double-init guard: if already initialized, keep the existing tracker.
 func InitInactivityTracker() {
@@ -146,7 +152,7 @@ func (t *InactivityTracker) executeInactivityAction(bucketPath string, config *I
 	}
 
 	log.Printf("Executing inactivity action for %s: %s", bucketPath, config.Description)
-	runCommand("inactivity", config.Command, 0, bucketPath)
+	actionCommandRunner("inactivity", config.Command, 0, bucketPath)
 }
 
 // initializeForBucket sets up inactivity tracking for a bucket.
@@ -556,9 +562,9 @@ func executeAction(action ActionConfig, ctx ActionContext) {
 	}
 
 	if async {
-		go runCommand(action.Name, cmd, action.Timeout, ctx.BucketPath)
+		go actionCommandRunner(action.Name, cmd, action.Timeout, ctx.BucketPath)
 	} else {
-		runCommand(action.Name, cmd, action.Timeout, ctx.BucketPath)
+		actionCommandRunner(action.Name, cmd, action.Timeout, ctx.BucketPath)
 	}
 }
 
