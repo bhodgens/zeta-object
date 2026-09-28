@@ -99,7 +99,7 @@ func (t *InactivityTracker) recordActivity(bucketPath, activityType string) {
 	}
 
 	// Check if this activity type should reset the timer
-	if config.ResetOn != nil && len(config.ResetOn) > 0 {
+	if len(config.ResetOn) > 0 {
 		shouldReset := false
 		for _, resetType := range config.ResetOn {
 			if resetType == activityType {

@@ -1,0 +1,37 @@
+#!/bin/bash
+# Pre-push hook: full quality gate (make check).
+#
+# make check = build + vet + fmt-check + lint + test + mod-tidy-check
+#              + test-race + vuln + secrets
+# Every external tool degrades gracefully inside the Makefile targets
+# (vuln/secrets warn-and-skip when not installed).
+#
+# Bypass with --no-verify for emergencies only.
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Colors (\033 form — macOS /bin/bash is 3.2 and does not support \e)
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Pre-push: make check"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+if (cd "$REPO_ROOT" && make check); then
+  echo ""
+  echo -e "${GREEN}✅ Pre-push gate passed${NC}"
+  exit 0
+else
+  echo ""
+  echo -e "${RED}❌ Pre-push gate failed (make check).${NC}"
+  echo "   Fix the failures or use --no-verify for emergencies only."
+  exit 1
+fi

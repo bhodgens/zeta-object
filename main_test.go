@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -114,21 +113,21 @@ func TestGetEnvOrDefault(t *testing.T) {
 
 func TestValidateBucketName(t *testing.T) {
 	tests := []struct {
-		name     string
-		valid    bool
+		name  string
+		valid bool
 	}{
 		{"mybucket", true},
 		{"my-bucket", true},
 		{"my.bucket", true},
 		{"my-bucket-123", true},
-		{"ab", false},                     // Too short
-		{"a", false},                      // Too short
-		{strings.Repeat("a", 64), false},  // Too long
-		{"MyBucket", false},               // Uppercase
-		{"-bucket", false},                // Starts with hyphen
-		{"bucket-", false},                // Ends with hyphen
-		{"bucket..name", false},           // Consecutive periods
-		{"192.168.1.1", false},            // IP address format
+		{"ab", false},                    // Too short
+		{"a", false},                     // Too short
+		{strings.Repeat("a", 64), false}, // Too long
+		{"MyBucket", false},              // Uppercase
+		{"-bucket", false},               // Starts with hyphen
+		{"bucket-", false},               // Ends with hyphen
+		{"bucket..name", false},          // Consecutive periods
+		{"192.168.1.1", false},           // IP address format
 	}
 
 	for _, tt := range tests {
@@ -166,39 +165,6 @@ func TestValidateObjectKey(t *testing.T) {
 }
 
 // Integration tests with test server
-
-type testServer struct {
-	dataDir string
-	handler http.HandlerFunc
-}
-
-func setupTestServer(t *testing.T) *testServer {
-	// Create temp directory for test data
-	tmpDir, err := os.MkdirTemp("", "minis3-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-
-	// Override serverConfig.DataDir for testing
-	origDataDir := serverConfig.DataDir
-	serverConfig.DataDir = tmpDir
-	t.Cleanup(func() {
-		os.RemoveAll(tmpDir)
-		serverConfig.DataDir = origDataDir
-	})
-
-	return &testServer{
-		dataDir: tmpDir,
-		handler: rootHandler,
-	}
-}
-
-// Helper to create a test request without auth (for testing auth-free operations)
-func newTestRequest(method, path string, body io.Reader) *http.Request {
-	req := httptest.NewRequest(method, path, body)
-	// Add minimal headers to pass auth (in a real test, we'd sign properly)
-	return req
-}
 
 // Test bucket creation (basic functionality test)
 func TestCreateBucketValidation(t *testing.T) {
@@ -354,7 +320,7 @@ func TestGetCanonicalQueryString(t *testing.T) {
 	}{
 		{"", ""},
 		{"key=value", "key=value"},
-		{"b=2&a=1", "a=1&b=2"}, // Should be sorted
+		{"b=2&a=1", "a=1&b=2"},   // Should be sorted
 		{"key=a%20b", "key=a+b"}, // Go's url.Values.Encode uses + for spaces
 	}
 

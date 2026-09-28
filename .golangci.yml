@@ -1,0 +1,108 @@
+# golangci-lint configuration for mini-s3
+# https://golangci-lint.run/usage/configuration/
+#
+# Curated baseline ported from meept (2026-06-19 audit). The goal: enable
+# linters that catch real bugs at acceptable noise; leave findings from the
+# pre-existing backlog to leaf 1.2 (use NEW_FROM_REV to lint only new issues).
+# Run `make lint` to execute.
+
+version: "2"
+
+linters:
+  enable:
+    # Bugs & correctness
+    - bodyclose          # HTTP response body closed
+    - copyloopvar        # Loop variable copies (Go 1.22+)
+    - durationcheck      # Duration multiplication
+    - errcheck           # Unchecked errors
+    - errname            # Sentinel error naming (Err/FooError)
+    - errorlint          # Error wrapping best practices
+    - govet              # go vet passes
+    - nilerr             # Returns nil despite checking err != nil
+    - nilnesserr         # Returns wrong nil after err check
+    - nilnil             # Returns nil error + nil value
+    - staticcheck        # Staticcheck rules (includes SA4023)
+    - unused             # Unused code
+    - wastedassign       # Wasted assignments
+
+    # Security
+    - gosec              # Security issues
+
+    # Performance
+    - unconvert          # Unnecessary type conversions
+
+    # Style & readability (curated subset — noisy ones disabled)
+    - misspell           # Typos
+
+    # Complexity ceilings (generous: this is a single-package HTTP server
+    # with large handlers; the point is to stop new unbounded growth)
+    - gocyclo            # Cyclomatic complexity (min 25)
+    - gocognit           # Cognitive complexity (min 40)
+
+    # Modernization
+    - intrange           # Use integer range in for loops
+    - modernize          # Modern Go idioms
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+      - common-false-positives
+    paths:
+      - "testdata/.*"
+      - "vendor/.*"
+    rules:
+      # Test files: noise-heavy checks are relaxed where meept relaxes them.
+      - path: _test\.go
+        linters:
+          - bodyclose
+          - errcheck
+          - gosec
+          - gocyclo
+          - gocognit
+          - nilnil
+
+  settings:
+    gocyclo:
+      min-complexity: 25
+    gocognit:
+      min-complexity: 40
+
+    gosec:
+      excludes:
+        # G104 (errors unhandled) — overlaps with errcheck; most findings are
+        # intentional deferred-Close / HTTP-writer patterns.
+        - G104
+        # G204 (subprocess launched with variable) — bucket actions feature
+        # executes admin-configured shell commands by design (substitution
+        # quoting fixed in leaf 2.5); injection is prevented at the
+        # substitution layer, not by banning exec.
+        - G204
+        # G304 (file path provided as taint input) — object paths are
+        # inherently user-supplied; traversal is prevented by
+        # validateObjectKey.
+        - G304
+        # G301/G302/G306 (permission bits) — a local dev S3 server needs
+        # writable data dirs; addressed in a focused pass if ever shipped
+        # multi-user.
+        - G301
+        - G302
+        - G306
+      # G115 (integer overflow conversion) is deliberately NOT excluded.
+
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 5
+  fix: false
+
+formatters:
+  exclusions:
+    paths:
+      - "testdata/.*"
+      - "vendor/.*"

@@ -66,9 +66,9 @@ func TestStripJSON5Comments(t *testing.T) {
 
 func TestParseDuration(t *testing.T) {
 	tests := []struct {
-		input    string
-		wantSec  int
-		wantErr  bool
+		input   string
+		wantSec int
+		wantErr bool
 	}{
 		{"30s", 30, false},
 		{"5m", 300, false},

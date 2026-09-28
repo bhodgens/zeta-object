@@ -2,5 +2,7 @@ mini-s3-server
 mini-s3
 coverage.out
 coverage.html
+coverage/
+.dev/
 certs/
 data/
