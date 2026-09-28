@@ -111,6 +111,6 @@ W6: 3.6, final gates
 | 3.1 | COMPLETE | be7e862 | 29 tests; multi-range→200 documented |
 | 3.2 | COMPLETE | be7e862 | live CLI presign verified; scope duplication fixed |
 | 3.3 | COMPLETE | be7e862 | sweeper + EntityTooSmall; marker semantics |
-| 3.4 | PENDING | | |
-| 3.5 | PENDING | | |
+| 3.4 | COMPLETE | 4d5143a | AWS golden vectors pinned; scope fix in main_test.go by orchestrator |
+| 3.5 | COMPLETE | 4d5143a | live CLI copy/batch verified |
 | 3.6 | PENDING | | |
