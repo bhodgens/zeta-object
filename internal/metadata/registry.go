@@ -3,6 +3,7 @@ package metadata
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 )
@@ -52,10 +53,19 @@ func ProbeAndAttach(ctx context.Context, bucketPath string) []string {
 	for _, p := range providers {
 		res, err := p.Probe(ctx, bucketPath)
 		if err != nil {
-			continue // probe failure = not available; logged by caller hook
+			// Probe failure = not available (never abort the loop),
+			// but never silently: the provider name, bucket path and
+			// error are the only diagnostic a "why no ?events on this
+			// bucket" report has.
+			log.Printf("metadata: probe of provider %q for bucket %s failed: %v (not attached)",
+				p.Name(), bucketPath, err)
+			continue
 		}
 		if res.Available {
 			attached = append(attached, p.Name())
+		} else {
+			log.Printf("metadata: provider %q not attached for bucket %s: %s",
+				p.Name(), bucketPath, res.Reason)
 		}
 	}
 	sort.Strings(attached)

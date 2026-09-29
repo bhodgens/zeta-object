@@ -20,6 +20,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"path/filepath"
@@ -29,6 +30,7 @@ import (
 	"mini-s3/internal/auth"
 	"mini-s3/internal/backend"
 	s3 "mini-s3/internal/frontend/s3"
+	"mini-s3/internal/metadata"
 )
 
 // mainCredentialSource adapts serverCredentials to auth.CredentialSource.
@@ -77,6 +79,30 @@ func installS3Seams() {
 	// multipart staging (storage.go remains the implementation owner).
 	s3.InstallLockObject(lockObject)
 	s3.InstallWriteFileAtomic(writeFileAtomic)
+
+	// Metadata provider registration + per-bucket resolver (bughunt C1).
+	// The blank import in main.go guarantees the metadata package (and its
+	// provider) is linked into the production binary; this registers the
+	// built-in zfs-events provider and installs the per-bucket resolver
+	// hook the ?events endpoints consult.
+	//
+	// The resolver keeps the shim's per-request PROBE semantics: the
+	// provider is only returned for buckets whose path sits on a ZFS
+	// dataset with the events feature on, so registration alone never
+	// makes a non-ZFS bucket claim availability (unavailable probes
+	// return nil → contracted 503).
+	metadata.Register(metadata.NewZFSEventsProvider())
+	s3.InstallMetadataProvider(func(bucketPath string) metadata.MetadataProvider {
+		p := metadata.Lookup("zfs-events")
+		if p == nil {
+			return nil
+		}
+		res, err := p.Probe(context.Background(), bucketPath)
+		if err != nil || !res.Available {
+			return nil
+		}
+		return p
+	})
 
 	// The multipart expiry sweep pass runs in the frontend; package main
 	// keeps the hourly ticker (runMultipartSweepPass below drives it).

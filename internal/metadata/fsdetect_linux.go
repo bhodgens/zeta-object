@@ -4,8 +4,12 @@ package metadata
 
 import "syscall"
 
-// zfsSuperMagic is ZFS_SUPER_MAGIC from linux/magic.h.
-const zfsSuperMagic = 0x2f5f2f8b
+// zfsSuperMagic is ZFS_SUPER_MAGIC — the statfs(2) f_type value the Linux
+// ZFS kernel module reports for ZFS mounts (zfs include/sys/fs/zfs.h;
+// util-linux include/statfs_magic.h STATFS_ZFS_MAGIC). The historical
+// value here (0x2f5f2f8b) was wrong and made DetectZFS always false on
+// Linux, so every ZFS bucket silently probed unavailable.
+const zfsSuperMagic = 0x2fc12fc1
 
 // DetectZFS reports whether the filesystem containing path is ZFS.
 // It runs statfs (NOT stat) so it inspects the mounted filesystem, then

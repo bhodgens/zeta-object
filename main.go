@@ -16,6 +16,12 @@ import (
 	// backend.Register). Without them the production binary's registry is
 	// empty and every bucket lookup fails with unknown backend type "fs".
 	_ "mini-s3/internal/backend/fsbackend"
+
+	// Blank import links internal/metadata into the production binary so
+	// installS3Seams (s3_wiring.go) can register the built-in
+	// "zfs-events" MetadataProvider; without it every ?events request
+	// 503s regardless of the host's ZFS state (bughunt C1).
+	_ "mini-s3/internal/metadata"
 )
 
 // main.go — server entrypoint and root request router

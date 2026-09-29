@@ -40,15 +40,18 @@ var resolveDatasetFn = ResolveDataset
 // HistoryDetail carries information ObjectEvent cannot: lossiness of the
 // ring buffer and the source dataset.
 //
-// Detail is served through a package-level hook rather than a method on the
-// frozen MetadataProvider interface: the interface MUST NOT gain methods
-// (master Contract 1). lastDetail is keyed to the most recent completed
-// call — it is NOT concurrency-safe across concurrent History calls and is
-// intended for request-scoped use where the caller reads it immediately
-// after History returns (leaf 04's endpoint wraps both in one handler). If
-// concurrent histories ever overlap, the value may interleave; the
-// RecordsLost signal remains correct per-dataset because the CLI reports it
-// per invocation and each invocation targets one dataset.
+// DEPRECATED for production use — TEST-ONLY (bughunt A2/C2): this
+// package-global stores the most recent completed History call, so two
+// concurrent ?events requests on different buckets can read each other's
+// dataset/recordsLost. The production path is the provider-instance
+// detail seam: zfsEventsProvider carries its own HistoryDetail (read via
+// the frontend's detailReporter interface, capability_endpoints.go
+// historyDetailFor), and this global is now only consulted by tests and
+// by providers that do not implement LastDetail().
+//
+// Detail is served through a package-level hook rather than a method on
+// the frozen MetadataProvider interface: the interface MUST NOT gain
+// methods (master Contract 1).
 func LastHistoryDetail() HistoryDetail {
 	detailMu.Lock()
 	defer detailMu.Unlock()
@@ -162,7 +165,31 @@ func truncateForErr(s string) string {
 // zfsEventsProvider is the "zfs-events" MetadataProvider: it serves
 // per-object event history from the dataset ring buffer via
 // `zfs events -j <dataset>` and clears it via `zfs events -c <dataset>`.
-type zfsEventsProvider struct{}
+//
+// detail carries the HistoryDetail (dataset + recordsLost) of the most
+// recent completed History call ON THIS INSTANCE. The MetadataProvider
+// interface is frozen (must not gain methods), so consumers read this via
+// the frontend's structural detailReporter interface (LastDetail) —
+// per-instance state, unlike the test-only package global, is safe under
+// concurrent History calls on different buckets (bughunt A2/C2).
+type zfsEventsProvider struct {
+	detailMu sync.Mutex
+	detail   HistoryDetail
+}
+
+// LastDetail returns the detail of the most recent completed History call
+// on this provider instance (the frontend's detailReporter seam).
+func (p *zfsEventsProvider) LastDetail() HistoryDetail {
+	p.detailMu.Lock()
+	defer p.detailMu.Unlock()
+	return p.detail
+}
+
+func (p *zfsEventsProvider) setDetail(d HistoryDetail) {
+	p.detailMu.Lock()
+	defer p.detailMu.Unlock()
+	p.detail = d
+}
 
 // NewZFSEventsProvider returns the "zfs-events" provider.
 func NewZFSEventsProvider() MetadataProvider { return &zfsEventsProvider{} }
@@ -174,7 +201,8 @@ func (p *zfsEventsProvider) Name() string { return "zfs-events" }
 // post-filter. Since filters on Timestamp — events with a zero timestamp
 // (hrtime absent on the wire) always pass, because "unknown time" is not
 // "older than Since". Records lost to ring-buffer wraparound are surfaced
-// via LastHistoryDetail immediately after this call returns.
+// via the provider instance's LastDetail (detailReporter seam) immediately
+// after this call returns.
 func (p *zfsEventsProvider) History(ctx context.Context, bucketPath, key string, q HistoryQuery) ([]ObjectEvent, error) {
 	ds, err := resolveDatasetFn(ctx, bucketPath)
 	if err != nil {
@@ -200,7 +228,13 @@ func (p *zfsEventsProvider) History(ctx context.Context, bucketPath, key string,
 	if err != nil {
 		return nil, err
 	}
-	setHistoryDetail(HistoryDetail{Dataset: ds, RecordsLost: lost})
+	// Per-instance detail (bughunt A2/C2): the endpoint reads this via the
+	// detailReporter interface, so concurrent ?events on different buckets
+	// can no longer cross-attribute dataset/recordsLost. The package
+	// global (setHistoryDetail) stays updated for test compatibility.
+	d := HistoryDetail{Dataset: ds, RecordsLost: lost}
+	p.setDetail(d)
+	setHistoryDetail(d)
 
 	if !q.Since.IsZero() {
 		filtered := events[:0]
