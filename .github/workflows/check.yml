@@ -70,15 +70,20 @@ jobs:
           go-version-file: go.mod
       - name: Test ${{ matrix.package }} (count=1 + race + coverage floor)
         run: |
-          # Per-package coverage floor. Default 47; new/in-flight packages get a
-          # starter floor - RAISE these as tests land (do not lower). When code
-          # moves between packages, re-measure and update floors in the SAME
-          # change (see AGENTS.md "Coverage floors move with code": the
-          # 2026-09 frontend split left a stale 70 floor that broke the gate).
+          # Per-package coverage floor = measured 2026-09-29 minus 2 (see
+          # docs/plans/coverage-2026-09). RAISE as tests land (do not lower).
+          # When code moves between packages, re-measure and update floors in
+          # the SAME change (see AGENTS.md "Coverage floors move with code").
           case "${{ matrix.package }}" in
-            mini-s3/internal/auth)             FLOOR=0 ;;  # placeholder seam interface only - RAISE when auth impl lands
-            mini-s3/internal/frontend/s3)      FLOOR=24 ;; # measured 24.3% own-package after frontend-interface split - ratchet up as tests land
-            *)                                 FLOOR=47 ;; # measured 47.9% aggregate floor (Makefile COVER_MIN)
+            mini-s3)                               FLOOR=84 ;; # measured 86.9%
+            mini-s3/internal/auth)                 FLOOR=0  ;; # type-only seam interface: zero executable statements (contract pinned by tests)
+            mini-s3/internal/backend)              FLOOR=92 ;; # measured 94.1%
+            mini-s3/internal/backend/conformance)  FLOOR=77 ;; # measured 79.3% - remaining bodies are violation-reporting, proven by detection_test.go child harness
+            mini-s3/internal/backend/fsbackend)    FLOOR=83 ;; # measured 85.6%
+            mini-s3/internal/frontend)             FLOOR=92 ;; # measured 94.7%
+            mini-s3/internal/frontend/s3)          FLOOR=84 ;; # measured 86.0%
+            mini-s3/internal/metadata)             FLOOR=87 ;; # measured 89.2%
+            mini-s3/internal/objectmodel)          FLOOR=90 ;; # measured 92.7%
           esac
           go test -count=1 -race -coverprofile=cover.out "${{ matrix.package }}"
           go tool cover -func=cover.out | tee /dev/stderr | awk -v floor="$FLOOR" -v pkg="${{ matrix.package }}" '/^total:/ {gsub(/%/,"",$3); if ($3+0 < floor) {print pkg " coverage " $3 "% below floor " floor; exit 1}}'

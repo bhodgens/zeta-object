@@ -311,7 +311,7 @@ func detectRoot(raws []rawEvent, byID map[uint64]objEntry) (uint64, bool) {
 		// Climb this dir's resolvable ancestor chain; the id above it
 		// is the root candidate. Depth-capped against cycles from
 		// wraparound object-id reuse.
-		for i := 0; i < maxPathDepth; i++ {
+		for range maxPathDepth {
 			next, ok := byID[ent.parent]
 			if !ok {
 				if ent.parent != 0 {
@@ -348,7 +348,7 @@ func resolvePath(byID map[uint64]objEntry, root uint64, haveRoot bool, name stri
 	}
 	parts := []string{name} // deepest first; ancestors are prepended, so parts[0] ends up root-most
 	cur := parent
-	for i := 0; i < maxPathDepth; i++ {
+	for range maxPathDepth {
 		if haveRoot && cur == root {
 			return strings.Join(parts, "/"), true
 		}
