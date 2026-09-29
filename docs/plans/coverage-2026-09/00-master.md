@@ -62,8 +62,8 @@ W3: 6.5 + integration gate
 
 | Leaf | Status | Commit | Coverage after |
 |---|---|---|---|
-| 6.1 | PENDING | | |
-| 6.2 | PENDING | | |
+| 6.1 | COMPLETE | 7266475 | auth is type-only (0 stmts) — all symbols pinned; coverage degenerate |
+| 6.2 | COMPLETE | 7266475 | 28.9% → 86.0%; ~200 tests ported |
 | 6.3 | PENDING | | |
 | 6.4 | PENDING | | |
 | 6.5 | PENDING | | |
