@@ -27,7 +27,14 @@ type serverConfigView struct {
 
 // installedServerConfig is the injected config view; nil falls back to an
 // empty view (no custom buckets, empty data dir) in tests.
-var installedServerConfig *serverConfigView
+//
+// Access is guarded by configViewMu: request goroutines read the view via
+// currentServerConfig while tests re-install it concurrently (the pre-move
+// serverConfig global had the same unsynchronized pattern).
+var (
+	configViewMu          sync.RWMutex
+	installedServerConfig *serverConfigView
+)
 
 // installServerConfigView installs the process configuration view.
 // package main calls this once at wiring time (and tests re-install it
@@ -37,6 +44,8 @@ func installServerConfigView(cfg serverConfigView) {
 	if buckets == nil {
 		buckets = map[string]string{}
 	}
+	configViewMu.Lock()
+	defer configViewMu.Unlock()
 	installedServerConfig = &serverConfigView{Buckets: buckets, DataDir: cfg.DataDir}
 }
 
@@ -46,6 +55,8 @@ func currentServerConfig() *serverConfigView {
 	if configSyncHook != nil {
 		configSyncHook()
 	}
+	configViewMu.RLock()
+	defer configViewMu.RUnlock()
 	if installedServerConfig == nil {
 		return &serverConfigView{Buckets: map[string]string{}}
 	}

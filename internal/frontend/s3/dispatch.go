@@ -103,6 +103,15 @@ func (f *Frontend) bucketLevelDispatch(w http.ResponseWriter, r *http.Request, b
 		listMultipartUploadsHandler(w, r, bucketName)
 		return
 	}
+	// metadata-zfs leaf 04: capability endpoints — bucket event summary
+	// (?events) and the derived version-listing extension
+	// (?events&versions). MUST sit above the plain ?versions check below
+	// so the combined query resolves to the events extension, never the
+	// standard unversioned listing.
+	if _, ok := r.URL.Query()["events"]; ok && r.Method == "GET" {
+		handleBucketEvents(w, r, bucketName)
+		return
+	}
 	// Leaf 5.1 [a]-2: ListObjectVersions sub-resource (GET /bucket?versions).
 	// Unversioned wire shape: every object = one version with the null ID.
 	if _, ok := r.URL.Query()["versions"]; ok && r.Method == "GET" {
@@ -157,6 +166,14 @@ func (f *Frontend) objectLevelDispatch(w http.ResponseWriter, r *http.Request, b
 	// Leaf 3.3: ListParts sub-resource
 	if uploadID, ok := r.URL.Query()["uploadId"]; ok && r.Method == "GET" {
 		listPartsHandler(w, r, bucketName, objectName, uploadID[0])
+		return
+	}
+
+	// metadata-zfs leaf 04: capability endpoint — object event history
+	// (?events). Placed with the other sub-resource checks, before the
+	// method switch.
+	if _, ok := r.URL.Query()["events"]; ok && r.Method == "GET" {
+		handleObjectEvents(w, r, bucketName, objectName)
 		return
 	}
 

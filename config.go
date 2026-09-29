@@ -27,6 +27,11 @@ type ServerConfig struct {
 	CertFile   string            `json:"certFile"`   // TLS certificate path (default certs/cert.pem)
 	KeyFile    string            `json:"keyFile"`    // TLS private key path (default certs/key.pem)
 
+	// Frontends selects which protocol frontends run and where they
+	// listen (leaf 03). Absent/empty ⇒ [{"type":"s3"}] on the default
+	// listener — exact backward compatibility.
+	Frontends []FrontendConfig `json:"frontends,omitempty"`
+
 	// Backends maps a backend type name to its construction config
 	// (leaf 03; frozen JSON keys). Absent ⇒ every bucket uses the
 	// default backend ("fs").
@@ -34,6 +39,15 @@ type ServerConfig struct {
 	// BucketBackends records each bucket's selected backend name (the
 	// object form of the buckets value). Absent/empty ⇒ default backend.
 	BucketBackends map[string]string `json:"-"`
+}
+
+// FrontendConfig is one entry of the "frontends" config array (leaf 03).
+// Type names a registered frontend factory ("s3" today; "webdav", "ftp"
+// later). ListenAddr empty = share the default listener's mux; set it to
+// give this frontend its own dedicated TLS listener.
+type FrontendConfig struct {
+	Type       string `json:"type"`
+	ListenAddr string `json:"listenAddr,omitempty"`
 }
 
 // BackendCfg is the per-backend-type config from config.json "backends".
@@ -156,6 +170,11 @@ func loadConfig(configPath string) error {
 	if cfg.KeyFile == "" {
 		cfg.KeyFile = defaultKeyFile
 	}
+	// Absent/empty frontends array == S3 on the default listener (leaf 03
+	// backward-compatibility rule).
+	if len(cfg.Frontends) == 0 {
+		cfg.Frontends = []FrontendConfig{{Type: "s3"}}
+	}
 
 	serverConfig = cfg
 	log.Printf("Loaded config: DataDir=%s, ListenAddr=%s, CertFile=%s, KeyFile=%s, CustomBuckets=%d",
@@ -175,6 +194,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 		ListenAddr string                `json:"listenAddr"`
 		CertFile   string                `json:"certFile"`
 		KeyFile    string                `json:"keyFile"`
+		Frontends  []FrontendConfig      `json:"frontends"`
 		Backends   map[string]BackendCfg `json:"backends"`
 		Buckets    bucketsRaw            `json:"buckets"`
 	}
@@ -186,6 +206,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	c.ListenAddr = a.ListenAddr
 	c.CertFile = a.CertFile
 	c.KeyFile = a.KeyFile
+	c.Frontends = a.Frontends
 	c.Backends = a.Backends
 	a.Buckets.apply(c)
 	return nil

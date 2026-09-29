@@ -16,7 +16,6 @@ import (
 	// backend.Register). Without them the production binary's registry is
 	// empty and every bucket lookup fails with unknown backend type "fs".
 	_ "mini-s3/internal/backend/fsbackend"
-	s3 "mini-s3/internal/frontend/s3"
 )
 
 // main.go — server entrypoint and root request router
@@ -58,9 +57,7 @@ func main() {
 	loadCredentials()
 
 	// Environment override for the listen address (beats config file)
-	if listenAddr := os.Getenv("MINIS3_LISTEN_ADDR"); listenAddr != "" {
-		serverConfig.ListenAddr = listenAddr
-	}
+	applyListenAddrOverride(&serverConfig)
 
 	// Ensure data directory exists; any stat error other than IsNotExist is fatal
 	if _, err := os.Stat(serverConfig.DataDir); err != nil {
@@ -100,18 +97,31 @@ func main() {
 		log.Fatalf("Backend initialization failed: %v", err)
 	}
 
-	// Leaf 02 frontend extraction: build the s3 frontend, install the
-	// process seams it consumes, and mount its Handler where rootHandler
-	// used to be registered. Leaf 03 replaces this direct mount with the
-	// frontend registry.
+	// Leaf 03 frontend registry: construct the configured frontends via the
+	// factory map, register them, and mount: handlers without their own
+	// listenAddr go on the shared mux; entries with a listenAddr get a
+	// dedicated TLS listener (same cert pair). Any failure (unknown type,
+	// duplicate, factory error) aborts startup loudly.
 	installS3Seams()
-	s3Frontend := s3.New(nil)
-	mux := http.NewServeMux()
-	mux.Handle("/", s3Frontend.Handler())
-	srv := newServer(serverConfig.ListenAddr, mux, serverConfig.CertFile, serverConfig.KeyFile)
+	plan, err := startupPlan(serverConfig.Frontends, nil, mainCredentialSource{})
+	if err != nil {
+		log.Fatalf("Frontend initialization failed: %v", err)
+	}
+	srv := newServer(serverConfig.ListenAddr, plan.mux, serverConfig.CertFile, serverConfig.KeyFile)
+
+	// Dedicated-listener servers (leaf 03 multi-listener decision): one
+	// http.Server per frontend entry that carries its own listenAddr, all
+	// sharing the default cert/key pair. Drained by the same graceful
+	// shutdown window below.
+	var extraServers []*http.Server
+	for _, ls := range plan.listeners {
+		extraServers = append(extraServers, newServer(ls.addr, ls.frontend.Handler(),
+			serverConfig.CertFile, serverConfig.KeyFile))
+	}
 
 	// Graceful shutdown: SIGINT/SIGTERM stop accepting new connections and
-	// drain in-flight requests within serverShutdownTimeout.
+	// drain in-flight requests within serverShutdownTimeout (default
+	// listener first, then every dedicated-listener server).
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -121,6 +131,13 @@ func main() {
 			srv.Addr, serverConfig.CertFile, serverConfig.KeyFile)
 		serverErr <- srv.ListenAndServeTLS(serverConfig.CertFile, serverConfig.KeyFile)
 	}()
+	for _, es := range extraServers {
+		es := es
+		go func() {
+			log.Printf("Starting dedicated frontend listener on %s (HTTPS)", es.Addr)
+			_ = es.ListenAndServeTLS(serverConfig.CertFile, serverConfig.KeyFile)
+		}()
+	}
 
 	select {
 	case err := <-serverErr:
@@ -136,6 +153,11 @@ func main() {
 			log.Printf("Graceful shutdown failed (forcing close): %v", err)
 		} else {
 			log.Println("Server shut down cleanly")
+		}
+		for _, es := range extraServers {
+			if err := es.Shutdown(drainCtx); err != nil {
+				log.Printf("Dedicated listener %s shutdown failed (forcing close): %v", es.Addr, err)
+			}
 		}
 	}
 }

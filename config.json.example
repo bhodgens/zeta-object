@@ -12,6 +12,15 @@
   "certFile": "certs/cert.pem",
   "keyFile": "certs/key.pem",
 
+  // Optional protocol frontends. Absent = S3 on "listenAddr" (backward
+  // compatible). Each entry: "type" (required) and "listenAddr" (optional —
+  // omit to share the default listener; set to give this frontend its own
+  // TLS port, e.g. ":8444" for a future WebDAV frontend).
+  // "frontends": [
+  //   { "type": "s3" },
+  //   { "type": "webdav", "listenAddr": ":8444" }
+  // ],
+
   // Custom bucket name -> filesystem path mappings. These buckets appear in
   // ListBuckets alongside auto-discovered buckets, cannot be created or
   // deleted via the S3 API, and may point to any directory (incl. symlinks).
