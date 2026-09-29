@@ -131,7 +131,13 @@ func validateKey(key string) error {
 	// these onto the same on-disk path, so Put("a//b") and Put("a/b") would
 	// silently alias one object. S3 keys are byte-exact; such keys are
 	// rejected as InvalidArgument instead of colliding.
-	if cleaned != "/"+key {
+	//
+	// Exception: the bare key "." is S3-legal (a byte-exact key), but Clean
+	// folds "/." to "/" (regression review). It cannot alias another key
+	// (no other canonical key equals "/") and the traversal guard above
+	// already forbids real escapes, so it is allowed through; resolveDataPath
+	// handles it like any other key relative to the bucket dir.
+	if cleaned != "/"+key && !(key == "." && cleaned == "/") {
 		return keyInvalidError(`object key must be in canonical form (no empty or "." path segments, no leading/trailing slash)`)
 	}
 	return nil

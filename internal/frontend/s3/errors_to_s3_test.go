@@ -71,7 +71,7 @@ func TestS3ErrorFromInternalErrorHidesDetail(t *testing.T) {
 	if strings.Contains(message, "/") || strings.Contains(message, "secret") || strings.Contains(message, "permission") {
 		t.Fatalf("message leaks underlying error detail: %q", message)
 	}
-	if message != "Internal error" {
+	if message != "Internal Server Error" {
 		t.Fatalf("message = %q, want the generic fixed text", message)
 	}
 }

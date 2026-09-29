@@ -238,3 +238,18 @@ func TestPutCapConfigurableViaOption(t *testing.T) {
 		t.Errorf("maxPutBytes = %d, want default %d when option unset", b3.(*FS).maxPutBytes, maxPutBytesDefault)
 	}
 }
+
+// TestValidateKeyDotKeyAllowed pins the regression-review fix: the bare
+// S3-legal key "." must not be rejected by the canonical-form rule
+// (Clean folds "/." to "/"). It cannot alias any other canonical key.
+func TestValidateKeyDotKeyAllowed(t *testing.T) {
+	if err := validateKey("."); err != nil {
+		t.Fatalf(`validateKey(".") = %v, want nil`, err)
+	}
+	// The reject set must still hold.
+	for _, k := range []string{"a//b", "a/./b", "/abs", "a/", "./a", "..", "a/../b"} {
+		if err := validateKey(k); err == nil {
+			t.Fatalf("validateKey(%q) = nil, want rejection", k)
+		}
+	}
+}

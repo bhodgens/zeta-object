@@ -123,9 +123,14 @@ func listObjectVersionsHandler(w http.ResponseWriter, r *http.Request, bucketNam
 	}
 	result.IsTruncated = truncated
 	// S3 convention: a truncated ?versions page carries the marker to resume
-	// from — the last emitted key/versionId.
+	// from — the last emitted key/versionId. Markers are keys, so they get
+	// the same encoding treatment as entry keys (regression review: the
+	// per-entry Key was encoded but markers were not).
 	if truncated && lastKey != "" {
 		result.NextKeyMarker = lastKey
+		if encodeKeys {
+			result.NextKeyMarker = s3URLEncode(lastKey)
+		}
 		result.NextVersionIDMarker = lastVersionID
 	}
 

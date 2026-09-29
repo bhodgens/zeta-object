@@ -40,7 +40,7 @@ func s3ErrorFrom(err error) (code, message string, status int) {
 		case objectmodel.CodeInternalError:
 			// Legacy fixed message: never render the backend's error
 			// string (it embeds absolute paths) to the client.
-			return "InternalError", "Internal error", http.StatusInternalServerError
+			return "InternalError", "Internal Server Error", http.StatusInternalServerError
 		default:
 			return omErr.Code, omErr.Message, omErr.HTTPStatus
 		}

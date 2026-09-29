@@ -123,7 +123,11 @@ func backendDiscovery() ([]objectmodel.BucketInfo, error) {
 		if f, err := backendFor(name); err == nil && f != nil {
 			// Custom-bucket discovery failure stays a logged warning;
 			// only the dataDir failure is fatal below.
-			_ = add(f)
+			if err := add(f); err != nil {
+				log.Printf("Warning: custom bucket %q listed but not added: %v", name, err)
+			}
+		} else if err != nil {
+			log.Printf("Warning: custom bucket %q backend unavailable: %v", name, err)
 		}
 	}
 	if dataDirFailed && len(customBuckets) == 0 {

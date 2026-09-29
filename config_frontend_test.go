@@ -96,3 +96,27 @@ func TestLoadConfig_EnvAddrOverridesDefaultListenerOnly(t *testing.T) {
 		t.Fatalf("Frontends = %+v, want per-frontend listenAddr untouched", cfg.Frontends)
 	}
 }
+
+// TestLoadConfigUnknownBucketObjectKeyFails pins the regression-review
+// E6 follow-up: unknown keys inside the per-bucket object form must fail
+// the parse (a typo like "pth" would otherwise silently drop the custom
+// path).
+func TestLoadConfigUnknownBucketObjectKeyFails(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	cfg := `{"buckets": {"photos": {"pth": "/tmp/x"}}}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadConfig(cfgPath); err == nil {
+		t.Fatal("loadConfig with unknown key inside bucket object form: got nil error, want failure")
+	}
+	// The known-good object form must still parse.
+	good := `{"buckets": {"photos": {"path": "` + dir + `"}}}`
+	if err := os.WriteFile(cfgPath, []byte(good), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadConfig(cfgPath); err != nil {
+		t.Fatalf("loadConfig with valid bucket object form: %v", err)
+	}
+}

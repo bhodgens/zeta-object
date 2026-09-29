@@ -191,3 +191,42 @@ func TestVersionsEncodingTypeURL(t *testing.T) {
 		t.Fatalf("raw unencoded key leaked (body %s)", body)
 	}
 }
+
+// TestVersionsMarkerEncoding pins the regression-review fix: with
+// encoding-type=url, NextKeyMarker must be encoded exactly like entry keys.
+func TestVersionsMarkerEncoding(t *testing.T) {
+	srv := newTestServer(t)
+
+	if resp := doSigned(t, srv, "PUT", "/venc-bkt", ""); resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("create bucket: got %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	if resp := doSigned(t, srv, "PUT", "/venc-bkt/a b.txt", "x"); resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("put: got %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	if resp := doSigned(t, srv, "PUT", "/venc-bkt/c.txt", "x"); resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("put: got %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+
+	resp := doSigned(t, srv, "GET", "/venc-bkt?versions&max-keys=1&encoding-type=url", "")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", resp.StatusCode, body)
+	}
+	got := decodeVersionsResponse(t, string(body))
+	if !got.IsTruncated {
+		t.Fatalf("expected truncated page (body %s)", body)
+	}
+	if got.NextKeyMarker != "a%20b.txt" {
+		t.Fatalf("NextKeyMarker = %q, want encoded a%%20b.txt (body %s)", got.NextKeyMarker, body)
+	}
+}

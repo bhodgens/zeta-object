@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -85,7 +86,12 @@ func (b *bucketCfg) UnmarshalJSON(data []byte) error {
 	}
 	type plain bucketCfg
 	var p plain
-	if err := json.Unmarshal(data, &p); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	// Regression review (E6 follow-up): the top-level config rejects unknown
+	// keys; the per-bucket object form must too, or a typo like "pth" is
+	// silently dropped and the bucket silently loses its custom path.
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p); err != nil {
 		return err
 	}
 	b.Path, b.Backend = p.Path, p.Backend
