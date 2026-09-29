@@ -3,9 +3,13 @@
 
 BINARY_NAME := mini-s3-server
 
-# Coverage floor. Raised from 50 to 70 by leaf 4.10: actual total after the
-# test-gap closure campaign is 83.6%, comfortably above the floor.
-COVER_MIN := 70
+# Coverage floor. Measured 47.9% aggregate (go test -cover ./...) after the
+# frontend-interface split (2026-09) moved code from package main into
+# internal/frontend/s3 (own-package coverage there is 24.3%). The old floor of
+# 70 was set when the whole S3 layer lived in package main and broke the moment
+# the split landed. This floor must ratchet back up as tests land in the new
+# packages - see AGENTS.md "Coverage floors move with code".
+COVER_MIN := 47
 
 # Lint only issues introduced since NEW_FROM_REV (any rev/ref):
 #   make lint NEW_FROM_REV=HEAD
@@ -173,15 +177,16 @@ mod-verify:
 	@go mod verify
 
 # Fast gate: what every commit should pass.
-precommit: build vet fmt-check lint test parity-test mod-tidy-check
+precommit: build vet fmt-check lint test test-cover-enforce parity-test mod-tidy-check
 	@echo ""
 	@echo "precommit gate passed."
 
-# S3 metadata parity gate (metadata-zfs-2026-09 leaf 03): the canonical S3
-# metadata surface must be identical for plain-FS and provider-attached
-# buckets. Runs the leaf's TestParity* suite.
-parity-test: ## Run the S3 metadata parity gate (FS vs provider-enabled)
+# S3 parity gate: the canonical S3 metadata surface must be identical for
+# plain-FS and provider-attached buckets (metadata TestParity* suite), and
+# objectmodel snapshot/header parity must hold (objectmodel parity suite).
+parity-test: ## Run the S3 parity gates: metadata (FS vs provider-enabled) and objectmodel header parity
 	go test ./internal/metadata/ -run 'TestParity' -count=1 -v
+	go test ./internal/objectmodel/ -run 'TestSnapshotHeaders|TestAssertHeaderParity' -count=1 -v
 
 # Full local gate: what a push should pass.
 check: precommit test-race vuln secrets

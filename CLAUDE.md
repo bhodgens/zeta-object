@@ -17,37 +17,47 @@ make clean        # Remove the compiled binary and coverage artifacts
 ```bash
 make test                # go test -count=1 with coverage summary
 make test-race           # tests with the race detector
-make test-cover-enforce  # fail if total coverage drops below the 50% floor
+make test-cover-enforce  # fail if total coverage drops below the floor (COVER_MIN in the Makefile)
 make lint                # golangci-lint run ./... (NEW_FROM_REV=<rev> limits to new issues only)
 make vet                 # go vet ./...
 make fmt / fmt-check     # gofmt + goimports -local mini-s3 (check = verify only)
-make precommit           # build + vet + fmt-check + lint + test + mod-tidy-check
+make precommit           # build + vet + fmt-check + lint + test + test-cover-enforce + parity-test + mod-tidy-check
 make check               # precommit + test-race + vuln + secrets (full local gate)
-make e2e                 # scripts/e2e/run-e2e.sh (suite lands with hardening leaf 3.6)
+make e2e                 # scripts/e2e/run-e2e.sh (AWS-CLI-driven e2e suite)
 ```
 
 `make lint NEW_FROM_REV=<rev>` reports only issues introduced since `<rev>`; use it
 during a branch so pre-existing backlog does not block you. The coverage floor is
-enforced by `make test-cover-enforce` (50% baseline, raised by feature waves).
+enforced by `make test-cover-enforce` (see `COVER_MIN` in the Makefile for the
+current value and its history; every new user-facing feature must land with e2e
+coverage in `scripts/e2e/` in the same change - see AGENTS.md).
 
 ## Architecture
 
-This is a single-binary Go S3-compatible server (module `mini-s3`, package `main`,
-Go 1.27) implementing core S3 operations with AWS Signature Version 4
-authentication. `main.go` was split into per-domain files:
+This is a single-binary Go S3-compatible server (module `mini-s3`, Go 1.25)
+implementing core S3 operations with AWS Signature Version 4 authentication.
+The S3 protocol layer (sigv4, XML, bucket/object/multipart handlers, request
+dispatch) moved into `internal/frontend/s3/` during the 2026-09
+frontend-interface split; package `main` keeps the server entrypoint, config,
+backend lookup, and process wiring:
 
-| File | Contents |
+| File (package main) | Contents |
 |---|---|
 | `main.go` | main(), http.Server wiring, TLS config, graceful shutdown |
 | `config.go` | ServerConfig, loadConfig, credentials, shared constants |
-| `types.go` | ObjectMetadata, MultipartUpload, PartMetadata, XML structs |
-| `sigv4.go` | canonical request, signing key, authenticateRequest, aws-chunked decoding |
-| `bucket_handlers.go` | bucket operations, validateBucketName |
-| `object_handlers.go` | object operations, validateObjectKey |
-| `multipart_handlers.go` | multipart upload lifecycle |
-| `xml.go` | errorToXML, writeS3Error, XML namespace handling |
+| `frontends.go` / `s3_wiring.go` | frontend registry mounting and process seams |
+| `backend_lookup.go` / `backend_lazy.go` | bucket-to-backend resolution |
 | `actions.go` | bucket actions subsystem (event shell commands) |
 | `storage.go` | atomic-write helpers (`writeFileAtomic`, `writeFileAtomicJSON`, `lockObject`) |
+
+| Package (internal/) | Contents |
+|---|---|
+| `internal/frontend/s3` | The former root-level files: `sigv4.go`, `types.go`, `xml.go`, `bucket_handlers.go`, `object_handlers.go`, `multipart_handlers.go`, plus dispatch and the s3 frontend entry |
+| `internal/frontend` | Frontend registry, capability and conformance seams |
+| `internal/backend`, `internal/backend/fsbackend`, `internal/backend/conformance` | Storage backend interface, filesystem backend, conformance helpers |
+| `internal/metadata` | ZFS sidecar metadata and parity tests |
+| `internal/objectmodel` | Object model, encoded key paths, snapshot/header parity |
+| `internal/auth` | Authenticator seam (placeholder; pluggable auth is an open issue) |
 
 All object-data and metadata JSON writes go through the `storage.go` atomic
 helpers (temp file in the same directory, fsync, rename), so a crash never leaves
@@ -59,8 +69,9 @@ a truncated object or metadata file. Per-key write serialization is via
 ```
 <dataDir>/                  # config.json "dataDir" (default: ./data/)
   <bucket>/                 # Auto-discovered bucket (or symlink to dir)
+    !data/                  # SHADOW DATA DIRECTORY: object data lives here
+      <encoded-key>         # percent-encoded object key ("/" and "%" encoded)
     .bucket-actions         # Optional per-bucket actions config (JSON5)
-    <object-file>           # Actual object data for simple PUT
     .metadata/
       <object>.meta         # JSON metadata file per object
       .uploads/
@@ -68,14 +79,21 @@ a truncated object or metadata file. Per-key write serialization is via
         <uploadId>_parts/   # Part files during multipart upload
 
 <custom-bucket-path>/       # Custom bucket from config.json "buckets" map
-  <object-file>
+  !data/
+    <encoded-key>
   .metadata/
     ...
 ```
 
+Object data is stored under the `!data` shadow directory with percent-encoded
+keys (see `internal/frontend/s3/object_paths.go` and
+`internal/backend/fsbackend/paths.go`); only `.metadata/` sidecars sit beside it.
+
 ### Request Flow
 
-`rootHandler` is the single entry point that:
+The s3 frontend's handler (the former `rootHandler` chain, now mounted via the
+frontend registry in `internal/frontend/s3/frontend.go` and `dispatch.go`) is
+the single entry point that:
 1. Parses path into bucket/object names
 2. Calls `authenticateRequest` for SigV4 validation
 3. Routes to operation handlers based on method and query params
@@ -167,9 +185,11 @@ What remains is a short list of intentional divergences from real S3:
   `validateBucketName` (`bucket_handlers.go`): names like `..` or `../escape`
   fail the S3 naming rules (3-63 chars, lowercase/digits/hyphens/periods) and
   never reach the filesystem path join.
-- **Range requests are not implemented.** GET ignores the `Range` header and
-  always serves `200` with the full body; multi-range requests therefore get a
-  full-body `200` instead of `206`/`multipart/byteranges`.
+- **Range requests: single ranges only.** GET/HEAD honor `Range` (206 with
+  `Content-Range`, 416 `InvalidRange` for unsatisfiable requests - hardening
+  leaf 3.1), and conditional `If-*` headers are evaluated first per RFC 7232.
+  Multi-range requests are not supported: clients asking for several ranges get
+  a full-body `200` instead of `206`/`multipart/byteranges`.
 - **Single credential.** One access/secret pair for all clients; no per-user
   IAM, policies, or ACLs (ACL endpoints return "Not Implemented").
 - **Region is pinned to `us-east-1`.** Requests signed for another region are
