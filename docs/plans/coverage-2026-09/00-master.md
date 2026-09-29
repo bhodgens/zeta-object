@@ -64,6 +64,16 @@ W3: 6.5 + integration gate
 |---|---|---|---|
 | 6.1 | COMPLETE | 7266475 | auth is type-only (0 stmts) — all symbols pinned; coverage degenerate |
 | 6.2 | COMPLETE | 7266475 | 28.9% → 86.0%; ~200 tests ported |
-| 6.3 | PENDING | | |
-| 6.4 | PENDING | | |
-| 6.5 | PENDING | | |
+| 6.3 | COMPLETE | 2af1175 | frontend 94.7%, conformance 79.3% + detection harness |
+| 6.4 | COMPLETE | 2af1175 | root 86.9%, zero REDs |
+| 6.5 | COMPLETE | 2af1175 | floors = achieved-2 for all 9 packages |
+
+
+## Completion
+
+All 5 leaves COMPLETE as of 2026-09-29. Final per-package coverage:
+mini-s3 86.9 / auth 0 (type-only seam) / backend 94.1 / conformance 79.3
+(structural ceiling, violation detectors proven via child harness) /
+fsbackend 85.6 / frontend 94.7 / frontend-s3 86.0 / metadata 89.2 /
+objectmodel 92.7. CI floors = achieved-2, dry-run verified. Gate:
+9/9 packages green, race clean, lint 0, e2e 155/155.
