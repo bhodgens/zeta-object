@@ -6,7 +6,7 @@ mini-s3 speaks the S3 protocol and stores your data where you can see it: plain 
 
 - **One static binary.** No database, no etcd, no external services. `make build`, run it, done.
 - **Zero-format storage.** Objects are plain files; metadata is a JSON sidecar. Your data is readable with `cat` and `ls` with the server stopped. Point a bucket at `/var/log`, a ZFS dataset, an NFS mount, or a directory of symlinks and it is an S3 bucket *now*.
-- **Standard, verified wire compatibility.** AWS CLI, boto3, mc, and restic work against it - proven by an interop e2e suite and a ceph/s3-tests ratchet, not by marketing.
+- **Standard, verified wire compatibility.** AWS CLI, boto3, and mc work against it - proven by an interop e2e suite and a ceph/s3-tests ratchet, not by marketing.
 - **Protocol-flexible by design.** A pluggable frontend/backend architecture (S3 today; WebDAV, FTP/SFTP, ownCloud tracked) over a neutral object model - one implementation per protocol and per storage, not one per combination.
 - **Extensible metadata.** A probe-based MetadataProvider seam attaches enrichment capabilities to buckets when - and only when - the underlying filesystem supports them. The first provider reads ZFS per-dataset file-event logs, giving per-object history and version-style listings that hosted S3 cannot give you.
 
@@ -25,7 +25,7 @@ Most "S3-compatible" servers are the same idea restated: a service that owns a b
 - **Homelab and self-hosting:** S3 for your existing NAS directories, ZFS pools, and backup trees - with snapshots and event history baked in.
 - **Legacy storage gateways:** give an old file server or archive an S3 API without moving a byte.
 - **Development and CI:** a dependency-free S3 endpoint with real SigV4, range requests, multipart, and presigned URLs - honest errors, fast startup, no containers required.
-- **Backup targets:** restic, rclone, and any S3-native backup tool, pointed at directories you control and replicate on your own terms.
+- **Backup targets:** rclone and any S3-native backup tool, pointed at directories you control and replicate on your own terms.
 
 ## Feature highlights
 
