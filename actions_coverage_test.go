@@ -313,9 +313,9 @@ func TestMatchesAnyPatternFilenameFallback(t *testing.T) {
 // (part-count equality; ** recursion).
 func TestMatchesAnyPatternPathGlob(t *testing.T) {
 	cases := []struct {
-		key      string
-		pattern  string
-		want     bool
+		key     string
+		pattern string
+		want    bool
 	}{
 		// Anchored simple path glob: part counts must be equal.
 		{"ephemeral/tmp", "ephemeral/*", true},
