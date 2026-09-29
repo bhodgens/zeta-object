@@ -130,8 +130,10 @@ func TestBuildBackendLookup(t *testing.T) {
 }
 
 // provePlacement writes a object via the resolved Backend and asserts the
-// bytes landed under the bucket's configured root (consumed via the
-// interface only — no type assertion).
+// bytes landed at the bucket's handler-visible path (consumed via the
+// interface only — no type assertion). Explicit custom buckets resolve FLAT
+// to <root>/key (bughunt D1 fix: root IS the bucket; the old nested
+// root/<bucket>/key placement was the split-brain).
 func provePlacement(t *testing.T, lookup func(string) (backend.Backend, error), bucket string) {
 	t.Helper()
 	b, err := lookup(bucket)
@@ -143,9 +145,13 @@ func provePlacement(t *testing.T, lookup func(string) (backend.Backend, error), 
 	if _, err := b.Put(context.Background(), bucket, key, strings.NewReader("placed"), 6, objectmodel.PutOptions{}); err != nil {
 		t.Fatalf("Put via backend: %v", err)
 	}
-	dataPath := filepath.Join(root, bucket, key)
+	dataPath := filepath.Join(root, key)
 	if _, err := os.Stat(dataPath); err != nil {
 		t.Fatalf("object not placed at %s: %v", dataPath, err)
+	}
+	nested := filepath.Join(root, bucket, key)
+	if _, err := os.Stat(nested); !os.IsNotExist(err) {
+		t.Fatalf("object nested at %s — custom-bucket split-brain regression (bughunt D1)", nested)
 	}
 }
 

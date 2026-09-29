@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"mini-s3/internal/backend"
+	"mini-s3/internal/backend/fsbackend"
 )
 
 // defaultBackendName is the backend type used when a bucket (or the whole
@@ -86,6 +87,13 @@ func buildBackendLookup(cfg ServerConfig) (func(bucket string) (backend.Backend,
 	// compat view is the Buckets map, selections live in BucketBackends).
 	// Construction is EAGER: an unknown backend name fails here, at
 	// startup, not on the first request to the affected bucket.
+	//
+	// Custom-bucket layout pin (bughunt D1 fix): a bucket with an explicit
+	// path (root != "") is served by a single-bucket backend whose root IS
+	// the configured path — object data, sidecars and the handler-side
+	// above-seam staging (multipart, copy meta, sweep, actions) all use
+	// <custom>/key, matching getBucketPath. Implicit buckets (root ==
+	// dataDir) keep the frozen join(dataDir, bucket) layout.
 	for name, path := range cfg.Buckets {
 		bucket := name
 		backendName := cfg.BucketBackends[bucket]
@@ -93,19 +101,26 @@ func buildBackendLookup(cfg ServerConfig) (func(bucket string) (backend.Backend,
 			backendName = defaultBackendName
 		}
 		root := path
-		if root == "" {
+		singleBucketOpts := map[string]string{}
+		for k, v := range backendOpts(cfg, backendName) {
+			singleBucketOpts[k] = v
+		}
+		if root != "" {
+			singleBucketOpts[fsbackend.OptSingleBucketBucket] = bucket
+		} else {
 			if bc, ok := cfg.Backends[backendName]; ok && bc.Root != "" {
 				root = bc.Root
 			} else {
 				root = cfg.DataDir
 			}
 		}
-		if _, err := constructor(backendName, root, backendOpts(cfg, backendName)); err != nil {
+		if _, err := constructor(backendName, root, singleBucketOpts); err != nil {
 			return nil, err
 		}
 		rootForKey := root
+		optsForKey := singleBucketOpts
 		bucketFn[bucket] = func() (backend.Backend, error) {
-			return constructor(backendName, rootForKey, backendOpts(cfg, backendName))
+			return constructor(backendName, rootForKey, optsForKey)
 		}
 	}
 

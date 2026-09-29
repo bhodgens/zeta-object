@@ -124,7 +124,7 @@ func (f *FS) List(ctx context.Context, bucket string, p objectmodel.ListParams) 
 	if err := ctx.Err(); err != nil {
 		return objectmodel.ListPage{}, err
 	}
-	bucketPath := filepath.Join(f.root, bucket)
+	bucketPath := f.bucketPath(bucket)
 	if _, err := os.Stat(bucketPath); err != nil {
 		if os.IsNotExist(err) {
 			return objectmodel.ListPage{}, objectmodel.ErrNoSuchBucket(bucket)
@@ -245,7 +245,9 @@ func listObjectsFromKeys(allObjectKeys []string, p listKeyParams, metadataDir st
 		for _, item := range window.items {
 			if p.maxKeys > 0 && processedCount >= p.maxKeys {
 				// Budget exhausted mid-window. The next page resumes after
-				// the LAST EMITTED item (key or prefix).
+				// the LAST EMITTED item (key or prefix); for windows the
+				// gather step already cut short, the B1 block below refines
+				// the fallback token the same way (delimiter pages).
 				truncated = true
 				if lastEmittedItem != "" {
 					nextToken = lastEmittedItem
@@ -275,6 +277,18 @@ func listObjectsFromKeys(allObjectKeys []string, p listKeyParams, metadataDir st
 			processedCount++
 		}
 		lastItem = lastEmittedItem
+		// B1 fix (bughunt finding B1): noteBudgetExhausted seeds nextToken
+		// with the first unconsumed key — for a delimiter listing that key
+		// can sit INSIDE a roll-up group the page never emitted, and resume
+		// would then silently swallow the whole group. Delimiter pages use
+		// the last EMITTED item (key or prefix) as the token, so the next
+		// page resumes strictly after everything this page emitted and can
+		// still roll up groups the token merely sorts before. Flat listings
+		// keep the first-next-key token (pinned by TestListMaxKeysTruncation
+		// + TestListMarkerExclusion).
+		if p.delimiter != "" && truncated && lastEmittedItem != "" {
+			nextToken = lastEmittedItem
+		}
 		if p.maxKeys > 0 && processedCount >= p.maxKeys {
 			break
 		}
@@ -351,9 +365,12 @@ func gatherDelimiterKey(window *listWindow, objectKey string, p listKeyParams, s
 }
 
 // groupConsumedByCursor reports whether a delimiter roll-up group was fully
-// consumed by the request cursor (leaf 5.1 [a]-4): the opaque continuation
-// token lying INSIDE the prefix group means the page that issued the token
-// already emitted the group; otherwise V1-style at-or-below exclusion.
+// consumed by the request cursor (leaf 5.1 [a]-4): the continuation token is
+// the page's last emitted item in merged order, so a token lying INSIDE or AT
+// the prefix group means the page that issued the token already emitted the
+// group; a token strictly BEFORE the group (e.g. plain key "a" before the
+// un-emitted group "a/", bughunt finding B1) does not consume it. Otherwise
+// V1-style at-or-below exclusion applies.
 func groupConsumedByCursor(commonPrefixValue string, p listKeyParams) bool {
 	if p.continuationToken != "" {
 		return strings.HasPrefix(p.continuationToken, commonPrefixValue)
@@ -401,11 +418,20 @@ func noteBudgetExhausted(allObjectKeys []string, i int, p listKeyParams, seenPre
 }
 
 // keyExcludedByCursor reports whether objectKey is excluded by the cursor.
-//   - continuation-token: the token IS the first key of the next page, so
-//     the boundary key must be LISTED — exclude strictly below it (<).
+//   - continuation-token, flat listing (no delimiter): the token IS the first
+//     key of the next page, so the boundary key must be LISTED — exclude
+//     strictly below it (<).
+//   - continuation-token, delimiter listing: the token is the last EMITTED
+//     item in merged order (key or roll-up prefix, B1 fix), so resume
+//     excludes everything at or below it (<=); the next page must re-derive
+//     un-emitted roll-up groups (groupConsumedByCursor re-emits groups the
+//     token merely sorts before).
 //   - start-after: exclusive marker — exclude everything at or below it (<=).
 func keyExcludedByCursor(objectKey string, p listKeyParams) bool {
 	if p.continuationToken != "" {
+		if p.delimiter != "" {
+			return objectKey <= p.continuationToken
+		}
 		return objectKey < p.continuationToken
 	}
 	if p.startAfter != "" {

@@ -194,6 +194,104 @@ func TestListDelimiterPaginationMergedOrder(t *testing.T) {
 	}
 }
 
+func TestListTokenPlainKeySharingGroupPrefix(t *testing.T) {
+	// B1 regression probe (bughunt finding B1): a continuation token that is
+	// a PLAIN key ("a") sharing the roll-up prefix must NOT consume the
+	// delimiter group "a/" — S3 rule: NextContinuationToken after key "a"
+	// means resume strictly after "a", so a/1 and a/2 must still be listed
+	// (and rolled up) on the next page.
+	f, _ := newTestFS(t)
+	mustPutAll(t, f, "bkt", map[string]string{
+		"a":   "1",
+		"a/1": "2",
+		"a/2": "3",
+		"z":   "4",
+	})
+	page, err := f.List(context.Background(), "bkt", objectmodel.ListParams{Delimiter: "/", MaxKeys: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := keysOf(page); !equalSlices(got, []string{"a"}) {
+		t.Fatalf("page 1 keys = %v, want [a]", got)
+	}
+	if !page.IsTruncated || page.NextToken == "" {
+		t.Fatalf("page 1 truncated=%t token=%q", page.IsTruncated, page.NextToken)
+	}
+	t.Logf("page 1 token = %q", page.NextToken)
+
+	page2, err := f.List(context.Background(), "bkt", objectmodel.ListParams{Delimiter: "/", MaxKeys: 10, ContinuationToken: page.NextToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := page2.CommonPrefixes; !equalSlices(got, []string{"a/"}) {
+		t.Errorf("page 2 prefixes = %v, want [a/] — group lost by token %q", got, page.NextToken)
+	}
+	if got := keysOf(page2); !equalSlices(got, []string{"z"}) {
+		t.Errorf("page 2 keys = %v, want [z]", got)
+	}
+	if page2.IsTruncated || page2.NextToken != "" {
+		t.Errorf("page 2 truncated=%t token=%q, want false/empty", page2.IsTruncated, page2.NextToken)
+	}
+}
+
+func TestListTokenIsRolledUpPrefixItself(t *testing.T) {
+	// Token that IS the roll-up prefix ("a/") consumed its group on the page
+	// that issued it → the next page must NOT re-emit "a/".
+	f, _ := newTestFS(t)
+	mustPutAll(t, f, "bkt", map[string]string{
+		"a":   "1",
+		"a/1": "2",
+		"a/2": "3",
+		"z":   "4",
+	})
+	page, err := f.List(context.Background(), "bkt", objectmodel.ListParams{Delimiter: "/", MaxKeys: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := keysOf(page); !equalSlices(got, []string{"a"}) {
+		t.Fatalf("page 1 keys = %v, want [a]", got)
+	}
+	if got := page.CommonPrefixes; !equalSlices(got, []string{"a/"}) {
+		t.Fatalf("page 1 prefixes = %v, want [a/]", got)
+	}
+	if page.NextToken != "a/" {
+		t.Fatalf("page 1 token = %q, want \"a/\" (last emitted item)", page.NextToken)
+	}
+
+	page2, err := f.List(context.Background(), "bkt", objectmodel.ListParams{Delimiter: "/", MaxKeys: 10, ContinuationToken: page.NextToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := page2.CommonPrefixes; len(got) != 0 {
+		t.Errorf("page 2 must not re-emit a/, got %v", got)
+	}
+	if got := keysOf(page2); !equalSlices(got, []string{"z"}) {
+		t.Errorf("page 2 keys = %v, want [z]", got)
+	}
+}
+
+func TestListTokenInsideGroupConsumesGroup(t *testing.T) {
+	// Token strictly INSIDE a roll-up group ("a/1") means the page that
+	// issued the token already emitted (or passed) the group → the group
+	// stays consumed (leaf 5.1 [a]-4 V2 rule, preserved).
+	f, _ := newTestFS(t)
+	mustPutAll(t, f, "bkt", map[string]string{
+		"a/1": "1",
+		"a/2": "2",
+		"z":   "3",
+	})
+	page, err := f.List(context.Background(), "bkt", objectmodel.ListParams{Delimiter: "/", ContinuationToken: "a/1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := page.CommonPrefixes; len(got) != 0 {
+		t.Errorf("group a/ must be consumed by in-group token, got %v", got)
+	}
+	if got := keysOf(page); !equalSlices(got, []string{"z"}) {
+		t.Errorf("keys = %v, want [z]", got)
+	}
+}
+
 func TestListMissingBucket(t *testing.T) {
 	f, _ := newTestFS(t)
 	if _, err := f.List(context.Background(), "nope", objectmodel.ListParams{}); err == nil {

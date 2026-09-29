@@ -18,6 +18,18 @@ import (
 	"mini-s3/internal/objectmodel"
 )
 
+// bucketPath resolves the on-disk directory for bucket. Normal mode (the
+// dataDir-rooted default): <root>/<bucket> — the frozen pre-seam layout.
+// Single-bucket mode (custom buckets via NewAt): root IS the bucket
+// directory, so the path is root itself — one layout across the seam and
+// the handler-side staging math (bughunt D1 split-brain fix).
+func (f *FS) bucketPath(bucket string) string {
+	if f.singleBucket != "" {
+		return f.root
+	}
+	return filepath.Join(f.root, bucket)
+}
+
 // Put stores an object: MD5 ETag, per-object + parent-dir locks, atomic
 // data write, then atomic sidecar write. Byte-for-byte the pre-seam
 // putObjectHandler write path.
@@ -39,7 +51,7 @@ func (f *FS) Put(ctx context.Context, bucket, key string, data io.Reader, size i
 		return objectmodel.Object{}, objectmodel.ErrInvalidArgument(err.Error())
 	}
 
-	bucketPath := filepath.Join(f.root, bucket)
+	bucketPath := f.bucketPath(bucket)
 	// Bucket existence: the seam has no CreateBucket; a Put into a
 	// well-formed bucket name that does not exist yet materializes it
 	// (conformance pin). The pre-seam server required the bucket to exist
@@ -173,7 +185,7 @@ func (f *FS) statLocked(ctx context.Context, bucket, key string) (legacyMeta, st
 	if err := validateKey(key); err != nil {
 		return legacyMeta{}, "", "", objectmodel.ErrInvalidArgument(err.Error())
 	}
-	bucketPath := filepath.Join(f.root, bucket)
+	bucketPath := f.bucketPath(bucket)
 	if _, err := os.Stat(bucketPath); err != nil {
 		if os.IsNotExist(err) {
 			return legacyMeta{}, "", "", objectmodel.ErrNoSuchBucket(bucket)
@@ -227,7 +239,7 @@ func (f *FS) Delete(ctx context.Context, bucket, key string) error {
 	if err := validateKey(key); err != nil {
 		return objectmodel.ErrInvalidArgument(err.Error())
 	}
-	bucketPath := filepath.Join(f.root, bucket)
+	bucketPath := f.bucketPath(bucket)
 	if _, err := os.Stat(bucketPath); err != nil {
 		if os.IsNotExist(err) {
 			return objectmodel.ErrNoSuchBucket(bucket)

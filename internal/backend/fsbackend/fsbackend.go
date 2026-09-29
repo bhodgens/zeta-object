@@ -53,17 +53,29 @@ import (
 
 // fsbackend registers its constructor under the name "fs" at init time,
 // per the leaf-pinned hook (consumed by leaf 03's registry/config wiring).
+// The "single_bucket_bucket" option switches the instance into custom-bucket
+// mode (root IS the bucket directory); its absence keeps the dataDir layout
+// exactly as before.
 func init() {
 	backend.Register("fs", func(cfg backend.BackendConfig) (backend.Backend, error) {
+		if b := cfg.Options[optSingleBucketBucket]; b != "" {
+			return NewAt(cfg.Root, b)
+		}
 		return New(cfg.Root)
 	})
 }
 
 // FS is a Backend rooted at a filesystem directory containing bucket
-// subdirectories (the server's dataDir, or a custom bucket path when
-// constructed per-bucket). Safe for concurrent use.
+// subdirectories (the server's dataDir), or — single-bucket mode — at the
+// custom bucket's own directory (its root IS the bucket). Safe for
+// concurrent use.
 type FS struct {
 	root string
+	// singleBucket pins the FS to one bucket: when non-empty, the root IS
+	// that bucket's directory and object paths resolve to root/key (never
+	// root/<bucket>/key). Set only via NewAt (explicitly-configured custom
+	// buckets); the dataDir-rooted default keeps the nested layout.
+	singleBucket string
 }
 
 // New returns an FS backend rooted at root. It does NOT create root (the
