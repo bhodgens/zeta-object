@@ -57,3 +57,22 @@ wire-visible history shows the atomic-finalize design working on ZFS.
 
 Test datasets destroyed (s3test, s3fresh, s3noev). Server stopped; binary,
 certs, and config left at zfs-meta:~/s3test/ for reuse.
+
+
+## F-live-1 fix re-validation (2026-09-29, post-fix)
+
+Fix: path reconstruction from the event graph (objid -> name/parent map,
+root detection by directory-chain voting, conservative partial-event
+matching) in internal/metadata/zfs_events.go. 8 new unit tests + 2
+real-host-shape fixtures.
+
+Live re-run on zfs-meta (fresh dataset, fresh binary):
+- `GET /s3fresh/edge/deep.txt?events` -> full key `edge/deep.txt` (was []
+  pre-fix), matches `zfs events -j` ground truth exactly.
+- Rename reconstruction both directions: new key events show
+  `key: edge/renamed.txt, oldKey: edge/deep.txt`; old-key query surfaces
+  both the original create and the rename.
+- Root-level names unchanged (existing fixtures pass unmodified).
+- Gates: build, full suite, -race on metadata, parity 4/4.
+- zfs-meta issues filed: bhodgens/zfs-metadata#1 (wraparound freeze),
+  #2 (full-path emission / resolution contract).

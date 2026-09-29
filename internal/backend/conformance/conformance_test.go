@@ -208,3 +208,42 @@ func (m *runnerStub) Buckets(ctx context.Context) ([]objectmodel.BucketInfo, err
 func (m *runnerStub) Capabilities() objectmodel.CapabilitySet {
 	return objectmodel.CapabilitySet{}
 }
+
+// --- white-box helper coverage (green-reachable branches) ---------------------
+
+// TestIsCode_NonModelError pins the false path: errors that do not wrap an
+// objectmodel.Error carry no conformance code.
+func TestIsCode_NonModelError(t *testing.T) {
+	if isCode(context.DeadlineExceeded, objectmodel.CodeNoSuchKey) {
+		t.Fatal("isCode(ctx err) = true, want false (no objectmodel.Error inside)")
+	}
+	if isCode(objectmodel.ErrNoSuchKey("k"), objectmodel.CodeNoSuchKey) {
+		t.Log("sanity: direct model error recognized")
+	}
+	if !isCode(objectmodel.ErrNoSuchKey("k"), objectmodel.CodeNoSuchKey) {
+		t.Fatal("isCode(NoSuchKey, CodeNoSuchKey) = false, want true")
+	}
+	if isCode(objectmodel.ErrNoSuchBucket("b"), objectmodel.CodeNoSuchKey) {
+		t.Fatal("isCode matched a different code")
+	}
+}
+
+// TestSlicesEqual_Mismatch pins the element-comparison false path.
+func TestSlicesEqual_Mismatch(t *testing.T) {
+	if slicesEqual([]string{"a", "x"}, []string{"a", "y"}) {
+		t.Fatal("slicesEqual matched differing slices")
+	}
+	if !slicesEqual([]string{"a"}, []string{"a"}) {
+		t.Fatal("slicesEqual rejected equal slices")
+	}
+}
+
+// TestEqualStrings_LengthMismatch pins the short-circuit length check.
+func TestEqualStrings_LengthMismatch(t *testing.T) {
+	if equalStrings([]string{"a"}, []string{"a", "b"}) {
+		t.Fatal("equalStrings matched different lengths")
+	}
+	if !equalStrings(nil, nil) {
+		t.Fatal("equalStrings(nil, nil) = false, want true")
+	}
+}

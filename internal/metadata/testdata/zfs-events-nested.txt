@@ -1,0 +1,10 @@
+[{"txg":31998,"object":50,"op":"CREATE","name":"top.txt","parent":34},
+{"txg":32000,"object":129,"op":"CREATE","name":"edge","parent":34},
+{"txg":32001,"object":130,"op":"CREATE","name":"inner","parent":129},
+{"txg":32019,"object":257,"op":"CREATE","name":"deep.txt","parent":130},
+{"txg":32020,"object":258,"op":"CREATE","name":"shallow.txt","parent":130},
+{"txg":32022,"object":257,"op":"TRUNCATE","name":"deep.txt","parent":130,"old_size":1024,"new_size":4096},
+{"txg":32030,"object":257,"op":"RENAME","name":"renamed.txt","old_name":"deep.txt","parent":130,"old_parent":130},
+{"txg":32040,"object":131,"op":"LINK","name":"hard.txt","parent":130},
+{"txg":32050,"object":258,"op":"REMOVE","name":"shallow.txt","parent":130}]
+2 record(s) lost to log wraparound

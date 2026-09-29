@@ -1,0 +1,4 @@
+[{"txg":31998,"object":50,"op":"CREATE","name":"top.txt","parent":34},
+{"txg":32000,"object":129,"op":"CREATE","name":"edge","parent":34},
+{"txg":32019,"object":257,"op":"CREATE","name":"deep.txt","parent":777}]
+1 record(s) lost to log wraparound

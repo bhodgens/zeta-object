@@ -56,6 +56,18 @@ func TestRegistry_RegisterLookupAll(t *testing.T) {
 	}
 }
 
+// TestRegistry_RegisterNil pins the nil-frontend rejection: Register must
+// refuse a nil Frontend outright and must not mutate the registry.
+func TestRegistry_RegisterNil(t *testing.T) {
+	r := frontend.NewRegistry()
+	if err := r.Register(nil); err == nil {
+		t.Fatal("Register(nil): want error, got nil")
+	}
+	if _, found := r.Lookup("s3"); found {
+		t.Fatal("rejected nil registration must not populate the registry")
+	}
+}
+
 func TestRegistry_DuplicateAndInvalid(t *testing.T) {
 	tests := []struct {
 		name      string

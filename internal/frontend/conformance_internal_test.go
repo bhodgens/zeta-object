@@ -20,6 +20,25 @@ func TestRunConformanceSuite_StubPasses(t *testing.T) {
 	RunConformanceSuite(t, capsStub{caps: ProtocolCaps{Buckets: true}}, ConformanceOptions{})
 }
 
+// TestRunConformanceSuite_CapabilityGatedChecksExecute drives the suite
+// end-to-end against stubs declaring each capability, so the check closures
+// (httptest mount, conditional GET, capability-error guard) execute their
+// happy paths. The stub handler (NotFound) is fine: the checks prove
+// mountability and reachability, not protocol-specific status codes.
+func TestRunConformanceSuite_CapabilityGatedChecksExecute(t *testing.T) {
+	RunConformanceSuite(t, capsStub{caps: ProtocolCaps{Buckets: true, ConditionalReads: true}}, ConformanceOptions{})
+}
+
+// TestConformanceChecks_ConditionalReadsGated pins that the suite asks ONLY
+// for declared capabilities: a ConditionalReads-only stub yields exactly one
+// check (the conditional GET), never the buckets mount check.
+func TestConformanceChecks_ConditionalReadsGated(t *testing.T) {
+	checks := conformanceChecks(capsStub{caps: ProtocolCaps{ConditionalReads: true}})
+	if len(checks) != 1 {
+		t.Fatalf("conformanceChecks(ConditionalReads-only) = %d checks, want 1", len(checks))
+	}
+}
+
 func TestRunConformanceSuite_Reporters(t *testing.T) {
 	tests := []struct {
 		name       string

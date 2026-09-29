@@ -122,7 +122,23 @@ var recordsLostRe = regexp.MustCompile(`(?m)^(\d+) record\(s\) lost`)
 // followed by a plaintext "N record(s) lost to log wraparound" line.
 // Unknown wire ops are lowercased and preserved verbatim (never an error);
 // absent optional fields leave ObjectEvent zero values — never fabricated.
+//
+// Keys are reconstructed to full S3 paths from the object-id graph before
+// returning (F-live-1): the log only carries bare names + parent object
+// ids, so History's key filter needs the resolved paths. See
+// reconstructPaths.
 func parseEventsOutput(out string) ([]ObjectEvent, uint64, error) {
+	set, lost, err := parseEventSet(out)
+	if err != nil {
+		return nil, 0, err
+	}
+	return set.events, lost, nil
+}
+
+// parseEventSet is parseEventsOutput with per-event path-resolution state
+// attached, which History's key filter needs to tell fully-resolved keys
+// (exact match) from partial ones (conservative broad match).
+func parseEventSet(out string) (*eventSet, uint64, error) {
 	end := strings.LastIndex(out, "]")
 	if end < 0 {
 		return nil, 0, fmt.Errorf("metadata: zfs events output has no JSON array: %q", truncateForErr(out))
@@ -147,18 +163,93 @@ func parseEventsOutput(out string) ([]ObjectEvent, uint64, error) {
 			lost = parsed
 		}
 	}
-	events := make([]ObjectEvent, 0, len(raws))
+	return reconstructPaths(raws), lost, nil
+}
+
+// maxPathDepth bounds parent-chain walks: object ids can repeat across a
+// wraparound-compacted log, and a cycle in the reconstructed graph must
+// terminate (partial result), not hang the request goroutine. Real ZFS
+// datasets are far shallower.
+const maxPathDepth = 64
+
+// objEntry is one object-id -> (bare name, parent dir object id) mapping
+// harvested from the event stream.
+type objEntry struct {
+	name   string
+	parent uint64
+}
+
+// eventSet is the parsed event stream plus per-event path-resolution
+// state. resolved[i] is true when events[i].Key was reconstructed to a
+// full S3 key through the object-id graph; oldResolved[i] is the same for
+// OldKey. Partial events keep their bare ZFS name and match keys
+// conservatively (see eventMatchesKey).
+type eventSet struct {
+	events      []ObjectEvent
+	resolved    []bool
+	oldResolved []bool
+}
+
+// reconstructPaths builds the objid->name graph from the raw records and
+// resolves every event's Key/OldKey to a full S3 path where the parent
+// chain is complete (F-live-1: `zfs events -j` emits bare names only —
+// verified against print_event, zfs_main.c:8332, which never emits paths).
+//
+// Graph rules pinned from the live zfs-meta host (OpenZFS 2.4.1
+// extended-metadata branch):
+//   - every record carries "object"; CREATE/LINK/RENAME/REMOVE records
+//     carry "name" and (when nonzero) "parent" = containing dir object id;
+//   - RENAME: name = new bare name, old_name = old bare name, parent =
+//     old_parent = the (unchanged) parent dir object id;
+//   - directory CREATEs appear too, with their own object id — that is
+//     the graph walked here.
+func reconstructPaths(raws []rawEvent) *eventSet {
+	set := &eventSet{
+		events:      make([]ObjectEvent, 0, len(raws)),
+		resolved:    make([]bool, len(raws)),
+		oldResolved: make([]bool, len(raws)),
+	}
+	byID := make(map[uint64]objEntry, len(raws))
+	// Newest mapping wins: ring buffers return newest-first, so the FIRST
+	// record seen for an object id is the newest. Object ids are reused
+	// after wraparound compaction; stale entries are never overwritten.
+	// (The oldest-first replay fixtures only contain distinct ids, so
+	// order does not change their result.)
 	for _, r := range raws {
-		op := strings.ToLower(r.Op)
-		e := ObjectEvent{
-			Op:  op,
-			Txg: r.Txg,
+		if r.Name == nil || r.Object == 0 {
+			continue
 		}
+		if _, dup := byID[r.Object]; !dup {
+			byID[r.Object] = objEntry{name: *r.Name, parent: r.Parent}
+		}
+	}
+	root, haveRoot := detectRoot(raws, byID)
+	for i, r := range raws {
+		op := strings.ToLower(r.Op)
+		e := ObjectEvent{Op: op, Txg: r.Txg}
 		if r.Name != nil {
 			e.Key = *r.Name
+			parent := r.Parent
+			if parent == 0 && op == "rename" {
+				// print_event emits `parent` alongside `old_parent`
+				// for RENAME (same dir), but tolerate its absence.
+				parent = r.OldParent
+			}
+			if full, ok := resolvePath(byID, root, haveRoot, *r.Name, parent); ok {
+				e.Key = full
+				set.resolved[i] = true
+			}
 		}
 		if r.OldName != nil {
 			e.OldKey = *r.OldName
+			parent := r.OldParent
+			if parent == 0 {
+				parent = r.Parent
+			}
+			if full, ok := resolvePath(byID, root, haveRoot, *r.OldName, parent); ok {
+				e.OldKey = full
+				set.oldResolved[i] = true
+			}
 		}
 		// Sizes are only meaningful for truncate on the wire (print_event
 		// emits them unconditionally only in that branch).
@@ -169,9 +260,139 @@ func parseEventsOutput(out string) ([]ObjectEvent, uint64, error) {
 			e.Timestamp = time.Unix(0, int64(r.TimeNs)) //nolint:gosec // G115: zfs events -j emits ns offsets that fit int64 for real timestamps
 		}
 		e.UID, e.GID = uint32(r.UID), uint32(r.GID) //nolint:gosec // G115: uid/gid are 32-bit on every platform zfs events reports; truncation matches zfs behavior
-		events = append(events, e)
+		set.events = append(set.events, e)
 	}
-	return events, lost, nil
+	return set
+}
+
+// detectRoot identifies the dataset root directory's object id so
+// parent-chain walks can terminate. The root predates the ring buffer, so
+// its id never appears as an "object" — only as a "parent" of top-level
+// entries.
+//
+// A wrong root claim fabricates wrong EXACT keys (the F-live-1
+// silent-empty failure in reverse), so detection is strict:
+//
+//  1. Only KNOWN directories vote — object ids that appear both as a
+//     created object and as some record's parent. A lost directory's id
+//     keeps appearing as an unresolvable parent with high frequency, but
+//     it is provably not the root of any known dir above it.
+//  2. Each known dir climbs its own resolvable ancestor chain; the first
+//     id ABOVE the chain (absent from the object map) is that dir's root
+//     candidate — the root, or an ancestor lost to wraparound.
+//  3. Among candidates the most frequent wins (the true root is
+//     referenced by every surviving top-level dir), ties to the smaller
+//     id for determinism.
+//
+// With no known directory in the window (entire window inside a dir
+// whose create was lost) detection is refused: everything stays partial
+// and matches conservatively.
+func detectRoot(raws []rawEvent, byID map[uint64]objEntry) (uint64, bool) {
+	isParent := make(map[uint64]bool)
+	for _, r := range raws {
+		if r.Name == nil {
+			continue
+		}
+		if r.Parent != 0 {
+			isParent[r.Parent] = true
+		}
+		if strings.ToLower(r.Op) == "rename" && r.OldParent != 0 {
+			isParent[r.OldParent] = true
+		}
+	}
+	freq := make(map[uint64]int)
+	known := false
+	for id := range isParent {
+		ent, ok := byID[id]
+		if !ok {
+			continue // referenced dir whose create is outside the window
+		}
+		known = true
+		// Climb this dir's resolvable ancestor chain; the id above it
+		// is the root candidate. Depth-capped against cycles from
+		// wraparound object-id reuse.
+		for i := 0; i < maxPathDepth; i++ {
+			next, ok := byID[ent.parent]
+			if !ok {
+				if ent.parent != 0 {
+					freq[ent.parent]++
+				}
+				break
+			}
+			ent = next
+		}
+	}
+	if !known {
+		return 0, false
+	}
+	root, best := uint64(0), 0
+	for id, n := range freq {
+		if n > best || (n == best && id < root) {
+			root, best = id, n
+		}
+	}
+	if best == 0 {
+		return 0, false
+	}
+	return root, true
+}
+
+// resolvePath reconstructs the full S3 key for a bare name under the
+// directory object id parent by walking parent -> grandparent until the
+// dataset root. ok=false means the chain could not be fully resolved —
+// records lost to wraparound, an uncorroborated root, or a legacy record
+// with no parent field — and the caller keeps the bare name.
+func resolvePath(byID map[uint64]objEntry, root uint64, haveRoot bool, name string, parent uint64) (string, bool) {
+	if name == "" || parent == 0 {
+		return "", false
+	}
+	parts := []string{name} // deepest first; ancestors are prepended, so parts[0] ends up root-most
+	cur := parent
+	for i := 0; i < maxPathDepth; i++ {
+		if haveRoot && cur == root {
+			return strings.Join(parts, "/"), true
+		}
+		ent, ok := byID[cur]
+		if !ok {
+			return "", false // ancestor's create is outside the window (or a cycle hit the depth cap)
+		}
+		parts = append([]string{ent.name}, parts...)
+		cur = ent.parent
+	}
+	return "", false
+}
+
+// eventMatchesKey reports whether event i is history for the full S3 key.
+//
+// Fully-resolved events match on exact Key/OldKey equality. Partial
+// events (parent chain unresolvable: records lost to wraparound, or
+// legacy records with no parent field) keep their bare name and match
+// conservatively: exact bare-name equality, or the queried key ending in
+// "/"+bare. Showing a possibly-unrelated event beats silently hiding the
+// only record of an object — the exact F-live-1 failure mode.
+func eventMatchesKey(set *eventSet, i int, key string) bool {
+	e := set.events[i]
+	if set.resolved[i] {
+		if e.Key == key {
+			return true
+		}
+	} else if bareMatchesKey(e.Key, key) {
+		return true
+	}
+	if e.OldKey != "" {
+		if set.oldResolved[i] {
+			if e.OldKey == key {
+				return true
+			}
+		} else if bareMatchesKey(e.OldKey, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func bareMatchesKey(bare, key string) bool {
+	return bare == key || strings.HasSuffix(key, "/"+bare)
 }
 
 // truncateForErr keeps error strings bounded on garbage output.
@@ -244,10 +465,11 @@ func (p *zfsEventsProvider) History(ctx context.Context, bucketPath, key string,
 	if err != nil {
 		return nil, fmt.Errorf("metadata: zfs events %s: %w (stderr: %s)", ds, err, stderr)
 	}
-	events, lost, err := parseEventsOutput(string(stdout))
+	set, lost, err := parseEventSet(string(stdout))
 	if err != nil {
 		return nil, err
 	}
+	events := set.events
 	// Per-instance detail (bughunt A2/C2): the endpoint reads this via the
 	// detailReporter interface, so concurrent ?events on different buckets
 	// can no longer cross-attribute dataset/recordsLost. The package
@@ -256,20 +478,23 @@ func (p *zfsEventsProvider) History(ctx context.Context, bucketPath, key string,
 	p.setDetail(d)
 	setHistoryDetail(d)
 
+	// Key filter runs BEFORE the Since filter: eventMatchesKey indexes
+	// into the pristine set, and the Since pass re-slices `events`,
+	// which would desync the indices.
+	if key != "" {
+		filtered := make([]ObjectEvent, 0, len(events))
+		for i, e := range events {
+			if eventMatchesKey(set, i, key) {
+				filtered = append(filtered, e)
+			}
+		}
+		events = filtered
+	}
 	if !q.Since.IsZero() {
 		filtered := events[:0]
 		for _, e := range events {
 			if e.Timestamp.After(q.Since) || e.Timestamp.IsZero() {
 				filtered = append(filtered, e) // zero timestamps pass: unknown, not old
-			}
-		}
-		events = filtered
-	}
-	if key != "" {
-		filtered := events[:0]
-		for _, e := range events {
-			if e.Key == key || e.OldKey == key {
-				filtered = append(filtered, e)
 			}
 		}
 		events = filtered
