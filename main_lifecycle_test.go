@@ -239,6 +239,62 @@ func TestLoadCredentialsEmptyEnvWarns(t *testing.T) {
 	})
 }
 
+// TestEnvPrefixFallback: the deprecated MINIS3_* prefix still works, and
+// ZETAOBJECT_* wins when both prefixes are set. Remove with the fallback in
+// two minor releases after the zeta-object rename.
+func TestEnvPrefixFallback(t *testing.T) {
+	origAK := serverCredentials.AccessKeyID
+	origSK := serverCredentials.SecretAccessKey
+	defer func() {
+		serverCredentials.AccessKeyID = origAK
+		serverCredentials.SecretAccessKey = origSK
+	}()
+
+	t.Run("legacy MINIS3_ is honored when ZETAOBJECT_ unset", func(t *testing.T) {
+		os.Unsetenv("ZETAOBJECT_ACCESS_KEY")
+		os.Unsetenv("ZETAOBJECT_SECRET_KEY")
+		t.Setenv("MINIS3_ACCESS_KEY", "legacykey")
+		t.Setenv("MINIS3_SECRET_KEY", "legacysecret")
+		loadCredentials()
+		if serverCredentials.AccessKeyID != "legacykey" {
+			t.Errorf("AccessKeyID = %q, want legacykey from MINIS3_ACCESS_KEY", serverCredentials.AccessKeyID)
+		}
+		if serverCredentials.SecretAccessKey != "legacysecret" {
+			t.Errorf("SecretAccessKey = %q, want legacysecret from MINIS3_SECRET_KEY", serverCredentials.SecretAccessKey)
+		}
+	})
+
+	t.Run("ZETAOBJECT_ wins when both are set", func(t *testing.T) {
+		t.Setenv("ZETAOBJECT_ACCESS_KEY", "newkey")
+		t.Setenv("ZETAOBJECT_SECRET_KEY", "newsecret")
+		t.Setenv("MINIS3_ACCESS_KEY", "legacykey")
+		t.Setenv("MINIS3_SECRET_KEY", "legacysecret")
+		loadCredentials()
+		if serverCredentials.AccessKeyID != "newkey" {
+			t.Errorf("AccessKeyID = %q, want newkey (ZETAOBJECT_ must win)", serverCredentials.AccessKeyID)
+		}
+		if serverCredentials.SecretAccessKey != "newsecret" {
+			t.Errorf("SecretAccessKey = %q, want newsecret (ZETAOBJECT_ must win)", serverCredentials.SecretAccessKey)
+		}
+	})
+
+	t.Run("legacy config path MINIS3_CONFIG honored", func(t *testing.T) {
+		os.Unsetenv("ZETAOBJECT_CONFIG")
+		t.Setenv("MINIS3_CONFIG", "/tmp/legacy-config.json")
+		if got := getEnvOrDefaultLegacy("ZETAOBJECT_CONFIG", "config.json"); got != "/tmp/legacy-config.json" {
+			t.Errorf("getEnvOrDefaultLegacy = %q, want legacy MINIS3_CONFIG value", got)
+		}
+	})
+
+	t.Run("new config path wins over legacy", func(t *testing.T) {
+		t.Setenv("ZETAOBJECT_CONFIG", "/tmp/new-config.json")
+		t.Setenv("MINIS3_CONFIG", "/tmp/legacy-config.json")
+		if got := getEnvOrDefaultLegacy("ZETAOBJECT_CONFIG", "config.json"); got != "/tmp/new-config.json" {
+			t.Errorf("getEnvOrDefaultLegacy = %q, want new ZETAOBJECT_CONFIG value", got)
+		}
+	})
+}
+
 // TestServerConfigExampleJSONParses: config.json.example stays valid against
 // the ServerConfig struct (guards doc drift).
 func TestServerConfigExampleJSONParses(t *testing.T) {
