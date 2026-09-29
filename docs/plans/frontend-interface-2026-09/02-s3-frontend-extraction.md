@@ -38,7 +38,7 @@ the first `frontend.Frontend`. After this leaf:
 
 ## Context
 
-mini-s3 is a single-binary Go S3-compatible server (module `mini-s3`,
+zeta-object is a single-binary Go S3-compatible server (module `zeta-object`,
 package `main`, ~30 root .go files). Request flow today:
 
 1. `main()` builds an `http.ServeMux` and registers `rootHandler` at `/`
@@ -58,7 +58,7 @@ package `main`, ~30 root .go files). Request flow today:
    in xml.go.
 
 Credentials are a single shared pair (config.go:109 `serverCredentials`; env
-`MINIS3_ACCESS_KEY`/`MINIS3_SECRET_KEY`, default `minioadmin`). TLS on
+`ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY`, default `minioadmin`). TLS on
 `:8443` via config `listenAddr`/`certFile`/`keyFile`. Tests are stdlib
 `testing`; the repo has an integration harness that must stay green.
 
@@ -82,9 +82,9 @@ package s3
 import (
     "net/http"
 
-    "mini-s3/internal/auth"
-    "mini-s3/internal/backend"
-    "mini-s3/internal/frontend"
+    "zeta-object/internal/auth"
+    "zeta-object/internal/backend"
+    "zeta-object/internal/frontend"
 )
 
 // New constructs the S3 frontend over the storage seam. The SigV4 credential
@@ -179,7 +179,7 @@ import (
     "net/http"
     "testing"
 
-    "mini-s3/internal/frontend/s3"
+    "zeta-object/internal/frontend/s3"
 )
 
 type staticCreds map[string]string
@@ -262,7 +262,7 @@ package s3
 import (
     "net/http"
 
-    "mini-s3/internal/auth"
+    "zeta-object/internal/auth"
 )
 
 // sigv4Authenticator adapts the existing SigV4 verification
@@ -313,7 +313,7 @@ package s3_test
 import (
     "testing"
 
-    "mini-s3/internal/frontend/s3"
+    "zeta-object/internal/frontend/s3"
 )
 
 func TestSigV4_HeaderAndPresigned(t *testing.T) {
@@ -394,8 +394,8 @@ import (
     "strings"
     "testing"
 
-    "mini-s3/internal/frontend"
-    "mini-s3/internal/frontend/s3"
+    "zeta-object/internal/frontend"
+    "zeta-object/internal/frontend/s3"
 )
 
 // stubBackend is the minimal backend.Backend double for dispatch tests;
@@ -495,8 +495,8 @@ Mechanics (a move, not a rewrite):
 5. main.go: remove moved code, keep only construction
    (`s3.New(backendInstance, s3.WithCredentialSource(credSourceFromConfig))`)
    and mount `f.Handler()` at `/` exactly where rootHandler was registered.
-   Credentials still come from config.go/env (`MINIS3_ACCESS_KEY`/
-   `MINIS3_SECRET_KEY`, default minioadmin) — wrap them in a
+   Credentials still come from config.go/env (`ZETAOBJECT_ACCESS_KEY`/
+   `ZETAOBJECT_SECRET_KEY`, default minioadmin) — wrap them in a
    `auth.CredentialSource` in package main.
 6. Storage helpers that remain Backend-owned (storage.go) stay in package
    main for the Backend implementation to use; anything only the s3 frontend
@@ -533,8 +533,8 @@ package s3_test
 import (
     "testing"
 
-    "mini-s3/internal/frontend"
-    "mini-s3/internal/frontend/s3"
+    "zeta-object/internal/frontend"
+    "zeta-object/internal/frontend/s3"
 )
 
 func TestS3Frontend_Conformance(t *testing.T) {

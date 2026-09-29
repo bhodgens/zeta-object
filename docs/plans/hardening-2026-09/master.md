@@ -1,5 +1,7 @@
 # mini-s3 Hardening & Feature Plan — master
 
+> Note: this tree predates the project rename; "mini-s3" in the text below is now "zeta-object".
+
 Created: 2026-09-27. Source: `.hermes/audits/2026-09-27-bughunt-report.md` (12 HIGH,
 ~27 MED, ~17 LOW) + feature-gap analysis. Mandate: fix all findings, port meept-grade
 Go tooling, implement feature gaps, e2e for all features.

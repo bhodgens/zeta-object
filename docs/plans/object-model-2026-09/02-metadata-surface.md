@@ -39,8 +39,8 @@ ever reimplements it.
 
 ## Context
 
-mini-s3 is a single-binary Go S3 server (`package main`, ~30 root .go files,
-module `mini-s3`, go 1.25.x). Today, header handling is inline in handlers:
+zeta-object is a single-binary Go S3 server (`package main`, ~30 root .go files,
+module `zeta-object`, go 1.25.x). Today, header handling is inline in handlers:
 object_handlers.go:139 loops over request headers collecting
 `x-amz-meta-*` into `ObjectMetadata.CustomMetadata` — keeping the FULL
 header name (prefix included) as the map key. The neutral model instead
@@ -644,7 +644,7 @@ stdlib-only, no main imports.
 3. Run: `gofmt -l internal/objectmodel/` — Expected: no output
 4. Run: `go list -deps ./internal/objectmodel` — Expected: stdlib only
    (`net/http` and `fmt`/`strings` are stdlib and allowed; anything under
-   `mini-s3` is a violation)
+   `zeta-object` is a violation)
 5. Report files created, test results, deviations.
 
 ## Self-Verification Checklist

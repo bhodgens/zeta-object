@@ -36,8 +36,8 @@ imports. Serialization (headers ↔ Object) is leaf 02's job.
 
 ## Context
 
-mini-s3 is a single-binary S3-compatible server, `package main` across ~30
-root .go files, Go module `mini-s3` (go 1.25.x per go.mod). Object metadata
+zeta-object is a single-binary S3-compatible server, `package main` across ~30
+root .go files, Go module `zeta-object` (go 1.25.x per go.mod). Object metadata
 currently lives in `ObjectMetadata` (types.go:48) with fields
 `ContentType, ContentLength, ETag, CustomMetadata, LastModified, StoragePath`.
 `StoragePath` is filesystem-internal and must NOT leak into the neutral model.
@@ -249,7 +249,7 @@ x-amz-meta- prefix`) and a package doc comment:
 
 ```go
 // Package objectmodel defines the backend-neutral object model shared by all
-// mini-s3 Backend implementations, Frontend protocol plugins, and
+// zeta-object Backend implementations, Frontend protocol plugins, and
 // MetadataProviders. It carries no HTTP, XML, or storage dependencies.
 package objectmodel
 ```
@@ -591,7 +591,7 @@ Expected: PASS
 2. Run: `go vet ./internal/objectmodel/` — Expected: clean
 3. Run: `gofmt -l internal/objectmodel/` — Expected: no output
 4. Run: `go list -deps ./internal/objectmodel` and confirm every listed
-   package is stdlib (no `mini-s3` main dependency) — Expected: stdlib only
+   package is stdlib (no `zeta-object` main dependency) — Expected: stdlib only
 5. Report files created, test results, and any deviations.
 
 ## Self-Verification Checklist

@@ -1,5 +1,7 @@
 # Coverage-100 Plan — 2026-09-28
 
+> Note: this tree predates the project rename; "mini-s3" in the text below is now "zeta-object".
+
 Mandate: raise test coverage so every package ships with a meaningful,
 near-100%-of-REACHABLE coverage floor and a 100% test pass rate. CI floors
 per package raised to measured-actual minus small margin, then ratcheted.

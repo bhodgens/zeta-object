@@ -1,5 +1,7 @@
 # MetadataProvider Seam + ZFS Events (Full S3 Metadata Parity) - Implementation Orchestrator
 
+> Note: this tree predates the project rename; "mini-s3" in the text below is now "zeta-object".
+
 > **For the executing agent:** You are the orchestrator for this tree node.
 > Your job: (1) dispatch implementation agents, (2) review their work,
 > (3) re-dispatch if incomplete, (4) track completion.

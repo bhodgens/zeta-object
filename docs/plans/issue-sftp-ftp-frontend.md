@@ -1,16 +1,16 @@
 ## Summary
 
-Add FTP/FTPS and SFTP protocol frontends to mini-s3, behind the pluggable Frontend seam. This targets the large ecosystem of tools that speak file-transfer protocols but not object APIs.
+Add FTP/FTPS and SFTP protocol frontends to zeta-object, behind the pluggable Frontend seam. This targets the large ecosystem of tools that speak file-transfer protocols but not object APIs.
 
 ## Context
 
-mini-s3 is gaining a two-axis plugin architecture (tracked in plan trees under `docs/plans/`):
+zeta-object is gaining a two-axis plugin architecture (tracked in plan trees under `docs/plans/`):
 
 - `docs/plans/object-model-2026-09/` - neutral object model
 - `docs/plans/backend-interface-2026-09/` - pluggable storage backends
 - `docs/plans/frontend-interface-2026-09/` - pluggable protocol frontends (S3 first)
 
-FTP and SFTP are file-semantics protocols that map cleanly onto the mutable-object model. SFTP in particular is the common automation path (scripts, rclone, WinSCP). Note the distributed ZFS plan already contemplates SSH/SFTP as a backend transport; this issue is the reverse direction: clients speaking (S)FTP to mini-s3 as a server.
+FTP and SFTP are file-semantics protocols that map cleanly onto the mutable-object model. SFTP in particular is the common automation path (scripts, rclone, WinSCP). Note the distributed ZFS plan already contemplates SSH/SFTP as a backend transport; this issue is the reverse direction: clients speaking (S)FTP to zeta-object as a server.
 
 ## Scope
 

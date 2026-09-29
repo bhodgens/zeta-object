@@ -22,7 +22,7 @@ This leaf creates the extension point the whole tree exists for. It defines,
 in a new `internal/frontend` package:
 
 1. The `Frontend` interface — the frozen contract every wire protocol
-   implements to talk to mini-s3 ("s3" today; "webdav", "ftp", "owncloud"
+   implements to talk to zeta-object ("s3" today; "webdav", "ftp", "owncloud"
    later per their GitHub issues).
 2. `ProtocolCaps` — what each protocol can express, so capability shortfalls
    are declared, not discovered at runtime.
@@ -39,7 +39,7 @@ in a new `internal/frontend` package:
 
 ## Context
 
-mini-s3 is a single-binary Go S3-compatible server (module `mini-s3`), today
+zeta-object is a single-binary Go S3-compatible server (module `zeta-object`), today
 entirely in package `main`: `rootHandler` (main.go:122, mux registration at
 main.go:89) is the single HTTP entry point; SigV4 auth lives in sigv4.go;
 handlers live in object_handlers.go / bucket_handlers.go / multipart_handlers.go.
@@ -53,7 +53,7 @@ Key facts to understand before implementing:
   `internal/backend.Backend` from backend-interface-2026-09. This leaf only
   imports those types in tests/comments if needed; it does not modify them.
 - **Auth today** is a single shared credential pair (config.go:109
-  `serverCredentials`; env `MINIS3_ACCESS_KEY`/`MINIS3_SECRET_KEY`, default
+  `serverCredentials`; env `ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY`, default
   `minioadmin`). The `auth.Authenticator` contract below is deliberately a
   placeholder — the auth GH issue replaces it. Do not grow `Identity`.
 - Repo conventions: Go stdlib only, table-driven tests with stdlib `testing`,
@@ -74,7 +74,7 @@ package frontend
 import (
     "net/http"
 
-    "mini-s3/internal/auth"
+    "zeta-object/internal/auth"
 )
 
 type Frontend interface {
@@ -176,7 +176,7 @@ import (
     "net/http"
     "testing"
 
-    "mini-s3/internal/auth"
+    "zeta-object/internal/auth"
 )
 
 type stubAuth struct{}
@@ -266,8 +266,8 @@ import (
     "net/http"
     "testing"
 
-    "mini-s3/internal/auth"
-    "mini-s3/internal/frontend"
+    "zeta-object/internal/auth"
+    "zeta-object/internal/frontend"
 )
 
 type fakeFrontend struct{}
@@ -322,7 +322,7 @@ package frontend
 import (
     "net/http"
 
-    "mini-s3/internal/auth"
+    "zeta-object/internal/auth"
 )
 
 type Frontend interface {
@@ -364,7 +364,7 @@ import (
     "fmt"
     "testing"
 
-    "mini-s3/internal/frontend"
+    "zeta-object/internal/frontend"
 )
 
 func TestErrCapability(t *testing.T) {
@@ -456,8 +456,8 @@ import (
     "net/http"
     "testing"
 
-    "mini-s3/internal/auth"
-    "mini-s3/internal/frontend"
+    "zeta-object/internal/auth"
+    "zeta-object/internal/frontend"
 )
 
 func regFake(name string) frontend.Frontend { return namedFake{name: name} }
@@ -624,7 +624,7 @@ import (
     "net/http"
     "testing"
 
-    "mini-s3/internal/auth"
+    "zeta-object/internal/auth"
 )
 
 type capsStub struct {
@@ -680,7 +680,7 @@ import (
     "net/http/httptest"
     "testing"
 
-    "mini-s3/internal/frontend"
+    "zeta-object/internal/frontend"
 )
 
 // ConformanceOptions tunes which checks run.

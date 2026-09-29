@@ -32,7 +32,7 @@ lands in leaf 02.
 
 ## Context
 
-mini-s3 is a Go 1.27 single-binary S3 server, module `mini-s3`, currently package `main` at
+zeta-object is a Go 1.27 single-binary S3 server, module `zeta-object`, currently package `main` at
 repo root. Handlers touch the filesystem directly (~97 `os.*` calls). This tree inserts a
 Backend seam between the S3 protocol layer and storage. The neutral object model lives in
 `internal/objectmodel` (created by the sibling `object-model-2026-09` tree — it MUST already
@@ -57,7 +57,7 @@ import (
 	"context"
 	"io"
 
-	"mini-s3/internal/objectmodel"
+	"zeta-object/internal/objectmodel"
 )
 
 type Backend interface {
@@ -146,7 +146,7 @@ import (
 	"io"
 	"testing"
 
-	"mini-s3/internal/objectmodel"
+	"zeta-object/internal/objectmodel"
 )
 
 // compile-time shape probe: a stub satisfying the interface must exist.
@@ -208,7 +208,7 @@ import (
 	"os"
 	"testing"
 
-	"mini-s3/internal/objectmodel" // import path per actual tree layout
+	"zeta-object/internal/objectmodel" // import path per actual tree layout
 )
 
 func TestErrorMapping(t *testing.T) {

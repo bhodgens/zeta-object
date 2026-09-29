@@ -1,10 +1,10 @@
 ## Summary
 
-Add an ownCloud protocol frontend to mini-s3: ownCloud client applications (desktop sync client, mobile apps) could then sync against a self-hosted mini-s3.
+Add an ownCloud protocol frontend to zeta-object: ownCloud client applications (desktop sync client, mobile apps) could then sync against a self-hosted zeta-object.
 
 ## Context
 
-mini-s3 is gaining a two-axis plugin architecture (tracked in plan trees under `docs/plans/`):
+zeta-object is gaining a two-axis plugin architecture (tracked in plan trees under `docs/plans/`):
 
 - `docs/plans/object-model-2026-09/` - neutral object model
 - `docs/plans/backend-interface-2026-09/` - pluggable storage backends
@@ -19,7 +19,7 @@ Protocol reality (verify during design): "ownCloud protocol" is WebDAV plus ownC
 ## Scope
 
 - WebDAV core (shares the WebDAV frontend issue's implementation; this issue extends it)
-- OCS capabilities endpoint advertising exactly what mini-s3 supports
+- OCS capabilities endpoint advertising exactly what zeta-object supports
 - File versions endpoint if the client requires it - natural fit with the ZFS events metadata provider (docs/plans/metadata-zfs-2026-09/) where available; degrade otherwise
 - Auth: Basic auth via the frontend Authenticator adapter (identity model per auth issue); app-password style tokens if the client requires them
 

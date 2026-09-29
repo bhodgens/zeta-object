@@ -32,7 +32,7 @@ provider-agnostic; the concrete zfs-events consumer is leaf 02.
 
 ## Context
 
-mini-s3 is a single-binary Go S3-compatible server, `package main`, stdlib
+zeta-object is a single-binary Go S3-compatible server, `package main`, stdlib
 only. Buckets come from two sources: auto-discovery under config `dataDir`
 and the config.json `buckets` map (custom paths, symlinks followed — see
 CLAUDE.md Storage Layout). The sibling tree `backend-interface-2026-09` will
@@ -46,7 +46,7 @@ Key files to understand before implementing:
   capability must never alter; parity enforced by leaf 03).
 - `config.go` - ServerConfig, buckets map, credentials; how bucketPath is
   resolved and validated.
-- `go.mod` - module mini-s3, zero third-party requires; keep it that way.
+- `go.mod` - module zeta-object, zero third-party requires; keep it that way.
 - `/Users/caimlas/git/zfs-metadata/module/zfs/zfs_events.c` - the upstream
   event-log implementation (read-only reference; do not import or link it).
 

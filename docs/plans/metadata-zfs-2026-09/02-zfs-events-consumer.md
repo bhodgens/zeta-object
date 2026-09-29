@@ -33,7 +33,7 @@ unexported seam so tests run a stub script instead of the real binary.
 
 ## Context
 
-mini-s3 (module `mini-s3`, Go 1.25, stdlib only) is adding an optional
+zeta-object (module `zeta-object`, Go 1.25, stdlib only) is adding an optional
 metadata-enrichment seam (master Contract 1). This leaf builds the first
 concrete provider against the user's OpenZFS branch
 (`/Users/caimlas/git/zfs-metadata`, branch `extended-metadata`), which adds
@@ -646,10 +646,10 @@ func TestRealZFSSkipsWithoutBinary(t *testing.T) {
         t.Skip("zfs binary not on PATH (macOS dev host) — integration skipped")
     }
     // Real-host path: needs a ZFS dataset with events=on; skip unless
-    // MINIS3_ZFS_TEST_DATASET is set.
-    ds := os.Getenv("MINIS3_ZFS_TEST_DATASET")
+    // ZETAOBJECT_ZFS_TEST_DATASET is set.
+    ds := os.Getenv("ZETAOBJECT_ZFS_TEST_DATASET")
     if ds == "" {
-        t.Skip("set MINIS3_ZFS_TEST_DATASET to run real zfs integration")
+        t.Skip("set ZETAOBJECT_ZFS_TEST_DATASET to run real zfs integration")
     }
     // ... exercise Probe + History against the real dataset via the provider.
 }

@@ -36,7 +36,7 @@ Endpoint surface (designed here, pinned in master Contract 4):
 
 ## Context
 
-mini-s3 routes through `rootHandler` (main.go:139) →
+zeta-object routes through `rootHandler` (main.go:139) →
 `bucketLevelDispatch`/`objectLevelDispatch`, where subresources are matched
 via `r.URL.Query()` presence checks. Responses use `xml.Header` + pinned
 namespace `s3XMLNamespace` (`xml.go:16`,

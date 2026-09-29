@@ -1,6 +1,6 @@
 # Mini-S3 Gap Closure Plan
 
-This document identifies bugs and gaps in the mini-s3 server and provides a plan for fixing them.
+This document identifies bugs and gaps in the zeta-object server and provides a plan for fixing them.
 
 ## Status: COMPLETED
 
@@ -167,7 +167,7 @@ gates, golangci-lint, gitleaks, git hooks) and a set of hardening features:
 - **Server lifecycle** (`main.go`, `config.go`): explicit `http.Server` with
   read/write/idle timeouts, TLS 1.2 minimum version, graceful shutdown draining
   in-flight requests up to 30s on SIGINT/SIGTERM, and new config keys
-  `listenAddr` / `certFile` / `keyFile` plus the `MINIS3_LISTEN_ADDR` env
+  `listenAddr` / `certFile` / `keyFile` plus the `ZETAOBJECT_LISTEN_ADDR` env
   override. `make certs` generates certificates with SANs for localhost and
   127.0.0.1.
 - **Tooling and honesty fixes**: Makefile gates (`lint`, `check`, `e2e`,

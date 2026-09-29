@@ -1,5 +1,7 @@
 # Test-Gap Closure Plan — 2026-09-28
 
+> Note: this tree predates the project rename; "mini-s3" in the text below is now "zeta-object".
+
 Source: coverage audit after the hardening campaign (72.7%, race-clean).
 Goal: close all 11 identified gaps, take coverage to ~85%+, bump COVER_MIN.
 

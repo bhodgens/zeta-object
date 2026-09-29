@@ -40,7 +40,7 @@ via `storage.go` atomic helpers, surfaced by `object_handlers.go`
 serve it). The provider seam must be invisible on this surface: attaching a
 provider changes NOTHING about Get/Head/Put/List.
 
-mini-s3's existing test style: package-main `_test.go` files, stdlib
+zeta-object's existing test style: package-main `_test.go` files, stdlib
 testing (no testify), httptest against the real rootHandler, and an
 integration harness under `scripts/`/e2e as the regression gate. Follow it.
 

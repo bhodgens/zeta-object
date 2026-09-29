@@ -23,7 +23,7 @@ Make the frontend seam real at startup. After this leaf, `main()`:
 1. Loads an optional `frontends` array from config: `[{"type": "s3", "listenAddr": ":8443"}]`.
 2. Backward compatibility is exact: **a config without `frontends` behaves
    identically to today** — S3 on `listenAddr` (config.go) with
-   `MINIS3_LISTEN_ADDR` env override, TLS on certFile/keyFile.
+   `ZETAOBJECT_LISTEN_ADDR` env override, TLS on certFile/keyFile.
 3. Each configured frontend is constructed via a small factory map
    (`"s3"` today; future factories land with their GH issues: WebDAV,
    (S)FTP, ownCloud), registered into `frontend.Registry`, and its
@@ -38,21 +38,21 @@ Make the frontend seam real at startup. After this leaf, `main()`:
 
 ## Context
 
-mini-s3's startup today (main.go:70-120 area): load `ServerConfig`
+zeta-object's startup today (main.go:70-120 area): load `ServerConfig`
 (config.go — `dataDir`, `listenAddr` default `:8443`, `certFile`, `keyFile`,
 `buckets`), init inactivity tracker + multipart sweeper, build one
 `http.ServeMux`, register `rootHandler` at `/` (main.go:89; post-leaf-02 the
 s3 frontend's Handler sits there), start `http.Server` with TLS via
 `newServer(...)`, and on SIGINT/SIGTERM drain for up to 30 seconds
 (`serverShutdownTimeout`). One credential pair from env
-(`MINIS3_ACCESS_KEY`/`MINIS3_SECRET_KEY`, default minioadmin) feeds SigV4.
+(`ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY`, default minioadmin) feeds SigV4.
 
 After leaf 02, package main constructs `s3.New(backend,
 s3.WithCredentialSource(...))` and mounts it at `/`. This leaf replaces that
 hardcoded mount with registry-driven mounting driven by config.
 
 Config is loaded by `loadConfig` (config.go) from `config.json` or
-`MINIS3_CONFIG`; env `MINIS3_LISTEN_ADDR` beats the config file. JSON
+`ZETAOBJECT_CONFIG`; env `ZETAOBJECT_LISTEN_ADDR` beats the config file. JSON
 decoding is stdlib; unknown keys today are ignored — the new key must
 therefore default cleanly when absent.
 
@@ -157,7 +157,7 @@ func TestLoadConfig_Frontends(t *testing.T) {
     tests := []struct {
         name       string
         configJSON string
-        envAddr    string // MINIS3_LISTEN_ADDR override, "" = unset
+        envAddr    string // ZETAOBJECT_LISTEN_ADDR override, "" = unset
         want       []FrontendConfig
         wantAddr   string // effective default listen addr after normalization
     }{
@@ -186,7 +186,7 @@ func TestLoadConfig_Frontends(t *testing.T) {
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
             if tt.envAddr != "" {
-                t.Setenv("MINIS3_LISTEN_ADDR", tt.envAddr)
+                t.Setenv("ZETAOBJECT_LISTEN_ADDR", tt.envAddr)
             }
             cfg, err := loadConfig(writeTempConfig(t, tt.configJSON))
             if err != nil {
@@ -232,7 +232,7 @@ type FrontendConfig struct {
 //   }
 ```
 
-`MINIS3_LISTEN_ADDR` keeps overriding only the *default* listener address
+`ZETAOBJECT_LISTEN_ADDR` keeps overriding only the *default* listener address
 (existing behavior untouched).
 
 **Step 4: Run test to verify pass**
@@ -258,9 +258,9 @@ import (
     "net/http"
     "testing"
 
-    "mini-s3/internal/auth"
-    "mini-s3/internal/backend"
-    "mini-s3/internal/frontend"
+    "zeta-object/internal/auth"
+    "zeta-object/internal/backend"
+    "zeta-object/internal/frontend"
 )
 
 type nilBackend struct{ backend.Backend } // embeds interface; methods unused in these tests
@@ -359,10 +359,10 @@ import (
     "fmt"
     "net/http"
 
-    "mini-s3/internal/auth"
-    "mini-s3/internal/backend"
-    "mini-s3/internal/frontend"
-    s3frontend "mini-s3/internal/frontend/s3"
+    "zeta-object/internal/auth"
+    "zeta-object/internal/backend"
+    "zeta-object/internal/frontend"
+    s3frontend "zeta-object/internal/frontend/s3"
 )
 
 // frontendFactories maps config Type -> constructor. Future frontends
@@ -519,7 +519,7 @@ main() changes, minimally:
 3. Graceful shutdown: `srv.Shutdown` on the default server, then loop
    `Shutdown` over every extra listener server, all within the existing
    30-second `serverShutdownTimeout` drain window.
-4. `MINIS3_LISTEN_ADDR` still overrides only the default listener.
+4. `ZETAOBJECT_LISTEN_ADDR` still overrides only the default listener.
 5. Update `config.json.example` with a commented `frontends` sample.
 
 **Step 4: Run test to verify pass**
@@ -581,7 +581,7 @@ Before reporting completion, verify:
 - [ ] `make e2e` green with a config lacking `frontends` — backward compatibility exact
 - [ ] A config with `frontends: [{"type":"bogus"}]` fails startup with an error listing known types
 - [ ] Multi-listener: dedicated-listener path is implemented and exercised by tests (may use a stub frontend for the second entry); graceful shutdown drains all listeners
-- [ ] `MINIS3_LISTEN_ADDR` semantics unchanged (default listener only)
+- [ ] `ZETAOBJECT_LISTEN_ADDR` semantics unchanged (default listener only)
 - [ ] Frozen contracts untouched; no changes to `internal/frontend` package code (leaf 01 owns it)
 - [ ] `config.json.example` and `docs/frontends.md` written and consistent
 - [ ] gofmt clean, `make vet`, `make fmt-check` pass

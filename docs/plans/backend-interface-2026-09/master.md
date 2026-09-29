@@ -1,5 +1,7 @@
 # Backend Interface (Pluggable Data-Plane Seam) — Implementation Orchestrator
 
+> Note: this tree predates the project rename; "mini-s3" in the text below is now "zeta-object".
+
 Created: 2026-09-28. Sibling tree dependency: `object-model-2026-09` (internal/objectmodel
 package — MUST complete first). Downstream consumers: `frontend-interface` tree (WebDAV/SFTP
 frontends route through this seam) and `metadata-zfs` tree (ZFS metadata backend registers here).

@@ -1,10 +1,10 @@
 ## Summary
 
-Add a WebDAV protocol frontend to mini-s3, behind the pluggable Frontend seam. This makes every OS treat mini-s3 as a mounted drive: macOS Finder, Windows Explorer, and Linux (gvfs/davfs2) all speak WebDAV natively.
+Add a WebDAV protocol frontend to zeta-object, behind the pluggable Frontend seam. This makes every OS treat zeta-object as a mounted drive: macOS Finder, Windows Explorer, and Linux (gvfs/davfs2) all speak WebDAV natively.
 
 ## Context
 
-mini-s3 is gaining a two-axis plugin architecture (tracked in plan trees under `docs/plans/`):
+zeta-object is gaining a two-axis plugin architecture (tracked in plan trees under `docs/plans/`):
 
 - `docs/plans/object-model-2026-09/` - neutral object model (Object, BucketInfo, ListPage)
 - `docs/plans/backend-interface-2026-09/` - pluggable storage backends

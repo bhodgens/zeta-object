@@ -39,7 +39,7 @@ direct-fs in v1 per parent Contract 4; this leaf documents the part-staging deci
 
 ## Context
 
-mini-s3 is a Go 1.27 single-binary S3 server (module `mini-s3`, package `main` at repo
+zeta-object is a Go 1.27 single-binary S3 server (module `zeta-object`, package `main` at repo
 root). Object data and metadata currently flow:
 
 - **Write path** (`object_handlers.go` putObjectHandler, ~line 85–150): MD5 ETag, per-object
@@ -86,8 +86,8 @@ Key files to understand before implementing:
 package fsbackend
 
 import (
-	"mini-s3/internal/backend"
-	"mini-s3/internal/objectmodel"
+	"zeta-object/internal/backend"
+	"zeta-object/internal/objectmodel"
 )
 
 // FS is a Backend rooted at a filesystem directory containing bucket
@@ -214,7 +214,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"mini-s3/internal/backend"
+	"zeta-object/internal/backend"
 )
 
 func TestNewRootedAndInterface(t *testing.T) {

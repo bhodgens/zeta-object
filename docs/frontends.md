@@ -1,6 +1,6 @@
 # Protocol Frontends
 
-mini-s3 speaks multiple wire protocols through a single pluggable seam. A
+zeta-object speaks multiple wire protocols through a single pluggable seam. A
 **frontend** decodes a wire protocol into the neutral object model
 (`internal/backend.Backend`) and encodes protocol-appropriate responses.
 Today only `s3` is registered; WebDAV, (S)FTP, and ownCloud frontends are
@@ -39,10 +39,10 @@ The optional `frontends` array in `config.json` selects what runs:
   exact backward compatibility with configs that predate the seam.
 - **No `listenAddr`** → the frontend's `Handler()` is mounted on the default
   listener's mux (the `listenAddr` from the top-level config, overridable by
-  `MINIS3_LISTEN_ADDR`).
+  `ZETAOBJECT_LISTEN_ADDR`).
 - **With `listenAddr`** → the frontend gets its own dedicated TLS listener on
   that address, using the same shared `certFile`/`keyFile` pair.
-- `MINIS3_LISTEN_ADDR` overrides **only the default listener**; per-frontend
+- `ZETAOBJECT_LISTEN_ADDR` overrides **only the default listener**; per-frontend
   `listenAddr` values are never touched by it.
 - **Unknown or duplicate `type` values abort startup loudly** with the list
   of known types — there is no silent fallback.

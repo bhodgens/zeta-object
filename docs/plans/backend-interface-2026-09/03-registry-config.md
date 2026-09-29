@@ -46,7 +46,7 @@ with a single `init()` — no further core changes.
 
 ## Context
 
-mini-s3 loads `config.json` (path via `MINIS3_CONFIG`, default `config.json`) through
+zeta-object loads `config.json` (path via `ZETAOBJECT_CONFIG`, default `config.json`) through
 `loadConfig` in `config.go` (144 lines): `ServerConfig` struct with `dataDir`,
 `listenAddr`, `certFile`, `keyFile`, `buckets map[string]string` (bucket → custom path).
 `main.go` (256 lines) wires the http.Server. After leaf 02, package main has
@@ -313,7 +313,7 @@ package main
 import (
 	"testing"
 
-	"mini-s3/internal/backend"
+	"zeta-object/internal/backend"
 )
 
 func TestBuildBackendLookup(t *testing.T) {

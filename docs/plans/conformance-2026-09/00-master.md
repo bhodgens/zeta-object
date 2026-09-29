@@ -1,5 +1,7 @@
 # Protocol Conformance + Client Interop Plan — 2026-09-28
 
+> Note: this tree predates the project rename; "mini-s3" in the text below is now "zeta-object".
+
 Scope: gap items #3 (protocol conformance) and #4 (client interop matrix)
 from the post-campaign test audit. Two leaves, then integration.
 
