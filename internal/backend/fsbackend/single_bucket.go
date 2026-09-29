@@ -39,5 +39,5 @@ func NewAt(root, bucket string) (*FS, error) {
 	if root == "" {
 		return nil, fmt.Errorf("fsbackend: single-bucket root for bucket %q must not be empty", bucket)
 	}
-	return &FS{root: root, singleBucket: bucket}, nil
+	return &FS{root: root, singleBucket: bucket, maxPutBytes: maxPutBytesDefault}, nil
 }

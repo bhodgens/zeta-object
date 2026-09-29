@@ -60,6 +60,7 @@ func Run(t *testing.T, name string, factory func(t *testing.T) backend.Backend) 
 		t.Run("DeleteMissingBucket", func(t *testing.T) { testDeleteMissingBucket(t, factory) })
 		t.Run("MissingBucket", func(t *testing.T) { testMissingBucket(t, factory) })
 		t.Run("DeleteRemovesObject", func(t *testing.T) { testDeleteRemovesObject(t, factory) })
+		t.Run("DelimiterPaginationTokenCompleteness", func(t *testing.T) { testDelimiterPaginationTokenCompleteness(t, factory) })
 		t.Run("ListEmptyBucket", func(t *testing.T) { testListEmptyBucket(t, factory) })
 		t.Run("ListPrefixFilter", func(t *testing.T) { testListPrefixFilter(t, factory) })
 		t.Run("ListDelimiterGrouping", func(t *testing.T) { testListDelimiterGrouping(t, factory) })
@@ -209,10 +210,137 @@ func testDeleteRemovesObject(t *testing.T, factory func(*testing.T) backend.Back
 	if err := b.Delete(ctx, bucket, "gone.txt"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
+	// BUGHUNT B12(c): the portable form of "the data file is gone" — the
+	// seam-visible effect of removal is Stat flipping to NoSuchKey (a raw
+	// file-existence check would be backend-specific and non-portable).
 	if _, err := b.Stat(ctx, bucket, "gone.txt"); err != nil {
 		wantCode(t, err, objectmodel.CodeNoSuchKey)
 	} else {
 		t.Error("Stat after Delete: want NoSuchKey, got nil error")
+	}
+	// And a Get of the deleted object must also report NoSuchKey (the data
+	// is truly gone, not merely unindexed).
+	if _, _, err := b.Get(ctx, bucket, "gone.txt", objectmodel.GetOptions{}); err != nil {
+		wantCode(t, err, objectmodel.CodeNoSuchKey)
+	} else {
+		t.Error("Get after Delete: want NoSuchKey, got nil error")
+	}
+}
+
+// BUGHUNT B12(a): pin the delimiter+pagination token completeness. The
+// continuation token on a delimiter listing is the page's LAST EMITTED item
+// in merged order (a plain key OR a roll-up prefix); a resume from that
+// token must re-derive every un-emitted group and key, so the union of all
+// pages equals the full listing. This also pins the plain-key token case
+// (a key that sorts strictly before an un-emitted roll-up group must not
+// consume that group — bughunt B1 semantics).
+func testDelimiterPaginationTokenCompleteness(t *testing.T, factory func(*testing.T) backend.Backend) {
+	b := factory(t)
+	ctx := context.Background()
+	// "a" is a plain key that sorts BEFORE the un-emitted group "a/";
+	// the rest exercise multi-page roll-ups.
+	putAll(t, b, bucket, map[string]string{
+		"a":      "1",
+		"a/1":    "2",
+		"a/2":    "3",
+		"b/1":    "4",
+		"b/2":    "5",
+		"c.txt":  "6",
+		"d/deep": "7",
+	})
+	const maxKeys = 2
+	wantAll := map[string]bool{
+		"a": true, "a/1": true, "a/2": true,
+		"b/1": true, "b/2": true, "c.txt": true, "d/deep": true,
+	}
+
+	// Union of a full delimiter pagination must equal the flat listing.
+	// S3 semantics: keys inside a delimiter group surface ONLY as a
+	// CommonPrefix — so a wanted key is accounted for when it is listed
+	// as an object OR covered by some returned common prefix.
+	params := objectmodel.ListParams{Delimiter: "/", MaxKeys: maxKeys}
+	union := map[string]bool{}
+	prefixes := map[string]bool{}
+	pages := 0
+	for {
+		page, err := b.List(ctx, bucket, params)
+		if err != nil {
+			t.Fatalf("List page %d: %v", pages+1, err)
+		}
+		pages++
+		for _, o := range page.Objects {
+			if !wantAll[o.Key] {
+				t.Errorf("page %d: unexpected key %q", pages, o.Key)
+			}
+			if union[o.Key] {
+				t.Errorf("page %d: duplicate key %q across pages", pages, o.Key)
+			}
+			union[o.Key] = true
+		}
+		for _, cp := range page.CommonPrefixes {
+			if prefixes[cp] {
+				t.Errorf("page %d: duplicate common prefix %q across pages", pages, cp)
+			}
+			prefixes[cp] = true
+		}
+		if pages > 20 {
+			t.Fatal("pagination did not converge")
+		}
+		if !page.IsTruncated {
+			break
+		}
+		if page.NextToken == "" {
+			t.Fatal("IsTruncated with empty NextToken")
+		}
+		params.ContinuationToken = page.NextToken
+	}
+	accounted := func(k string) bool {
+		if union[k] {
+			return true
+		}
+		for cp := range prefixes {
+			if strings.HasPrefix(k, cp) {
+				return true
+			}
+		}
+		return false
+	}
+	for k := range wantAll {
+		if !accounted(k) {
+			t.Errorf("delimiter pagination missed key %q (a lost roll-up group swallows keys)", k)
+		}
+	}
+	if pages < 3 {
+		t.Errorf("pages = %d, want >= 3 (five items at maxKeys=2 must span multiple pages)", pages)
+	}
+}
+
+// BUGHUNT B12(b): ContextCancellation must cover Stat, Delete, List, and
+// Buckets in addition to Get/Put (pinned elsewhere): a cancelled ctx yields
+// an error return — never a panic, never a silent success.
+func testContextCancellation(t *testing.T, factory func(*testing.T) backend.Backend) {
+	b := factory(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// Pinned: a cancelled ctx yields an error return (never a panic); the
+	// suite asserts error-ness, not latency or specific error identity.
+	if _, _, err := b.Get(ctx, bucket, "k", objectmodel.GetOptions{}); err == nil {
+		t.Error("Get with cancelled ctx: want error, got nil")
+	}
+	if _, err := b.Put(ctx, bucket, "k", strings.NewReader("x"), 1, objectmodel.PutOptions{}); err == nil {
+		t.Error("Put with cancelled ctx: want error, got nil")
+	}
+	if _, err := b.Stat(ctx, bucket, "k"); err == nil {
+		t.Error("Stat with cancelled ctx: want error, got nil")
+	}
+	if err := b.Delete(ctx, bucket, "k"); err == nil {
+		t.Error("Delete with cancelled ctx: want error, got nil")
+	}
+	if _, err := b.List(ctx, bucket, objectmodel.ListParams{}); err == nil {
+		t.Error("List with cancelled ctx: want error, got nil")
+	}
+	if _, err := b.Buckets(ctx); err == nil {
+		t.Error("Buckets with cancelled ctx: want error, got nil")
 	}
 }
 
@@ -385,20 +513,6 @@ func testCapabilitiesZeroSafe(t *testing.T, factory func(*testing.T) backend.Bac
 	_ = factory(t).Capabilities()
 }
 
-func testContextCancellation(t *testing.T, factory func(*testing.T) backend.Backend) {
-	b := factory(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	// Pinned: a cancelled ctx yields an error return (never a panic); the
-	// suite asserts error-ness, not latency or specific error identity.
-	if _, _, err := b.Get(ctx, bucket, "k", objectmodel.GetOptions{}); err == nil {
-		t.Error("Get with cancelled ctx: want error, got nil")
-	}
-	if _, err := b.Put(ctx, bucket, "k", strings.NewReader("x"), 1, objectmodel.PutOptions{}); err == nil {
-		t.Error("Put with cancelled ctx: want error, got nil")
-	}
-}
-
 // Concurrent Put+Get+Delete on the SAME key. Meaningful under -race; runs
 // always. The bucket is materialized first: this subtest pins same-key
 // contention, not bucket-creation races. Get may legitimately observe
@@ -481,6 +595,16 @@ func objectKeys(p objectmodel.ListPage) []string {
 
 func equalStrings(got, want []string) bool {
 	return len(got) == len(want) && slicesEqual(got, want)
+}
+
+// sortedKeys renders a key-set for deterministic failure messages.
+func sortedKeys(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func slicesEqual(a, b []string) bool {

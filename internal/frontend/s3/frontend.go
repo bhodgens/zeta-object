@@ -24,7 +24,6 @@ import (
 // Frontend implements frontend.Frontend for the S3 protocol. Construct
 // with New; the zero value is not usable.
 type Frontend struct {
-	b     backend.Backend
 	creds auth.CredentialSource
 	authz *sigv4Authenticator
 }
@@ -39,18 +38,18 @@ func WithCredentialSource(cs auth.CredentialSource) Option {
 	return func(f *Frontend) { f.creds = cs }
 }
 
-// New constructs the S3 frontend over the storage seam. b is retained for
-// the data plane (v1 multipart staging resolves per-bucket roots via
-// package main's backendFor indirection, which this frontend calls
-// through backendRootFor in dispatch.go — see that file's comment for
-// the v1 seam shape).
-func New(b backend.Backend, opts ...Option) *Frontend {
-	f := &Frontend{b: b}
+// New constructs the S3 frontend. The backend parameter is intentionally
+// unused in v1 (underscore): the data plane resolves per-bucket through
+// the installed backendLookup seam (seam.go/backendFor), which honors the
+// config's per-bucket backend selections — a single stored Backend could
+// not. The parameter stays for API stability of the constructor.
+func New(_ backend.Backend, opts ...Option) *Frontend {
+	f := &Frontend{}
 	for _, opt := range opts {
 		opt(f)
 	}
 	if f.creds == nil {
-		f.creds = defaultCredentialSource()
+		f.creds = credentialSourceFor()
 	}
 	f.authz = &sigv4Authenticator{creds: f.creds}
 	return f

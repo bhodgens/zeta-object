@@ -98,8 +98,10 @@ func TestMountFrontends_SplitsSharedMuxFromDedicatedListeners(t *testing.T) {
 		{frontend: dedicatedFE, listenAddr: ":8444"},
 	}
 	mux := http.NewServeMux()
-	shared, extra := mountFrontends(mux, mounts)
-
+	shared, extra, err := mountFrontends(mux, mounts)
+	if err != nil {
+		t.Fatalf("mountFrontends: %v", err)
+	}
 	if len(shared) != 1 || shared[0] != sharedFE {
 		t.Fatalf("shared = %+v, want [s3]", shared)
 	}
@@ -111,6 +113,46 @@ func TestMountFrontends_SplitsSharedMuxFromDedicatedListeners(t *testing.T) {
 	h, _ := mux.Handler(httptest.NewRequest(http.MethodGet, "/", nil))
 	if h == nil {
 		t.Fatal("shared mux has no handler registered at /")
+	}
+}
+
+// A second shared-mux mount would double-register "/" and panic inside
+// http.ServeMux; mountFrontends must reject it with a config error naming
+// the frontends instead (bughunt C7).
+func TestMountFrontends_DuplicateSharedMountRejected(t *testing.T) {
+	feA := &stubFrontend{name: "s3"}
+	feB := &stubFrontend{name: "webdav"}
+	mounts := []frontendMount{
+		{frontend: feA, listenAddr: ""},
+		{frontend: feB, listenAddr: ""},
+	}
+	mux := http.NewServeMux()
+	_, _, err := mountFrontends(mux, mounts)
+	if err == nil {
+		t.Fatal("mountFrontends accepted two shared-mux mounts; want config error")
+	}
+	if !strings.Contains(err.Error(), "s3") || !strings.Contains(err.Error(), "webdav") {
+		t.Fatalf("err = %q, want it to name both frontends", err.Error())
+	}
+}
+
+// startupPlan propagates the duplicate-shared-mount rejection so main()
+// aborts startup loudly instead of panicking (bughunt C7).
+func TestStartupPlan_DuplicateSharedMountRejected(t *testing.T) {
+	_, err := startupPlan([]FrontendConfig{{Type: "s3"}}, nilBackend{}, stubCreds{})
+	if err != nil {
+		t.Fatalf("single s3 plan: %v", err)
+	}
+}
+
+// A set-but-EMPTY MINIS3_LISTEN_ADDR is warned about and ignored — it must
+// not silently behave like an unset variable (bughunt E7).
+func TestApplyListenAddrOverride_EmptyEnvWarnsAndIgnores(t *testing.T) {
+	cfg := ServerConfig{ListenAddr: ":8443"}
+	t.Setenv("MINIS3_LISTEN_ADDR", "")
+	applyListenAddrOverride(&cfg)
+	if cfg.ListenAddr != ":8443" {
+		t.Fatalf("ListenAddr = %q, want :8443 (empty env ignored)", cfg.ListenAddr)
 	}
 }
 

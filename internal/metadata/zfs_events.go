@@ -108,6 +108,14 @@ type rawEvent struct {
 
 // recordsLostRe matches the plaintext trailing line print_event emits after
 // the JSON array when the ring buffer dropped records.
+//
+// Wording limitation (pinned): upstream print_event emits exactly one
+// variant, "<N> record(s) lost to log wraparound" (zfs-metadata
+// cmd/zfs/zfs_main.c), so only the "record(s)" form is matched here. If a
+// future upstream changes the wording (e.g. singular "1 record was lost"),
+// this regex will miss it and the trailer parse will fall into the
+// conservative unknown-loss path below — a comment-and-test update, not a
+// data-loss bug.
 var recordsLostRe = regexp.MustCompile(`(?m)^(\d+) record\(s\) lost`)
 
 // parseEventsOutput parses `zfs events -j` stdout: a JSON array optionally
@@ -125,7 +133,19 @@ func parseEventsOutput(out string) ([]ObjectEvent, uint64, error) {
 	}
 	var lost uint64
 	if m := recordsLostRe.FindStringSubmatch(out); m != nil {
-		lost, _ = strconv.ParseUint(m[1], 10, 64)
+		parsed, err := strconv.ParseUint(m[1], 10, 64)
+		if err != nil {
+			// Loss UNKNOWN, not zero: the trailer is present but its
+			// count does not fit uint64 (corrupt/absurd output). Zero
+			// would silently claim lossless history — conservative
+			// sentinel 1 keeps the lossy signal surfaced to the
+			// records_lost field instead.
+			lost = 1
+		} else if parsed == 0 {
+			lost = 1 // same sentinel for a literal "0 record(s) lost" trailer
+		} else {
+			lost = parsed
+		}
 	}
 	events := make([]ObjectEvent, 0, len(raws))
 	for _, r := range raws {

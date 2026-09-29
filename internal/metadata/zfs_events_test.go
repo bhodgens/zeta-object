@@ -69,7 +69,22 @@ func TestParseEventsOutput(t *testing.T) {
 			name:     "records lost line after array",
 			in:       "[{\"txg\":1,\"object\":2,\"op\":\"REMOVE\"}]\n7 record(s) lost to log wraparound\n",
 			want:     []ObjectEvent{{Op: "remove", Txg: 1}},
-			wantLost: 7,
+			wantLost: 7, // ordinary path: exact count preserved
+		},
+		{
+			name:     "records lost count overflows uint64",
+			in:       "[{\"txg\":1,\"object\":2,\"op\":\"REMOVE\"}]\n99999999999999999999999999 record(s) lost to log wraparound\n",
+			want:     []ObjectEvent{{Op: "remove", Txg: 1}},
+			wantLost: 1,
+		},
+		{
+			name: "records lost count zero still surfaces lossy",
+			in:   "[{\"txg\":1,\"object\":2,\"op\":\"REMOVE\"}]\n0 record(s) lost to log wraparound\n",
+			want: []ObjectEvent{{Op: "remove", Txg: 1}},
+			// A trailer that says 0 is itself anomalous (upstream only
+			// prints it when records were lost); surface the conservative
+			// sentinel rather than a silent lossless claim.
+			wantLost: 1,
 		},
 		{
 			name: "future fields tolerated and mapped",

@@ -43,6 +43,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -58,10 +59,25 @@ import (
 // exactly as before.
 func init() {
 	backend.Register("fs", func(cfg backend.BackendConfig) (backend.Backend, error) {
+		var f *FS
+		var err error
 		if b := cfg.Options[optSingleBucketBucket]; b != "" {
-			return NewAt(cfg.Root, b)
+			f, err = NewAt(cfg.Root, b)
+		} else {
+			f, err = New(cfg.Root)
 		}
-		return New(cfg.Root)
+		if err != nil {
+			return nil, err
+		}
+		// BUGHUNT B11: optional per-object Put size cap override. Values
+		// <= 0 or unparseable keep the 5 GiB default (fail-open to the
+		// sane S3-aligned limit rather than refusing startup).
+		if v := cfg.Options[optMaxPutBytes]; v != "" {
+			if n, parseErr := strconv.ParseInt(v, 10, 64); parseErr == nil && n > 0 {
+				f.maxPutBytes = n
+			}
+		}
+		return f, nil
 	})
 }
 
@@ -76,7 +92,19 @@ type FS struct {
 	// root/<bucket>/key). Set only via NewAt (explicitly-configured custom
 	// buckets); the dataDir-rooted default keeps the nested layout.
 	singleBucket string
+	// maxPutBytes caps a single Put's buffered body (bughunt B11). Zero
+	// means the default (maxPutBytesDefault). Configurable via the
+	// optMaxPutBytes backend option; values <= 0 fall back to the default.
+	maxPutBytes int64
 }
+
+// maxPutBytesDefault is the default per-object Put size cap: 5 GiB, S3's
+// single-PUT object limit.
+const maxPutBytesDefault int64 = 5 << 30
+
+// optMaxPutBytes is the BackendConfig.Options key overriding maxPutBytes
+// (decimal or 512-style binary GiB values via a plain int64 parse).
+const optMaxPutBytes = "max_put_bytes"
 
 // New returns an FS backend rooted at root. It does NOT create root (the
 // server creates the data directory at startup; a missing root simply
@@ -89,7 +117,7 @@ func New(root string) (*FS, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fsbackend: resolving root %q: %w", root, err)
 	}
-	return &FS{root: abs}, nil
+	return &FS{root: abs, maxPutBytes: maxPutBytesDefault}, nil
 }
 
 // Root returns the backend's filesystem root (package-main's backendFor

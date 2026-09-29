@@ -52,12 +52,14 @@ const zfsEventsProviderName = "zfs-events"
 // wiring layer (or tests) may install a resolver keyed by bucket path —
 // the durable design is a startup-built attach map; nil falls back to
 // the probe-on-request shim below, which backend-interface replaces by
-// swapping this one function's callers.
+// swapping this one function's callers. Guarded by hookMu (seam.go).
 var metadataProviderHook func(bucketPath string) metadata.MetadataProvider
 
 // InstallMetadataProvider installs the per-bucket provider resolver
 // (exported wiring entry; nil restores the probe-on-request shim).
 func InstallMetadataProvider(fn func(bucketPath string) metadata.MetadataProvider) {
+	hookMu.Lock()
+	defer hookMu.Unlock()
 	metadataProviderHook = fn
 }
 
@@ -66,8 +68,11 @@ func InstallMetadataProvider(fn func(bucketPath string) metadata.MetadataProvide
 // the registered zfs-events provider against the bucket path —
 // per-bucket attach semantics, same as the startup ProbeAndAttach flow.
 func metadataProviderFor(bucketPath string) metadata.MetadataProvider {
-	if metadataProviderHook != nil {
-		return metadataProviderHook(bucketPath)
+	hookMu.RLock()
+	fn := metadataProviderHook
+	hookMu.RUnlock()
+	if fn != nil {
+		return fn(bucketPath)
 	}
 	p := metadata.Lookup(zfsEventsProviderName)
 	if p == nil {
@@ -108,6 +113,8 @@ type ObjectEventHistory struct {
 // objectEventJSON is the wire form of one event. Op is lowercased;
 // timestamp is RFC3339 best-effort (zero time serializes as
 // "0001-01-01T00:00:00Z" — never replaced with a fabricated value).
+// C8 (bughunt-gateway-2026-09-29): uid/gid are intentionally NOT part of
+// the wire form — client-visible owner identity is unnecessary surface.
 type objectEventJSON struct {
 	Op        string `json:"op"`
 	Key       string `json:"key,omitempty"`
@@ -116,8 +123,6 @@ type objectEventJSON struct {
 	Timestamp string `json:"timestamp"` // RFC3339; zero-time is honest "unknown"
 	SizeOld   int64  `json:"sizeOld,omitempty"`
 	SizeNew   int64  `json:"sizeNew,omitempty"`
-	UID       uint32 `json:"uid,omitempty"`
-	GID       uint32 `json:"gid,omitempty"`
 }
 
 // ListObjectVersionsExt is the ?events&versions XML document — a
@@ -248,8 +253,6 @@ func toEventJSON(events []metadata.ObjectEvent) []objectEventJSON {
 			Timestamp: e.Timestamp.UTC().Format("2006-01-02T15:04:05Z07:00"),
 			SizeOld:   e.SizeOld,
 			SizeNew:   e.SizeNew,
-			UID:       e.UID,
-			GID:       e.GID,
 		})
 	}
 	return out

@@ -109,14 +109,17 @@ type ObjectVersion struct {
 
 // ListVersionsResult is the S3 response structure for GET /bucket?versions.
 type ListVersionsResult struct {
-	XMLName         xml.Name        `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListVersionsResult"`
-	Name            string          `xml:"Name"`
-	Prefix          string          `xml:"Prefix"`
-	KeyMarker       string          `xml:"KeyMarker"`
-	VersionIDMarker string          `xml:"VersionIdMarker"`
-	MaxKeys         int             `xml:"MaxKeys"`
-	IsTruncated     bool            `xml:"IsTruncated"`
-	Versions        []ObjectVersion `xml:"Version"`
+	XMLName             xml.Name        `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListVersionsResult"`
+	Name                string          `xml:"Name"`
+	Prefix              string          `xml:"Prefix"`
+	KeyMarker           string          `xml:"KeyMarker"`
+	VersionIDMarker     string          `xml:"VersionIdMarker"`
+	NextKeyMarker       string          `xml:"NextKeyMarker,omitempty"`
+	NextVersionIDMarker string          `xml:"NextVersionIdMarker,omitempty"`
+	EncodingType        string          `xml:"EncodingType,omitempty"`
+	MaxKeys             int             `xml:"MaxKeys"`
+	IsTruncated         bool            `xml:"IsTruncated"`
+	Versions            []ObjectVersion `xml:"Version"`
 }
 
 // LocationConstraint is for GetBucketLocation

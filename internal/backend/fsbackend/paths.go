@@ -77,13 +77,27 @@ func objectDataPathFor(bucketPath, key string) string {
 // resolveDataPath returns the data file path for an object, honoring the
 // sidecar's storagePath with a fallback to the canonical location when the
 // stored path is empty/corrupt (pre-seam resolveObjectDataPath, leaf-2.4
-// fix 6). A storagePath pointing anywhere is honored — the pre-seam reader
-// trusts the sidecar's recorded location.
+// fix 6).
+//
+// CONTAINMENT (bughunt B9 fix): a storagePath is honored only when it stays
+// INSIDE the bucket root after Clean. A crafted/corrupt sidecar carrying an
+// absolute path or a ../-escaping path is ignored — the canonical layout is
+// used instead, so Get/Stat/Delete can never be steered outside the bucket
+// by sidecar contents.
 func resolveDataPath(bucketPath, key string, meta *legacyMeta) string {
+	canonical := filepath.Join(bucketPath, key)
 	if meta.StoragePath == "" {
-		return filepath.Join(bucketPath, key)
+		return canonical
 	}
-	return meta.StoragePath
+	cleaned := filepath.Clean(meta.StoragePath)
+	rel, err := filepath.Rel(bucketPath, cleaned)
+	if err != nil {
+		return canonical
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return canonical // escapes the bucket root: ignore the sidecar path
+	}
+	return cleaned
 }
 
 // validateKey mirrors the pre-seam validateObjectKey rules (object_handlers.go):
@@ -111,6 +125,14 @@ func validateKey(key string) error {
 		if seg == ".metadata" {
 			return keyInvalidError(`object key cannot contain ".metadata" path segments`)
 		}
+	}
+	// CANONICAL FORM (bughunt B5 fix): reject keys that Clean would collapse
+	// ("a//b", "a/./b", "/a", "a/", "a/b/"). filepath.Clean silently folds
+	// these onto the same on-disk path, so Put("a//b") and Put("a/b") would
+	// silently alias one object. S3 keys are byte-exact; such keys are
+	// rejected as InvalidArgument instead of colliding.
+	if cleaned != "/"+key {
+		return keyInvalidError(`object key must be in canonical form (no empty or "." path segments, no leading/trailing slash)`)
 	}
 	return nil
 }

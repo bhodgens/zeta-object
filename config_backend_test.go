@@ -2,6 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -90,5 +93,60 @@ func TestLoadConfigBackendKeysBackwardCompat(t *testing.T) {
 				tc.verify(t, c)
 			}
 		})
+	}
+}
+
+// TestLoadConfigNullBucketValueFails: a JSON null where a bucket value was
+// expected is a parse error NAMING the bucket — never a silent empty-path
+// entry that half-initializes into a dataDir collision (bughunt E6).
+func TestLoadConfigNullBucketValueFails(t *testing.T) {
+	origConfig := serverConfig
+	defer func() { serverConfig = origConfig }()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"buckets":{"photos":null}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	err := loadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("loadConfig accepted a null bucket value; want parse error")
+	}
+	if !strings.Contains(err.Error(), "photos") {
+		t.Fatalf("err = %q, want it to name the bucket", err.Error())
+	}
+
+	// The same via raw json.Unmarshal (no loadConfig normalization).
+	var c ServerConfig
+	if err := json.Unmarshal([]byte(`{"buckets":{"photos":null}}`), &c); err == nil {
+		t.Fatal("UnmarshalJSON accepted a null bucket value")
+	} else if !strings.Contains(err.Error(), "photos") {
+		t.Fatalf("err = %q, want it to name the bucket", err.Error())
+	}
+}
+
+// TestLoadConfigUnknownTopLevelKeyFails: DisallowUnknownFields makes a
+// typo'd top-level key ("dataDirr") a loud startup failure instead of a
+// silently-ignored default (bughunt E6).
+func TestLoadConfigUnknownTopLevelKeyFails(t *testing.T) {
+	origConfig := serverConfig
+	defer func() { serverConfig = origConfig }()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"dataDirr":"./typo/"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadConfig(cfgPath); err == nil {
+		t.Fatal("loadConfig accepted an unknown top-level key; want error")
+	}
+}
+
+// TestLoadConfigEmptyBucketValueFails: an explicit empty object value
+// (neither path nor backend) must also fail rather than half-initialize.
+func TestLoadConfigEmptyBucketObjectFails(t *testing.T) {
+	var c ServerConfig
+	if err := json.Unmarshal([]byte(`{"buckets":{"photos":{}}}`), &c); err == nil {
+		t.Fatal("UnmarshalJSON accepted an empty bucket object; want error")
 	}
 }

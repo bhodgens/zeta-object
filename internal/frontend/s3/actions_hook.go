@@ -19,19 +19,24 @@ type ActionContext struct {
 }
 
 // actionTriggerFn is the installed after_upload/after_download/after_delete
-// trigger. Nil = actions disabled (unit tests).
+// trigger. Nil = actions disabled (unit tests). Guarded by hookMu (seam.go).
 var actionTriggerFn func(eventType string, ctx ActionContext)
 
 // installActionTrigger installs the action trigger. package main calls
 // this at wiring time with a wrapper that adapts ActionContext to its own
 // identical-shaped struct.
 func installActionTrigger(fn func(eventType string, ctx ActionContext)) {
+	hookMu.Lock()
+	defer hookMu.Unlock()
 	actionTriggerFn = fn
 }
 
 // triggerActions fires the installed action trigger (no-op when none).
 func triggerActions(eventType string, ctx ActionContext) {
-	if actionTriggerFn != nil {
-		actionTriggerFn(eventType, ctx)
+	hookMu.RLock()
+	fn := actionTriggerFn
+	hookMu.RUnlock()
+	if fn != nil {
+		fn(eventType, ctx)
 	}
 }

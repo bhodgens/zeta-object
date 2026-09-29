@@ -463,3 +463,37 @@ func TestEventsDoNotDisturbCoreResponses(t *testing.T) {
 		t.Fatalf("?events&versions = %d (body %s)", code, body)
 	}
 }
+
+// TestEventsJSONNoOwnerFields pins C8 (bughunt-gateway-2026-09-29):
+// the ?events JSON wire form never exposes uid/gid (owner identity is
+// unnecessary client surface). Set-UID/GID events are included to prove
+// the fields stay absent even when the provider carries them.
+func TestEventsJSONNoOwnerFields(t *testing.T) {
+	stub := eventsStubFor(t)
+	stub.configure(
+		[]metadata.ObjectEvent{
+			{Op: "create", Key: "a.txt", Txg: 1, SizeNew: 5, UID: 501, GID: 20},
+			{Op: "setattr", Key: "a.txt", Txg: 2, UID: 0, GID: 0},
+		},
+		metadata.HistoryDetail{Dataset: "stub/data", RecordsLost: 0},
+		nil,
+	)
+	srv, root := newEventsTestServer(t)
+	eventsAttachedBucket(t, srv, root, "ownbkt", "a.txt", "hello")
+
+	for _, target := range []string{"/ownbkt?events", "/ownbkt/a.txt?events"} {
+		code, _, body := eventsGet(t, srv, target)
+		if code != http.StatusOK {
+			t.Fatalf("%s = %d (body %s)", target, code, body)
+		}
+		for _, leak := range []string{`"uid"`, `"gid"`} {
+			if strings.Contains(body, leak) {
+				t.Fatalf("%s body exposes %s: %s", target, leak, body)
+			}
+		}
+		// Sanity: the envelope still carries the real event fields.
+		if !strings.Contains(body, `"op"`) || !strings.Contains(body, `"txg"`) {
+			t.Fatalf("%s body lost core event fields: %s", target, body)
+		}
+	}
+}

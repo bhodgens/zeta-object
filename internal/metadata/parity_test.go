@@ -472,33 +472,12 @@ func TestParityLastModifiedTolerancePolicy(t *testing.T) {
 
 // --- comparison helpers -----------------------------------------------------
 
-// parityCompareSnapshots applies AssertHeaderParity with the pinned
-// Last-Modified tolerance policy: Last-Modified values must parse as
-// HTTP-date and be within 60 seconds; ALL other fields exactly equal.
+// parityCompareSnapshots applies AssertHeaderParityWithPolicy with the
+// pinned shared policy (objectmodel.DefaultParityPolicy: Last-Modified must
+// parse as HTTP-date and be within 60 seconds; ALL other fields exactly
+// equal) — the policy lives in the exported gate, no local copy.
 func parityCompareSnapshots(a, b objectmodel.HeaderSnapshot) string {
-	base := objectmodel.AssertHeaderParity(a, b)
-	if base == "" {
-		return ""
-	}
-	// Only the Last-Modified difference may be tolerated (within 60s).
-	if a.LastModified != b.LastModified {
-		ta, errA := http.ParseTime(a.LastModified)
-		tb, errB := http.ParseTime(b.LastModified)
-		if errA != nil || errB != nil {
-			return "Last-Modified not HTTP-date: " + base
-		}
-		delta := ta.Sub(tb)
-		if delta < 0 {
-			delta = -delta
-		}
-		if delta <= 60*time.Second {
-			// Re-run parity with Last-Modified equalized; anything else
-			// still failing is a real break.
-			a.LastModified = b.LastModified
-			return objectmodel.AssertHeaderParity(a, b)
-		}
-	}
-	return base
+	return objectmodel.AssertHeaderParityWithPolicy(a, b, objectmodel.DefaultParityPolicy)
 }
 
 func sortedParityLabels(m map[string]objectmodel.HeaderSnapshot) []string {

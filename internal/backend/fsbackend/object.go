@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"mini-s3/internal/backend"
@@ -67,11 +68,33 @@ func (f *FS) Put(ctx context.Context, bucket, key string, data io.Reader, size i
 	unlockParent := fsLockObject(filepath.Dir(flatPath))
 	defer unlockParent()
 	dataPath := objectDataPathFor(bucketPath, key)
+	// BUGHUNT B4: when the shadow layout wins, the write target's file and
+	// directory differ from the locked flat path. Lock the ACTUAL target
+	// (and its parent, <bucket>/!data) too, so a concurrent Put/Delete
+	// touching the shadow file serializes with this write. Acquired in the
+	// same order everywhere (flat first, shadow second) — no deadlock.
+	if dataPath != flatPath {
+		unlockShadow := fsLockObject(dataPath)
+		defer unlockShadow()
+		unlockShadowDir := fsLockObject(filepath.Dir(dataPath))
+		defer unlockShadowDir()
+	}
 	metaPath := sidecarPath(bucketPath, key)
 
-	body, err := io.ReadAll(data)
+	// BUGHUNT B11: cap the buffered body at maxPutBytes (S3's 5 GiB
+	// per-object limit by default). Read through a LimitReader so an
+	// oversized body is rejected without buffering past the cap.
+	if size >= 0 && size > f.maxPutBytes {
+		return objectmodel.Object{}, objectmodel.ErrInvalidArgument(
+			fmt.Sprintf("object size %d exceeds the maximum allowed size %d", size, f.maxPutBytes))
+	}
+	body, err := io.ReadAll(io.LimitReader(data, f.maxPutBytes+1))
 	if err != nil {
 		return objectmodel.Object{}, backend.ToObjectModelError(err)
+	}
+	if int64(len(body)) > f.maxPutBytes {
+		return objectmodel.Object{}, objectmodel.ErrInvalidArgument(
+			fmt.Sprintf("object size exceeds the maximum allowed size %d", f.maxPutBytes))
 	}
 	if size >= 0 && int64(len(body)) != size {
 		return objectmodel.Object{}, objectmodel.ErrInvalidArgument("size mismatch")
@@ -145,17 +168,14 @@ func (f *FS) Get(ctx context.Context, bucket, key string, opts objectmodel.GetOp
 	if err := ctx.Err(); err != nil {
 		return nil, objectmodel.Object{}, err
 	}
-	meta, dataPath, _, err := f.statLocked(ctx, bucket, key)
+	// BUGHUNT B3: stat AND open happen inside statLocked's reader-lock
+	// region, so a concurrent Delete's cleanupEmptyDirs cannot remove a
+	// directory component between the stat and the open (the old open
+	// AFTER the locks released was a TOCTOU that surfaced as a spurious
+	// 500 on ENOTDIR-class races).
+	meta, file, err := f.statLocked(ctx, bucket, key)
 	if err != nil {
 		return nil, objectmodel.Object{}, err
-	}
-
-	file, err := os.Open(dataPath) //nolint:gosec // G703: resolved via validateKey-checked key.
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, objectmodel.Object{}, objectmodel.ErrNoSuchKey(key)
-		}
-		return nil, objectmodel.Object{}, backend.ToObjectModelError(err)
 	}
 	obj := objectFromLegacy(key, meta, meta.ContentLength)
 	return file, obj, nil
@@ -168,7 +188,7 @@ func (f *FS) Stat(ctx context.Context, bucket, key string) (objectmodel.Object, 
 	if err := ctx.Err(); err != nil {
 		return objectmodel.Object{}, err
 	}
-	meta, _, _, err := f.statLocked(ctx, bucket, key)
+	meta, _, err := f.statLocked(ctx, bucket, key)
 	if err != nil {
 		return objectmodel.Object{}, err
 	}
@@ -176,41 +196,45 @@ func (f *FS) Stat(ctx context.Context, bucket, key string) (objectmodel.Object, 
 }
 
 // statLocked is the shared Get/Stat core: bucket check, sidecar read+parse,
-// corrupt-storagePath fallback, reader locks (leaf-4.8), data stat. The
-// caller's returned object carries the ACTUAL file size.
-func (f *FS) statLocked(ctx context.Context, bucket, key string) (legacyMeta, string, string, error) {
+// corrupt-storagePath fallback, reader locks (leaf-4.8), data stat AND data
+// open (bughunt B3: the open moved inside the lock region so a concurrent
+// delete's empty-dir prune cannot win the race between stat and open). The
+// caller's returned object carries the ACTUAL file size; Get additionally
+// receives the opened *os.File.
+func (f *FS) statLocked(ctx context.Context, bucket, key string) (legacyMeta, *os.File, error) {
 	if err := ctx.Err(); err != nil {
-		return legacyMeta{}, "", "", err
+		return legacyMeta{}, nil, err
 	}
 	if err := validateKey(key); err != nil {
-		return legacyMeta{}, "", "", objectmodel.ErrInvalidArgument(err.Error())
+		return legacyMeta{}, nil, objectmodel.ErrInvalidArgument(err.Error())
 	}
 	bucketPath := f.bucketPath(bucket)
 	if _, err := os.Stat(bucketPath); err != nil {
 		if os.IsNotExist(err) {
-			return legacyMeta{}, "", "", objectmodel.ErrNoSuchBucket(bucket)
+			return legacyMeta{}, nil, objectmodel.ErrNoSuchBucket(bucket)
 		}
-		return legacyMeta{}, "", "", backend.ToObjectModelError(err)
+		return legacyMeta{}, nil, backend.ToObjectModelError(err)
 	}
 
 	metaPath := sidecarPath(bucketPath, key)
 	metaJSON, err := os.ReadFile(metaPath) //nolint:gosec // G703: key validated.
 	if err != nil {
 		if os.IsNotExist(err) {
-			return legacyMeta{}, "", "", objectmodel.ErrNoSuchKey(key)
+			return legacyMeta{}, nil, objectmodel.ErrNoSuchKey(key)
 		}
-		return legacyMeta{}, "", "", backend.ToObjectModelError(err)
+		return legacyMeta{}, nil, backend.ToObjectModelError(err)
 	}
 	var meta legacyMeta
 	if err := json.Unmarshal(metaJSON, &meta); err != nil {
-		return legacyMeta{}, "", "", backend.ToObjectModelError(fmt.Errorf("parsing sidecar for %s: %w", key, err))
+		return legacyMeta{}, nil, backend.ToObjectModelError(fmt.Errorf("parsing sidecar for %s: %w", key, err))
 	}
 
 	dataPath := resolveDataPath(bucketPath, key, &meta)
 
 	// Leaf-4.8 reader locks: hold data-dir + meta-dir locks across
 	// stat→open so a concurrent delete's empty-dir prune cannot remove
-	// directories out from under the read.
+	// directories out from under the read (bughunt B3: BOTH now happen
+	// here, inside the region).
 	unlockDataDir := fsLockObject(filepath.Dir(dataPath))
 	defer unlockDataDir()
 	unlockMetaDir := fsLockObject(filepath.Dir(metaPath))
@@ -218,14 +242,28 @@ func (f *FS) statLocked(ctx context.Context, bucket, key string) (legacyMeta, st
 
 	info, err := os.Stat(dataPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return legacyMeta{}, "", "", objectmodel.ErrNoSuchKey(key)
+		// BUGHUNT B7: ENOTDIR on the data path means a key-prefix file
+		// occupies an ancestor directory — for Get/Stat that is the
+		// not-found class (NoSuchKey), not an internal error.
+		if os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR) {
+			return legacyMeta{}, nil, objectmodel.ErrNoSuchKey(key)
 		}
-		return legacyMeta{}, "", "", backend.ToObjectModelError(err)
+		return legacyMeta{}, nil, backend.ToObjectModelError(err)
 	}
 	// Serve the ACTUAL size (leaf-2.4 fix 5): a lying sidecar never aborts.
 	meta.ContentLength = info.Size()
-	return meta, dataPath, metaPath, nil
+
+	// BUGHUNT B3: open INSIDE the lock region. Post-stat ENOTDIR/ENOENT
+	// from a racing delete is impossible here (the dir locks are held);
+	// any remaining open error maps through B7's not-found rule.
+	file, err := os.Open(dataPath) //nolint:gosec // G703: resolved via validateKey-checked key.
+	if err != nil {
+		if os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR) {
+			return legacyMeta{}, nil, objectmodel.ErrNoSuchKey(key)
+		}
+		return legacyMeta{}, nil, backend.ToObjectModelError(err)
+	}
+	return meta, file, nil
 }
 
 // Delete removes an object: sidecar-aware data removal (honors
@@ -261,16 +299,20 @@ func (f *FS) Delete(ctx context.Context, bucket, key string) error {
 	unlockMetaDir := fsLockObject(filepath.Dir(metaPath))
 	defer unlockMetaDir()
 
-	// Sidecar-aware actual data path (pre-seam deleteObjectCore).
-	actualDataPath := filepath.Join(bucketPath, key)
+	// Sidecar-aware actual data path (pre-seam deleteObjectCore), with the
+	// bughunt B9 containment check: a sidecar storagePath outside the
+	// bucket root is ignored in favor of the canonical path — Delete can
+	// never be steered outside the bucket by crafted sidecar contents.
+	var meta legacyMeta
 	if metaJSON, err := os.ReadFile(metaPath); err == nil { //nolint:gosec // G703: key validated.
-		var meta legacyMeta
-		if jsonErr := json.Unmarshal(metaJSON, &meta); jsonErr == nil && meta.StoragePath != "" {
-			actualDataPath = meta.StoragePath
-		}
+		_ = json.Unmarshal(metaJSON, &meta) // parse failure → empty meta → canonical path
 	}
+	actualDataPath := resolveDataPath(bucketPath, key, &meta)
 
-	if err := os.Remove(actualDataPath); err != nil && !os.IsNotExist(err) { //nolint:gosec // G703: sidecar or validated canonical path.
+	if err := os.Remove(actualDataPath); err != nil && !os.IsNotExist(err) && !errors.Is(err, syscall.ENOTDIR) { //nolint:gosec // G703: contained sidecar or validated canonical path.
+		// BUGHUNT B6: ENOTDIR (a key-prefix file occupies an ancestor of
+		// the canonical path) means no data file can exist at this key —
+		// S3 semantics make Delete idempotent: 204-class nil, not an error.
 		return backend.ToObjectModelError(err)
 	}
 	// Sidecar removal never fails the delete: data is already gone

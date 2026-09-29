@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"mini-s3/internal/auth"
@@ -105,9 +106,8 @@ func installS3Seams() {
 	})
 
 	// The multipart expiry sweep pass runs in the frontend; package main
-	// keeps the hourly ticker (runMultipartSweepPass below drives it).
-	multipartSweepEntry = s3.SweepAllBucketsOnce
-	sweepAllBucketsOnce = s3.SweepAllBucketsOnce
+	// keeps the hourly ticker (runMultipartSweepPass drives it).
+	setSweepEntries(s3.SweepAllBucketsOnce)
 }
 
 // mainActionContext converts the frontend's ActionContext to the
@@ -142,13 +142,47 @@ var _ = os.Stat
 var _ = strconv.Quote
 var _ = auth.Identity{}
 
-// multipartSweepEntry is installed by the s3 frontend (SetMultipartSweep
-// below); nil = no staging sweep installed (unit tests).
-var multipartSweepEntry func() int
+// multipartSweepEntry is installed by the s3 frontend (installS3Seams
+// below); nil = no staging sweep installed (unit tests). Guarded by
+// sweepMu: the sweeper goroutine reads it while wiring/tests install.
+var (
+	sweepMu             sync.RWMutex
+	multipartSweepEntry func() int
+)
 
 // sweepAllBucketsOnce is the test-visible alias of the frontend's sweep
 // pass (multipart_sweeper_test.go drives it directly, as pre-move).
+// Guarded by sweepMu.
 var sweepAllBucketsOnce func() int
+
+// setSweepEntries installs both sweep entries atomically.
+func setSweepEntries(entry func() int) {
+	sweepMu.Lock()
+	defer sweepMu.Unlock()
+	multipartSweepEntry = entry
+	sweepAllBucketsOnce = entry
+}
+
+// runMultipartSweepPass performs one expiry sweep over every discovered
+// bucket (dataDir buckets + configured custom buckets) through the
+// frontend's sweep entry.
+func runMultipartSweepPass() int {
+	sweepMu.RLock()
+	entry := multipartSweepEntry
+	sweepMu.RUnlock()
+	if entry == nil {
+		return 0
+	}
+	return entry()
+}
+
+// sweepAllBucketsOnceFn returns the test-visible sweep alias under a read
+// lock (nil when no wiring installed it).
+func sweepAllBucketsOnceFn() func() int {
+	sweepMu.RLock()
+	defer sweepMu.RUnlock()
+	return sweepAllBucketsOnce
+}
 
 // sweepInterval and the sweeper ticker stay package-main (they were here
 // pre-move); the sweep PASS runs in the frontend over the same bucket
@@ -165,14 +199,4 @@ func startMultipartExpirySweeper() {
 			runMultipartSweepPass()
 		}
 	}()
-}
-
-// runMultipartSweepPass performs one expiry sweep over every discovered
-// bucket (dataDir buckets + configured custom buckets) through the
-// frontend's sweep entry.
-func runMultipartSweepPass() int {
-	if multipartSweepEntry == nil {
-		return 0
-	}
-	return multipartSweepEntry()
 }

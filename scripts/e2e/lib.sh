@@ -119,6 +119,40 @@ aws_cap() {
 	printf -v "$__var" '%s' "$(aws "$@" --endpoint-url "$ENDPOINT" --no-verify-ssl 2>/dev/null)"
 }
 
+# launch_expect_fail <config.json> <logfile> <timeout_seconds>
+# Fail-loud startup contract: start ./mini-s3-server with <config> and
+# expect it to EXIT BY ITSELF within <timeout> seconds (log.Fatalf aborts
+# startup on bad backend/frontend config — the server must never keep
+# running with a half-built table). Mirrors run-e2e.sh's launch_server
+# but for the failure path. Sets:
+#   FAILSTART_EXIT = 0 when the process exited on its own in time, 1 when
+#                    it had to be killed (still running at the timeout)
+#   FAILSTART_RC   = its exit status (empty when it was killed)
+# The caller asserts on FAILSTART_EXIT/FAILSTART_RC and greps <logfile>.
+launch_expect_fail() {
+	local cfg=$1 logf=$2 timeout=$3 waited=0
+	FAILSTART_EXIT=1
+	FAILSTART_RC=''
+	MINIS3_CONFIG="$cfg" ./mini-s3-server >"$logf" 2>&1 &
+	FAILSTART_PID=$!
+	# 0.2s steps, 5 per second.
+	while [ "$waited" -lt "$((timeout * 5))" ]; do
+		if ! kill -0 "$FAILSTART_PID" 2>/dev/null; then
+			FAILSTART_EXIT=0
+			break
+		fi
+		sleep 0.2
+		waited=$((waited + 1))
+	done
+	if [ "$FAILSTART_EXIT" -eq 0 ]; then
+		wait "$FAILSTART_PID" 2>/dev/null
+		FAILSTART_RC=$?
+	else
+		kill -9 "$FAILSTART_PID" 2>/dev/null
+		wait "$FAILSTART_PID" 2>/dev/null
+	fi
+}
+
 # wait_for_port <host> <port> <timeout_seconds>
 wait_for_port() {
 	local host=$1 port=$2 timeout=$3 waited=0

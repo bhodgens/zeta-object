@@ -39,6 +39,10 @@ type ServerConfig struct {
 	// BucketBackends records each bucket's selected backend name (the
 	// object form of the buckets value). Absent/empty ⇒ default backend.
 	BucketBackends map[string]string `json:"-"`
+
+	// bucketsErr carries a buckets-map decode failure (null/empty bucket
+	// value) out of the custom UnmarshalJSON path; it is not a JSON key.
+	bucketsErr error
 }
 
 // FrontendConfig is one entry of the "frontends" config array (leaf 03).
@@ -67,11 +71,14 @@ type bucketCfg struct {
 }
 
 // UnmarshalJSON accepts both encodings. The legacy string form decodes to
-// Path with an empty Backend (default backend at resolve time).
+// Path with an empty Backend (default backend at resolve time). A null
+// value is a parse error naming the bucket: it would half-initialize an
+// empty-path entry that later surfaces as a confusing dataDir collision
+// (bughunt E6). The bucket name rides on the error via decodeBucketValue.
 func (b *bucketCfg) UnmarshalJSON(data []byte) error {
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" || trimmed == "null" {
-		return nil
+		return &nullBucketValueError{}
 	}
 	if trimmed[0] == '"' {
 		return json.Unmarshal(data, &b.Path)
@@ -85,13 +92,47 @@ func (b *bucketCfg) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// nullBucketValueError marks a JSON null where a bucket value was expected;
+// bucketsRaw.UnmarshalJSON wraps it with the offending bucket name.
+type nullBucketValueError struct{}
+
+func (*nullBucketValueError) Error() string {
+	return "bucket value must be a path string or {\"path\":...} object, got null"
+}
+
 // bucketsRaw is the raw buckets map shape used only for JSON decoding.
 type bucketsRaw map[string]bucketCfg
 
 // UnmarshalJSON decodes either encoding of each value and fans the result
 // out into the legacy Buckets (name → path) and BucketBackends
 // (name → backend) fields so every existing caller of serverConfig.Buckets
-// keeps its exact behavior.
+// keeps its exact behavior. A null/empty bucket value surfaces as a parse
+// error naming the offending bucket (bughunt E6).
+func (m *bucketsRaw) UnmarshalJSON(data []byte) error {
+	var raws map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raws); err != nil {
+		return err
+	}
+	raw := make(map[string]bucketCfg, len(raws))
+	for name, v := range raws {
+		var bc bucketCfg
+		if err := json.Unmarshal(v, &bc); err != nil {
+			if strings.Contains(err.Error(), "got null") || strings.Contains(err.Error(), "nullBucketValue") {
+				return fmt.Errorf("bucket %q: %v", name, err)
+			}
+			return fmt.Errorf("bucket %q: %w", name, err)
+		}
+		raw[name] = bc
+	}
+	*m = raw
+	return nil
+}
+
+// UnmarshalJSON decodes either encoding of each buckets value and fans the
+// result out into the legacy Buckets (name → path) and BucketBackends
+// (name → backend) fields so every existing caller of serverConfig.Buckets
+// keeps its exact behavior. A null value for a bucket is a parse error
+// naming the bucket (bughunt E6).
 func (m bucketsRaw) apply(cfg *ServerConfig) {
 	if cfg.Buckets == nil {
 		cfg.Buckets = make(map[string]string, len(m))
@@ -103,6 +144,13 @@ func (m bucketsRaw) apply(cfg *ServerConfig) {
 		cfg.BucketBackends = make(map[string]string)
 	}
 	for name, bc := range m {
+		if bc.Path == "" && bc.Backend == "" {
+			// The bucket's UnmarshalJSON already rejected a literal null;
+			// this guard catches an explicit empty object/string form that
+			// would otherwise half-initialize an empty-path entry.
+			cfg.bucketsErr = fmt.Errorf("bucket %q has an empty value: want a path string or {\"path\":...} object", name)
+			return
+		}
 		cfg.Buckets[name] = bc.Path
 		if bc.Backend != "" {
 			cfg.BucketBackends[name] = bc.Backend
@@ -187,7 +235,10 @@ func loadConfig(configPath string) error {
 // "buckets" values (legacy bare string and the object form with an
 // optional "backend" key). The object form's backend selections land in
 // BucketBackends; the path form stays in the legacy Buckets field so every
-// existing caller keeps its exact behavior.
+// existing caller keeps its exact behavior. Unknown top-level JSON keys
+// are an error (DisallowUnknownFields) so a typo like "dataDirr" fails
+// loudly at startup instead of silently using the default (bughunt E6).
+// A null buckets value fails with the bucket's name in the message.
 func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	type alias struct {
 		DataDir    string                `json:"dataDir"`
@@ -198,8 +249,10 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 		Backends   map[string]BackendCfg `json:"backends"`
 		Buckets    bucketsRaw            `json:"buckets"`
 	}
+	dec := json.NewDecoder(strings.NewReader(string(data)))
+	dec.DisallowUnknownFields()
 	var a alias
-	if err := json.Unmarshal(data, &a); err != nil {
+	if err := dec.Decode(&a); err != nil {
 		return err
 	}
 	c.DataDir = a.DataDir
@@ -209,7 +262,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	c.Frontends = a.Frontends
 	c.Backends = a.Backends
 	a.Buckets.apply(c)
-	return nil
+	return c.bucketsErr
 }
 
 // Credentials store. Package-level var remains the storage, but the values

@@ -67,9 +67,25 @@ func listObjectVersionsHandler(w http.ResponseWriter, r *http.Request, bucketNam
 		IsTruncated:     false,
 		Versions:        []ObjectVersion{},
 	}
+	encodeKeys := query.Get("encoding-type") == "url"
+	if encodeKeys {
+		result.EncodingType = "url"
+	}
+
+	// Leaf-2.4 fix 13 parity (object_handlers.go): max-keys=0 → empty
+	// listing, never truncated. Without this the loop below emits ALL
+	// versions (its budget check is skipped when maxKeys == 0).
+	if maxKeys == 0 {
+		result.MaxKeys = 0
+		result.IsTruncated = false
+		writeXML(w, http.StatusOK, result)
+		return
+	}
 
 	emitted := 0
 	truncated := false
+	lastKey := ""
+	lastVersionID := ""
 	for _, key := range keys {
 		if prefix != "" && !strings.HasPrefix(key, prefix) {
 			continue
@@ -87,8 +103,12 @@ func listObjectVersionsHandler(w http.ResponseWriter, r *http.Request, bucketNam
 			continue
 		}
 
+		keyOut := key
+		if encodeKeys {
+			keyOut = s3URLEncode(key)
+		}
 		result.Versions = append(result.Versions, ObjectVersion{
-			Key:          key,
+			Key:          keyOut,
 			VersionID:    nullVersionID,
 			IsLatest:     true,
 			LastModified: meta.LastModified.UTC().Format("2006-01-02T15:04:05.000Z"),
@@ -97,9 +117,17 @@ func listObjectVersionsHandler(w http.ResponseWriter, r *http.Request, bucketNam
 			StorageClass: "STANDARD",
 			Owner:        Owner{ID: "minis3-user", DisplayName: "minis3-user"},
 		})
+		lastKey = key
+		lastVersionID = nullVersionID
 		emitted++
 	}
 	result.IsTruncated = truncated
+	// S3 convention: a truncated ?versions page carries the marker to resume
+	// from — the last emitted key/versionId.
+	if truncated && lastKey != "" {
+		result.NextKeyMarker = lastKey
+		result.NextVersionIDMarker = lastVersionID
+	}
 
 	writeXML(w, http.StatusOK, result)
 	log.Printf("Successfully served ListObjectVersions for bucket %s (%d versions)", strconv.Quote(bucketName), len(result.Versions))

@@ -10,6 +10,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"sort"
@@ -79,18 +80,25 @@ func buildFrontends(cfg []FrontendConfig, b backend.Backend, creds auth.Credenti
 }
 
 // mountFrontends registers shared-mux handlers ("/") and returns the specs
-// that need dedicated listeners. It returns the shared handlers registered
-// (for asserts in tests).
-func mountFrontends(mux *http.ServeMux, mounts []frontendMount) (shared []frontend.Frontend, extra []listenerSpec) {
+// that need dedicated listeners. Two or more shared mounts would double-
+// register "/" and panic (http.ServeMux panics on duplicate patterns), so
+// that condition is rejected up front with a config error naming the
+// frontends (bughunt C7). It returns the shared handlers registered (for
+// asserts in tests).
+func mountFrontends(mux *http.ServeMux, mounts []frontendMount) (shared []frontend.Frontend, extra []listenerSpec, err error) {
 	for _, m := range mounts {
 		if m.listenAddr == "" {
+			if len(shared) > 0 {
+				return nil, nil, fmt.Errorf("frontend %q cannot share the default listener: frontend %q is already mounted on it (give one of them its own listenAddr)",
+					m.frontend.Name(), shared[0].Name())
+			}
 			mux.Handle("/", m.frontend.Handler())
 			shared = append(shared, m.frontend)
 			continue
 		}
 		extra = append(extra, listenerSpec{frontend: m.frontend, addr: m.listenAddr})
 	}
-	return shared, extra
+	return shared, extra, nil
 }
 
 // startupPlan is the extracted pure function from main(): given the
@@ -110,14 +118,26 @@ func startupPlan(cfg []FrontendConfig, b backend.Backend, creds auth.CredentialS
 		return startupPlanT{}, err
 	}
 	mux := http.NewServeMux()
-	shared, listeners := mountFrontends(mux, mounts)
+	shared, listeners, err := mountFrontends(mux, mounts)
+	if err != nil {
+		return startupPlanT{}, err
+	}
 	return startupPlanT{registry: reg, mux: mux, shared: shared, listeners: listeners}, nil
 }
 
 // applyListenAddrOverride applies the MINIS3_LISTEN_ADDR env override to the
 // DEFAULT listener only; per-frontend listenAddr values are untouched.
+// A set-but-EMPTY value is warned about and ignored, matching how the
+// credential env vars treat empty (bughunt E7) — it must not silently
+// behave like an unset variable.
 func applyListenAddrOverride(cfg *ServerConfig) {
-	if listenAddr := os.Getenv("MINIS3_LISTEN_ADDR"); listenAddr != "" {
-		cfg.ListenAddr = listenAddr
+	value, ok := os.LookupEnv("MINIS3_LISTEN_ADDR")
+	if !ok {
+		return
 	}
+	if value == "" {
+		log.Printf("Warning: environment variable MINIS3_LISTEN_ADDR is set but empty; ignoring (config listenAddr stays %s)", cfg.ListenAddr)
+		return
+	}
+	cfg.ListenAddr = value
 }

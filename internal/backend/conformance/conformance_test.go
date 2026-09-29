@@ -156,6 +156,15 @@ func (m *runnerStub) List(ctx context.Context, bucket string, p objectmodel.List
 				if idx := strings.Index(rest, p.Delimiter); idx >= 0 {
 					cp := p.Prefix + rest[:idx+len(p.Delimiter)]
 					if !seenCP[cp] {
+						// BUGHUNT B12(a)/B1 semantics: a continuation
+						// token lying INSIDE or AT a roll-up group
+						// (token has the group as a prefix) means the
+						// page that issued the token already emitted
+						// the group — consume it instead of re-emitting.
+						if marker != "" && strings.HasPrefix(marker, cp) {
+							seenCP[cp] = true
+							continue
+						}
 						seenCP[cp] = true
 						page.CommonPrefixes = append(page.CommonPrefixes, cp)
 					}

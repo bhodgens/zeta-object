@@ -40,18 +40,16 @@ func (a *authFailure) Error() string { return a.code + ": " + a.message }
 // defaultCredentialSource is the nil-option fallback used only when a
 // Frontend is built without WithCredentialSource. The wiring layer
 // overrides it via installDefaultCredentialSource at startup; without an
-// override every lookup misses (fail-closed).
+// override every lookup misses (fail-closed). Guarded by hookMu (seam.go).
 var defaultCredentialSourceImpl auth.CredentialSource
 
 // installDefaultCredentialSource installs the process-wide credential
 // source (package main's serverCredentials adapter). main() calls this
 // before the listener opens.
 func installDefaultCredentialSource(cs auth.CredentialSource) {
+	hookMu.Lock()
+	defer hookMu.Unlock()
 	defaultCredentialSourceImpl = cs
-}
-
-func defaultCredentialSource() auth.CredentialSource {
-	return defaultCredentialSourceImpl
 }
 
 // staticCredential is a fixed single-pair CredentialSource (tests).
@@ -265,7 +263,7 @@ func (f *Frontend) credentialSecret(accessKeyID string) (string, bool) {
 	if f.creds != nil {
 		return f.creds.SecretKey(accessKeyID)
 	}
-	if src := defaultCredentialSource(); src != nil {
+	if src := credentialSourceFor(); src != nil {
 		return src.SecretKey(accessKeyID)
 	}
 	return "", false

@@ -22,8 +22,8 @@ import (
 // installed fs-root resolver wins, else the config-view layout math
 // (custom mapping first, then dataDir) — the pre-move precedence.
 func getBucketPath(bucketName string) string {
-	if backendRootResolverHook != nil {
-		return backendRootResolverHook(bucketName)
+	if resolver := fsRootResolver(); resolver != nil {
+		return resolver(bucketName)
 	}
 	cfg := currentServerConfig()
 	if customPath, ok := cfg.Buckets[bucketName]; ok {
@@ -61,7 +61,13 @@ func listBucketsHandler(w http.ResponseWriter, r *http.Request) {
 	// their per-bucket FS (the default backendFor resolves them), keeping
 	// the "custom takes precedence" dedup and the ModTime creation date.
 	bucketSet := make(map[string]Bucket)
-	for _, b := range backendDiscovery() {
+	buckets, discoveryErr := backendDiscovery()
+	if discoveryErr != nil {
+		log.Printf("Error listing buckets: %v", discoveryErr)
+		writeS3Error(w, "InternalError", "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	for _, b := range buckets {
 		bucketSet[b.Name] = Bucket{Name: b.Name, CreationDate: b.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z")}
 	}
 
@@ -87,32 +93,48 @@ func listBucketsHandler(w http.ResponseWriter, r *http.Request) {
 // buckets: the dataDir FS plus one FS per custom bucket path. Hidden dirs
 // and non-dirs are skipped inside the seam; custom-over-auto dedup happens
 // in the map above (custom wins by overwriting the same name).
-func backendDiscovery() []objectmodel.BucketInfo {
+//
+// D3 (bughunt-gateway-2026-09-29): a dataDir discovery failure with no
+// custom buckets configured must surface as 500 InternalError (the
+// pre-seam behavior), not a silent 200-empty listing. With custom buckets
+// configured, the dataDir failure is tolerable — the custom bucket(s) may
+// still be discoverable — so it stays a logged warning.
+func backendDiscovery() ([]objectmodel.BucketInfo, error) {
 	seen := map[string]objectmodel.BucketInfo{}
-	add := func(b backend.Backend) {
+	dataDirFailed := false
+	add := func(b backend.Backend) error {
 		buckets, err := b.Buckets(context.Background())
 		if err != nil {
-			log.Printf("Warning: backend discovery failed: %v", err)
-			return
+			return err
 		}
 		for _, bi := range buckets {
 			seen[bi.Name] = bi
 		}
+		return nil
 	}
 	if f, err := backendFor(""); err == nil && f != nil {
-		add(f)
-	}
-	for name := range currentServerConfig().Buckets {
-		if f, err := backendFor(name); err == nil && f != nil {
-			add(f)
+		if err := add(f); err != nil {
+			log.Printf("Warning: backend discovery failed: %v", err)
+			dataDirFailed = true
 		}
+	}
+	customBuckets := currentServerConfig().Buckets
+	for name := range customBuckets {
+		if f, err := backendFor(name); err == nil && f != nil {
+			// Custom-bucket discovery failure stays a logged warning;
+			// only the dataDir failure is fatal below.
+			_ = add(f)
+		}
+	}
+	if dataDirFailed && len(customBuckets) == 0 {
+		return nil, fmt.Errorf("bucket discovery failed: data directory is unreadable")
 	}
 	out := make([]objectmodel.BucketInfo, 0, len(seen))
 	for _, bi := range seen {
 		out = append(out, bi)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
+	return out, nil
 }
 
 func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName string) {

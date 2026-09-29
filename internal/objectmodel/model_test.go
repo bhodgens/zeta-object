@@ -83,6 +83,17 @@ func TestETagsMatch(t *testing.T) {
 		{"abc", "abc", true},
 		{"abc", "abd", false},
 		{"", "", true},
+		// Weak-validator forms (A6): W/ prefix stripped on either or both
+		// sides before the quote-insensitive compare, matching the S3
+		// frontend's etagMatches.
+		{`W/"abc"`, `"abc"`, true},
+		{`"abc"`, `W/"abc"`, true},
+		{`W/"abc"`, `W/"abc"`, true},
+		{`W/"abc"`, "abc", true},
+		{"W/abc", `W/"abc"`, true},
+		{`W/"abc"`, `"abd"`, false},
+		{`W/"abc"`, `W/"abd"`, false},
+		{"", `W/""`, true},
 	}
 	for _, tc := range tests {
 		if got := ETagsMatch(tc.a, tc.b); got != tc.want {

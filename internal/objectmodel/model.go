@@ -71,6 +71,13 @@ func NormalizeETag(etag string) string {
 }
 
 // QuotedETag returns the S3 quoted wire form, adding quotes if absent.
+// Malformed-input behavior (pinned, do not "fix" silently): the already-
+// quoted check is a naive prefix/suffix test, so a value like `"abc` (open
+// quote, no close) does NOT count as quoted and gets wrapped a second time
+// (`"\"abc"`), and an empty input returns `""` (two quote characters).
+// Callers pass validator strings this package produced (NormalizeETag /
+// storage round-trip); arbitrary header input should be normalized through
+// NormalizeETag first.
 func QuotedETag(etag string) string {
 	if strings.HasPrefix(etag, `"`) && strings.HasSuffix(etag, `"`) && len(etag) >= 2 {
 		return etag
@@ -78,9 +85,25 @@ func QuotedETag(etag string) string {
 	return `"` + etag + `"`
 }
 
-// ETagsMatch compares two ETags quote-insensitively.
+// ETagsMatch compares two ETags quote-insensitively and
+// weak-validator-insensitively: a leading W/ prefix is stripped from both
+// sides before comparison, matching the S3 frontend's etagMatches — so
+// W/"abc" matches "abc" and W/"abc" matches W/"abc". Strong-vs-weak
+// semantics (RFC 7232 §2.3: weak validators must not be used for
+// If-(None-)Match range preconditions) are deliberately NOT enforced here;
+// this is a surface-parity/matching helper, not a conditional-request
+// evaluator.
 func ETagsMatch(a, b string) bool {
-	return NormalizeETag(a) == NormalizeETag(b)
+	return NormalizeETag(stripWeakPrefix(a)) == NormalizeETag(stripWeakPrefix(b))
+}
+
+// stripWeakPrefix removes a leading RFC 7232 weak-validator prefix "W/"
+// (case-sensitive per the RFC ABNF, which pins the octets W and /).
+func stripWeakPrefix(etag string) string {
+	if strings.HasPrefix(etag, "W/") {
+		return etag[2:]
+	}
+	return etag
 }
 
 // metaHeaderPrefix is the S3 user-metadata header prefix, lower-case.

@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -131,7 +133,7 @@ func main() {
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	serverErr := make(chan error, 1)
+	serverErr := make(chan error, 1+len(extraServers))
 	go func() {
 		log.Printf("Starting S3 server on %s (HTTPS, cert=%s, key=%s)",
 			srv.Addr, serverConfig.CertFile, serverConfig.KeyFile)
@@ -141,7 +143,12 @@ func main() {
 		es := es
 		go func() {
 			log.Printf("Starting dedicated frontend listener on %s (HTTPS)", es.Addr)
-			_ = es.ListenAndServeTLS(serverConfig.CertFile, serverConfig.KeyFile)
+			// A dedicated listener that fails to bind must surface like
+			// the default one: swallow only the intentional
+			// ErrServerClosed from graceful shutdown (bughunt C5).
+			if err := es.ListenAndServeTLS(serverConfig.CertFile, serverConfig.KeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverErr <- fmt.Errorf("dedicated listener %s: %w", es.Addr, err)
+			}
 		}()
 	}
 
@@ -155,15 +162,27 @@ func main() {
 		log.Println("Shutdown signal received, draining in-flight requests...")
 		drainCtx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 		defer cancel()
-		if err := srv.Shutdown(drainCtx); err != nil {
-			log.Printf("Graceful shutdown failed (forcing close): %v", err)
-		} else {
-			log.Println("Server shut down cleanly")
+		// Initiate Shutdown on ALL servers concurrently so they share the
+		// drain budget (a sequential drain lets late listeners keep
+		// accepting until the window is spent — bughunt C6).
+		servers := append([]*http.Server{srv}, extraServers...)
+		var wg sync.WaitGroup
+		errs := make([]error, len(servers))
+		for i, s := range servers {
+			wg.Add(1)
+			go func(i int, s *http.Server) {
+				defer wg.Done()
+				errs[i] = s.Shutdown(drainCtx)
+			}(i, s)
 		}
-		for _, es := range extraServers {
-			if err := es.Shutdown(drainCtx); err != nil {
-				log.Printf("Dedicated listener %s shutdown failed (forcing close): %v", es.Addr, err)
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				log.Printf("Server %s shutdown failed (forcing close): %v", servers[i].Addr, err)
 			}
+		}
+		if errs[0] == nil {
+			log.Println("Server shut down cleanly")
 		}
 	}
 }

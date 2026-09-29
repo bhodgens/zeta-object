@@ -7,6 +7,7 @@ package s3
 
 import (
 	"errors"
+	"log"
 	"net/http"
 
 	"mini-s3/internal/backend"
@@ -18,6 +19,12 @@ import (
 // package sentinels and anything else fall back to InternalError. The
 // "not exist." phrasing and statuses match the pre-seam writeS3Error calls
 // verbatim so responses stay byte-identical.
+//
+// D2 (bughunt-gateway-2026-09-29): InternalError-class messages must stay
+// generic on the wire — backend error strings carry absolute filesystem
+// paths (old handlers used fixed strings). The code mapping is preserved;
+// the message is replaced with the legacy fixed text and callers are
+// responsible for logging the detailed error server-side.
 func s3ErrorFrom(err error) (code, message string, status int) {
 	var omErr *objectmodel.Error
 	if errors.As(err, &omErr) {
@@ -30,6 +37,10 @@ func s3ErrorFrom(err error) (code, message string, status int) {
 			return "NoSuchKey", "The specified key does not exist.", http.StatusNotFound
 		case objectmodel.CodeInvalidArgument:
 			return "InvalidArgument", omErr.Message, http.StatusBadRequest
+		case objectmodel.CodeInternalError:
+			// Legacy fixed message: never render the backend's error
+			// string (it embeds absolute paths) to the client.
+			return "InternalError", "Internal error", http.StatusInternalServerError
 		default:
 			return omErr.Code, omErr.Message, omErr.HTTPStatus
 		}
@@ -42,8 +53,13 @@ func s3ErrorFrom(err error) (code, message string, status int) {
 	}
 }
 
-// writeS3ErrorFrom writes the mapped error response.
+// writeS3ErrorFrom writes the mapped error response, logging the full
+// error server-side (wire messages for 500-class errors are generic —
+// see s3ErrorFrom).
 func writeS3ErrorFrom(w http.ResponseWriter, err error) {
 	code, message, status := s3ErrorFrom(err)
+	if status >= http.StatusInternalServerError {
+		log.Printf("Internal error (code %s): %v", code, err)
+	}
 	writeS3Error(w, code, message, status)
 }

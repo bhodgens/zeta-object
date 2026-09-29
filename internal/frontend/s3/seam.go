@@ -52,9 +52,7 @@ func installServerConfigView(cfg serverConfigView) {
 // currentServerConfig returns the installed view (never nil), re-mirroring
 // via the registered sync hook first (test global-mutation support).
 func currentServerConfig() *serverConfigView {
-	if configSyncHook != nil {
-		configSyncHook()
-	}
+	runConfigSyncHook()
 	configViewMu.RLock()
 	defer configViewMu.RUnlock()
 	if installedServerConfig == nil {
@@ -67,26 +65,45 @@ func currentServerConfig() *serverConfigView {
 // var). The wiring layer installs the config-driven resolver; tests may
 // install doubles. Nil falls back to an unavailable lookup, which the
 // backendCall helpers surface as InternalError.
+//
+// Guarded by hookMu (like every runtime-writable seam hook here): request
+// goroutines read via installedBackendLookup while wiring/tests re-install.
 var backendLookup func(bucket string) (backend.Backend, error)
 
 // backendFor resolves bucket's Backend via the injected lookup.
 func backendFor(bucket string) (backend.Backend, error) {
-	if backendLookup == nil {
+	if installedBackendLookup() == nil {
 		return nil, objectmodel.ErrInternalError("backend unavailable")
 	}
-	return backendLookup(bucket)
+	return installedBackendLookup()(bucket)
+}
+
+// installedBackendLookup returns the current lookup under a read lock.
+func installedBackendLookup() func(bucket string) (backend.Backend, error) {
+	hookMu.RLock()
+	defer hookMu.RUnlock()
+	return backendLookup
 }
 
 // installBackendLookup installs the bucket→Backend resolver.
 func installBackendLookup(fn func(bucket string) (backend.Backend, error)) {
+	hookMu.Lock()
+	defer hookMu.Unlock()
 	backendLookup = fn
 }
+
+// hookMu guards every runtime-writable seam hook below (the same
+// unsynchronized-global race class configViewMu guards for
+// installedServerConfig): request goroutines take the read side, the
+// wiring layer/tests take the write side.
+var hookMu sync.RWMutex
 
 // lockObjectFn is the per-path write serialization hook (owned by the
 // Backend implementation per backend-interface master Contract 4; the
 // frontend calls it only for the documented above-seam multipart staging
 // and bucket create/delete serialization). The wiring layer installs the
 // implementation; the fallback below is a process-local mutex map.
+// Guarded by hookMu.
 var lockObjectFn func(path string) func()
 
 // objectLocks is the fallback per-path mutex map.
@@ -102,22 +119,37 @@ func defaultLockObject(path string) func() {
 
 // lockObject serializes writers per path via the injected hook.
 func lockObject(path string) func() {
-	if lockObjectFn != nil {
-		return lockObjectFn(path)
+	if fn := installedLockObject(); fn != nil {
+		return fn(path)
 	}
 	return defaultLockObject(path)
 }
 
+// installedLockObject returns the current hook under a read lock.
+func installedLockObject() func(path string) func() {
+	hookMu.RLock()
+	defer hookMu.RUnlock()
+	return lockObjectFn
+}
+
 // writeFileAtomicFn is the atomic-write hook for the above-seam multipart
 // staging files. The wiring layer installs the fs implementation.
+// Guarded by hookMu.
 var writeFileAtomicFn func(path string, data []byte, perm os.FileMode) error
 
 // writeFileAtomic writes data to path atomically via the injected hook.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	if writeFileAtomicFn != nil {
-		return writeFileAtomicFn(path, data, perm)
+	if fn := installedWriteFileAtomic(); fn != nil {
+		return fn(path, data, perm)
 	}
 	return defaultWriteFileAtomic(path, data, perm)
+}
+
+// installedWriteFileAtomic returns the current hook under a read lock.
+func installedWriteFileAtomic() func(path string, data []byte, perm os.FileMode) error {
+	hookMu.RLock()
+	defer hookMu.RUnlock()
+	return writeFileAtomicFn
 }
 
 // defaultWriteFileAtomic is the pre-move storage.go implementation (temp
@@ -202,52 +234,86 @@ func InstallActionTrigger(fn func(eventType string, ctx ActionContext)) {
 
 // InstallLockObject installs the per-path write serialization hook
 // (exported wiring entry).
-func InstallLockObject(fn func(path string) func()) { lockObjectFn = fn }
+func InstallLockObject(fn func(path string) func()) {
+	hookMu.Lock()
+	defer hookMu.Unlock()
+	lockObjectFn = fn
+}
 
 // InstallWriteFileAtomic installs the atomic-write hook for the
 // above-seam multipart staging (exported wiring entry).
 func InstallWriteFileAtomic(fn func(path string, data []byte, perm os.FileMode) error) {
+	hookMu.Lock()
+	defer hookMu.Unlock()
 	writeFileAtomicFn = fn
 }
 
 // backendRootResolverHook is the wiring-installed bucket→fs-root function.
+// Guarded by hookMu.
 var backendRootResolverHook func(bucket string) string
 
 // installFSRootResolver installs the bucket→fs-root resolver used for the
 // documented above-seam multipart staging. package main calls this at
 // wiring time; when absent, getBucketPath falls back to the config view.
 func installFSRootResolver(fn func(bucket string) string) {
+	hookMu.Lock()
+	defer hookMu.Unlock()
 	backendRootResolverHook = fn
 }
 
-// getBucketPath is defined in bucket_handlers.go (fs-root resolver wins,
-// else the config-view layout math).
+// fsRootResolver returns the installed resolver under a read lock.
+func fsRootResolver() func(bucket string) string {
+	hookMu.RLock()
+	defer hookMu.RUnlock()
+	return backendRootResolverHook
+}
 
 // configSyncHook mirrors a wiring-owned mutable config into the view on
-// every consult (see SetConfigSyncHook).
+// every consult (see SetConfigSyncHook). Guarded by hookMu.
 var configSyncHook func()
 
 // SetConfigSyncHook registers a callback invoked on every config view
 // consult, letting the wiring layer re-mirror a mutable global.
-func SetConfigSyncHook(fn func()) { configSyncHook = fn }
+func SetConfigSyncHook(fn func()) {
+	hookMu.Lock()
+	defer hookMu.Unlock()
+	configSyncHook = fn
+}
 
-// backendSyncHook mirrors the wiring-owned bucket→Backend resolver.
-var backendSyncHook func(bucket string) (backend.Backend, error)
-
-// SetBackendSyncHook installs the resolver consulted by backendFor.
-func SetBackendSyncHook(fn func(bucket string) (backend.Backend, error)) {
-	backendSyncHook = fn
-	backendLookup = fn
+// runConfigSyncHook invokes the installed sync hook, if any, under a read
+// lock (the hook closure itself re-installs the config view, which takes
+// configViewMu's write side — never hold both locks around a consult).
+func runConfigSyncHook() {
+	hookMu.RLock()
+	fn := configSyncHook
+	hookMu.RUnlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // credentialSyncHook mirrors the wiring-owned credential lookup.
+// Guarded by hookMu.
 var credentialSyncHook auth.CredentialSource
 
 // SetCredentialSyncHook installs the credential source consulted by the
 // default lookup chain.
 func SetCredentialSyncHook(fn func(accessKeyID string) (string, bool)) {
+	hookMu.Lock()
+	defer hookMu.Unlock()
 	credentialSyncHook = fnSource(fn)
-	installDefaultCredentialSource(credentialSyncHook)
+}
+
+// credentialSourceFor returns the effective process-wide credential
+// source under a read lock: the installed source, else the sync-hook
+// mirror (tests).
+func credentialSourceFor() auth.CredentialSource {
+	hookMu.RLock()
+	defer hookMu.RUnlock()
+	if credentialSyncHook != nil {
+		return credentialSyncHook
+	}
+	return defaultCredentialSourceImpl
 }
 
 // fnSource adapts a bare lookup function to the CredentialSource iface.

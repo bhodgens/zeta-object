@@ -210,7 +210,7 @@ func init() {
 	})
 	s3.InstallLockObject(lockObject)
 	s3.InstallWriteFileAtomic(writeFileAtomic)
-	sweepAllBucketsOnce = s3.SweepAllBucketsOnce
+	setSweepEntries(s3.SweepAllBucketsOnce)
 }
 
 // Test files sign requests with the serverCredentials global directly;
@@ -228,15 +228,15 @@ func init() {
 // The sweep alias must be live before any test runs (installS3Seams is a
 // main()-time call; the test binary never runs main). Install eagerly.
 var _ = func() bool {
-	sweepAllBucketsOnce = s3.SweepAllBucketsOnce
+	setSweepEntries(s3.SweepAllBucketsOnce)
 	return true
 }()
 
-// The s3 frontend's backendLookup seam must follow package main's
-// backendFor var (tests swap the latter). Sync via the backend hook:
-// every consult re-reads the var.
+// The s3 frontend's backendLookup seam follows package main's backendFor
+// var (tests swap the latter): re-resolving per consult via the same
+// closure installS3Seams uses.
 func init() {
-	s3.SetBackendSyncHook(func(bucket string) (backend.Backend, error) {
+	s3.InstallBackendLookup(func(bucket string) (backend.Backend, error) {
 		return backendFor(bucket)
 	})
 }
