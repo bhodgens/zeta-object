@@ -81,3 +81,30 @@ sidecar byte-compat, multipart core (bounds/order/ETag), pagination cursor
 exclusion semantics, xml.go md5-identical modulo package, auth fail-closed,
 presigned parity, object_meta_batch worker pool race-free, config parse
 atomicity, backend registry discipline.
+
+
+---
+
+## Regression review of fix waves (2026-09-29, commits 1bb0820/f8484b6/9cc0910/3b0a7cf)
+
+Verdicts: 1bb0820 CLEAN; f8484b6, 9cc0910, 3b0a7cf sound with findings below.
+All findings fixed in 9094993:
+
+1. HIGH: ?versions NextKeyMarker not url-encoded under encoding-type=url
+   (markers are keys; entry keys were encoded, markers were not). Fixed +
+   pin test.
+2. MED: B5 canonical-form rule rejected the S3-legal bare key "." (Clean
+   folds "/." to "/"). Exempted with rationale; reject set otherwise
+   unchanged; pin test.
+3. MED: E6 half-done - per-bucket object form accepted unknown keys
+   silently (top level was strict). DisallowUnknownFields applied; pin test.
+4. LOW: D3 left a silent _ = add(f); now logs both add failures and
+   backend-unavailable custom buckets.
+5. LOW: 500 message inconsistency unified to legacy "Internal Server Error".
+6. Verified sound by review (no action): B9 containment (filepath.Rel
+   exact-prefix trap handled), B3/B4 lock ordering, A4/A6 parity+ETag,
+   e2e cases 15-17 asserts are substantive.
+7. Tracked debt (deliberate, not fixed): aliases.go (448 lines of
+   export aliases) remains a production-linked non-test file pending a
+   cleanup leaf; B10 (per-chunk ctx check in list gather) left from F2
+   scope split - list.go single-file fix, deferred to next touch.
