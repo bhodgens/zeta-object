@@ -597,16 +597,6 @@ func equalStrings(got, want []string) bool {
 	return len(got) == len(want) && slicesEqual(got, want)
 }
 
-// sortedKeys renders a key-set for deterministic failure messages.
-func sortedKeys(set map[string]bool) []string {
-	out := make([]string, 0, len(set))
-	for k := range set {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
 func slicesEqual(a, b []string) bool {
 	for i := range a {
 		if a[i] != b[i] {

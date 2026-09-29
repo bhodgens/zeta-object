@@ -137,7 +137,7 @@ func validateKey(key string) error {
 	// (no other canonical key equals "/") and the traversal guard above
 	// already forbids real escapes, so it is allowed through; resolveDataPath
 	// handles it like any other key relative to the bucket dir.
-	if cleaned != "/"+key && !(key == "." && cleaned == "/") {
+	if cleaned != "/"+key && (key != "." || cleaned != "/") {
 		return keyInvalidError(`object key must be in canonical form (no empty or "." path segments, no leading/trailing slash)`)
 	}
 	return nil

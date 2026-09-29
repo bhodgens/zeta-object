@@ -7,6 +7,7 @@ package fsbackend
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,12 +115,12 @@ func TestStatGetENOTDIRIsNoSuchKey(t *testing.T) {
 	}
 	if _, err := f.Stat(ctx, "bkt", "a/b"); err == nil {
 		t.Error("Stat with ENOTDIR data path = nil error, want NoSuchKey")
-	} else if omErr, ok := err.(*objectmodel.Error); !ok || omErr.Code != objectmodel.CodeNoSuchKey {
+	} else if omErr := (*objectmodel.Error)(nil); !errors.As(err, &omErr) || omErr.Code != objectmodel.CodeNoSuchKey {
 		t.Errorf("Stat ENOTDIR error = %v, want code NoSuchKey", err)
 	}
 	if _, _, err := f.Get(ctx, "bkt", "a/b", objectmodel.GetOptions{}); err == nil {
 		t.Error("Get with ENOTDIR data path = nil error, want NoSuchKey")
-	} else if omErr, ok := err.(*objectmodel.Error); !ok || omErr.Code != objectmodel.CodeNoSuchKey {
+	} else if omErr := (*objectmodel.Error)(nil); !errors.As(err, &omErr) || omErr.Code != objectmodel.CodeNoSuchKey {
 		t.Errorf("Get ENOTDIR error = %v, want code NoSuchKey", err)
 	}
 }

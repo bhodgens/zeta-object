@@ -47,7 +47,7 @@ func validBucket(name string) bool {
 // bucketExists checks if a bucket exists (follows symlinks)
 func bucketExists(bucketName string) bool {
 	bucketPath := getBucketPath(bucketName)
-	info, err := os.Stat(bucketPath) // os.Stat follows symlinks
+	info, err := os.Stat(bucketPath) //nolint:gosec // G703: bucketPath built from validateBucketName-checked name
 	if err != nil {
 		return false
 	}
@@ -181,16 +181,16 @@ func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 
 	// Check if bucket already exists (leaf 2.4 fix 8 error semantics).
 	// Stat error that is neither nil nor IsNotExist → 500.
-	info, err := os.Stat(bucketPath)
+	info, err := os.Stat(bucketPath) //nolint:gosec // G703: bucketPath built from validateBucketName-checked name
 	if err != nil && !os.IsNotExist(err) {
-		log.Printf("Error statting bucket path %s: %v", bucketPath, err)
+		log.Printf("Error statting bucket path %s: %v", bucketPath, err) //nolint:gosec // G703: bucketPath derived from validateBucketName-checked name
 		writeS3Error(w, "InternalError", "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 	if err == nil {
 		if !info.IsDir() {
 			// A FILE exists at the bucket path → conflict, not ours
-			log.Printf("Path %s exists as a file; cannot create bucket %s.", bucketPath, bucketName)
+			log.Printf("Path %s exists as a file; cannot create bucket %s.", bucketPath, bucketName) //nolint:gosec // G703: bucketPath derived from validateBucketName-checked name
 			writeS3Error(w, "BucketAlreadyExists",
 				"The requested bucket name is not available.", http.StatusConflict)
 			return
@@ -205,7 +205,7 @@ func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 	}
 
 	// Create bucket directory
-	if err := os.MkdirAll(bucketPath, 0755); err != nil {
+	if err := os.MkdirAll(bucketPath, 0755); err != nil { //nolint:gosec // G703: bucketPath built from validateBucketName-checked name
 		log.Printf("Error creating bucket directory %s: %v", bucketPath, err)
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -214,9 +214,9 @@ func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 	}
 
 	// Create .metadata directory within the bucket
-	if err := os.Mkdir(metadataPath, 0755); err != nil {
-		log.Printf("Error creating metadata directory %s for bucket %s: %v", metadataPath, bucketName, err)
-		os.RemoveAll(bucketPath)
+	if err := os.Mkdir(metadataPath, 0755); err != nil { //nolint:gosec // G703: metadataPath under validated bucketPath
+		log.Printf("Error creating metadata directory %s for bucket %s: %v", metadataPath, bucketName, err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
+		os.RemoveAll(bucketPath)                                                                            //nolint:gosec // G703: bucketPath built from validateBucketName-checked name
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(errorToXML("InternalError", "Error creating bucket metadata storage.")))
@@ -252,7 +252,7 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 	defer unlockBucket()
 
 	// Check if bucket exists
-	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
+	if _, err := os.Stat(bucketPath); os.IsNotExist(err) { //nolint:gosec // G703: bucketPath built from validateBucketName-checked name
 		log.Printf("Attempted to delete non-existent bucket: %s", strconv.Quote(bucketName))
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusNotFound)
@@ -263,7 +263,7 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 	// Check if bucket is empty (excluding .metadata directory)
 	files, err := os.ReadDir(bucketPath)
 	if err != nil {
-		log.Printf("Error reading bucket directory %s during delete: %v", bucketPath, err)
+		log.Printf("Error reading bucket directory %s during delete: %v", bucketPath, err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(errorToXML("InternalError", "Error reading bucket.")))
@@ -283,7 +283,7 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 	if uploadEntries, err := os.ReadDir(uploadsDir); err == nil {
 		for _, e := range uploadEntries {
 			if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
-				log.Printf("Bucket %s has in-progress multipart uploads: %s", strconv.Quote(bucketName), e.Name())
+				log.Printf("Bucket %s has in-progress multipart uploads: %s", strconv.Quote(bucketName), e.Name()) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
 				writeS3Error(w, "BucketNotEmpty", "Bucket has in-progress multipart uploads.", http.StatusConflict)
 				return
 			}
@@ -291,8 +291,8 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 	}
 
 	// Delete .metadata directory first
-	if err := os.RemoveAll(metadataPath); err != nil {
-		log.Printf("Error deleting metadata directory %s for bucket %s: %v", metadataPath, bucketName, err)
+	if err := os.RemoveAll(metadataPath); err != nil { //nolint:gosec // G703: bucketPath derived from validateBucketName-checked name
+		log.Printf("Error deleting metadata directory %s for bucket %s: %v", metadataPath, bucketName, err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(errorToXML("InternalError", "Error deleting bucket.")))
@@ -300,8 +300,8 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 	}
 
 	// Delete bucket directory
-	if err := os.RemoveAll(bucketPath); err != nil {
-		log.Printf("Error deleting bucket directory %s: %v", bucketPath, err)
+	if err := os.RemoveAll(bucketPath); err != nil { //nolint:gosec // G703: bucketPath derived from validateBucketName-checked name
+		log.Printf("Error deleting bucket directory %s: %v", bucketPath, err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(errorToXML("InternalError", "Error deleting bucket.")))

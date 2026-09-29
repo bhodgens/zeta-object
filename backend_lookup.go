@@ -14,6 +14,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"maps"
 	"strings"
 	"sync"
 
@@ -101,9 +102,9 @@ func buildBackendLookup(cfg ServerConfig) (func(bucket string) (backend.Backend,
 			backendName = defaultBackendName
 		}
 		root := path
-		singleBucketOpts := map[string]string{}
-		for k, v := range backendOpts(cfg, backendName) {
-			singleBucketOpts[k] = v
+		singleBucketOpts := maps.Clone(backendOpts(cfg, backendName))
+		if singleBucketOpts == nil {
+			singleBucketOpts = map[string]string{}
 		}
 		if root != "" {
 			singleBucketOpts[fsbackend.OptSingleBucketBucket] = bucket

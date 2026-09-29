@@ -124,7 +124,7 @@ func (m *bucketsRaw) UnmarshalJSON(data []byte) error {
 		var bc bucketCfg
 		if err := json.Unmarshal(v, &bc); err != nil {
 			if strings.Contains(err.Error(), "got null") || strings.Contains(err.Error(), "nullBucketValue") {
-				return fmt.Errorf("bucket %q: %v", name, err)
+				return fmt.Errorf("bucket %q: %w", name, err)
 			}
 			return fmt.Errorf("bucket %q: %w", name, err)
 		}

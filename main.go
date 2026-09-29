@@ -140,7 +140,6 @@ func main() {
 		serverErr <- srv.ListenAndServeTLS(serverConfig.CertFile, serverConfig.KeyFile)
 	}()
 	for _, es := range extraServers {
-		es := es
 		go func() {
 			log.Printf("Starting dedicated frontend listener on %s (HTTPS)", es.Addr)
 			// A dedicated listener that fails to bind must surface like

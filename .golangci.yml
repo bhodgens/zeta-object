@@ -62,6 +62,14 @@ linters:
           - gocyclo
           - gocognit
           - nilnil
+      # Transitional alias file (leaf-02 extraction): keeps package-main
+      # tests compiling via identifier aliases until the cleanup leaf
+      # migrates those tests into internal/frontend/s3 and deletes the
+      # file. `unused` cannot see the root tests' use of the aliases, so
+      # every alias is a false positive here.
+      - path: testshim_test\.go
+        linters:
+          - unused
 
   settings:
     gocyclo:

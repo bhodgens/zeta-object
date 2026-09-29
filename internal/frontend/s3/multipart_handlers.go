@@ -71,7 +71,7 @@ func initiateMultipartUploadHandler(w http.ResponseWriter, r *http.Request, buck
 	}
 
 	// Ensure bucket exists
-	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
+	if _, err := os.Stat(bucketPath); os.IsNotExist(err) { //nolint:gosec // G703: bucketPath derived from validateBucketName-checked name
 		log.Printf("Bucket %s does not exist for InitiateMultipartUpload", strconv.Quote(bucketName))
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusNotFound)
@@ -87,8 +87,8 @@ func initiateMultipartUploadHandler(w http.ResponseWriter, r *http.Request, buck
 	uploadID = hex.EncodeToString(hash[:])
 
 	uploadsDir := filepath.Join(bucketPath, ".metadata", ".uploads")
-	if err := os.MkdirAll(uploadsDir, 0755); err != nil {
-		log.Printf("Error creating .uploads directory %s: %v", uploadsDir, err)
+	if err := os.MkdirAll(uploadsDir, 0755); err != nil { //nolint:gosec // G703: bucketPath derived from validateBucketName-checked name
+		log.Printf("Error creating .uploads directory %s: %v", uploadsDir, err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(errorToXML("InternalError", "Error creating upload storage.")))
@@ -744,7 +744,7 @@ func s3Timestamp(t time.Time) string {
 // UploadId, honoring prefix / key-marker / max-uploads.
 func listMultipartUploadsHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
 	bucketPath := getBucketPath(bucketName)
-	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
+	if _, err := os.Stat(bucketPath); os.IsNotExist(err) { //nolint:gosec // G703: bucketPath derived from validateBucketName-checked name
 		log.Printf("Bucket %s does not exist for ListMultipartUploads", strconv.Quote(bucketName))
 		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return

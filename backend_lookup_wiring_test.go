@@ -60,5 +60,3 @@ func containsAll(s string, subs []string) bool {
 	}
 	return true
 }
-
-func containsStr(s, sub string) bool { return strings.Contains(s, sub) }

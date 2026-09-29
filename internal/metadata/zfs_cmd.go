@@ -47,7 +47,7 @@ func (e *DatasetMountMismatchError) Error() string {
 // blank in practice (unmounted datasets report "-", "none", or "legacy").
 func parseZfsGetNameMountpoint(stdout, path string) (name, mountpoint string, err error) {
 	var vals []string
-	for _, ln := range strings.Split(stdout, "\n") {
+	for ln := range strings.SplitSeq(stdout, "\n") {
 		if t := strings.TrimSpace(ln); t != "" {
 			vals = append(vals, t)
 		}

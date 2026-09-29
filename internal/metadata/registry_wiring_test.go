@@ -54,7 +54,7 @@ func TestLastDetailIsPerInstance(t *testing.T) {
 	// Interleave many concurrent histories; afterwards each instance must
 	// carry ONLY its own dataset/recordsLost.
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		wg.Add(2)
 		go func() { defer wg.Done(); _, _ = pa.History(context.Background(), "/mnt/alpha", "", HistoryQuery{}) }()
 		go func() { defer wg.Done(); _, _ = pb.History(context.Background(), "/mnt/beta", "", HistoryQuery{}) }()

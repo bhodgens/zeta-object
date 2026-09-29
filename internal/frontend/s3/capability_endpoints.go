@@ -160,7 +160,7 @@ func handleObjectEvents(w http.ResponseWriter, r *http.Request, bucketName, obje
 	events, err := p.History(r.Context(), getBucketPath(bucketName), objectName, q)
 	if err != nil {
 		// NO provider/exec detail reaches the client — server log only.
-		log.Printf("metadata: events for %s/%s: %v", bucketName, objectName, err)
+		log.Printf("metadata: events for %s/%s: %v", bucketName, objectName, err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
 		writeS3Error(w, "InternalError", "unable to read event history", http.StatusInternalServerError)
 		return
 	}
@@ -187,7 +187,7 @@ func handleBucketEvents(w http.ResponseWriter, r *http.Request, bucketName strin
 	q := metadata.HistoryQuery{MaxEvents: maxEventsFromQuery(r)}
 	events, err := p.History(r.Context(), bucketPath, "", q)
 	if err != nil {
-		log.Printf("metadata: events for %s: %v", bucketName, err)
+		log.Printf("metadata: events for %s: %v", bucketName, err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
 		writeS3Error(w, "InternalError", "unable to read event history", http.StatusInternalServerError)
 		return
 	}

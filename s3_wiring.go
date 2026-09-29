@@ -176,14 +176,6 @@ func runMultipartSweepPass() int {
 	return entry()
 }
 
-// sweepAllBucketsOnceFn returns the test-visible sweep alias under a read
-// lock (nil when no wiring installed it).
-func sweepAllBucketsOnceFn() func() int {
-	sweepMu.RLock()
-	defer sweepMu.RUnlock()
-	return sweepAllBucketsOnce
-}
-
 // sweepInterval and the sweeper ticker stay package-main (they were here
 // pre-move); the sweep PASS runs in the frontend over the same bucket
 // roots it stages parts under.

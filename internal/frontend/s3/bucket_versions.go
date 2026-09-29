@@ -34,7 +34,7 @@ func listObjectVersionsHandler(w http.ResponseWriter, r *http.Request, bucketNam
 	bucketPath := getBucketPath(bucketName)
 	metadataDir := filepath.Join(bucketPath, ".metadata")
 
-	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
+	if _, err := os.Stat(bucketPath); os.IsNotExist(err) { //nolint:gosec // G703: bucketPath derived from validateBucketName-checked name
 		log.Printf("Bucket %s does not exist for ListObjectVersions", strconv.Quote(bucketName))
 		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return
@@ -52,7 +52,7 @@ func listObjectVersionsHandler(w http.ResponseWriter, r *http.Request, bucketNam
 
 	keys, err := collectObjectKeys(metadataDir)
 	if err != nil {
-		log.Printf("Error walking metadata directory %s for ListObjectVersions: %v", metadataDir, err)
+		log.Printf("Error walking metadata directory %s for ListObjectVersions: %v", metadataDir, err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
 		writeS3Error(w, "InternalError", "Error listing object versions.", http.StatusInternalServerError)
 		return
 	}

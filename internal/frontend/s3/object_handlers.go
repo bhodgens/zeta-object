@@ -842,7 +842,7 @@ func parseListObjectsParams(r *http.Request) listObjectsParams {
 // A missing metadataDir is not an error — it is an empty bucket.
 func collectObjectKeys(metadataDir string) ([]string, error) {
 	var allObjectKeys []string
-	err := filepath.WalkDir(metadataDir, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(metadataDir, func(path string, d os.DirEntry, err error) error { //nolint:gosec // G703: bucketPath derived from validateBucketName-checked name
 		if err != nil {
 			return err
 		}
