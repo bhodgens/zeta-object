@@ -282,9 +282,9 @@ Output: APPROVED or list of specific gaps.
 
 | Child | Status | Iterations | Review Notes |
 |-------|--------|------------|-------------|
-| 01-backend-interface.md | PENDING | 0 | |
-| 02-filesystem-backend.md | PENDING | 0 | |
-| 03-registry-config.md | PENDING | 0 | |
+| 01-backend-interface.md | COMPLETE    | 0 | |
+| 02-filesystem-backend.md | COMPLETE    | 0 | |
+| 03-registry-config.md | COMPLETE    | 0 | |
 
 Status values: PENDING | IN_PROGRESS | IMPLEMENTED | REVIEWED | COMPLETE | BLOCKED
 

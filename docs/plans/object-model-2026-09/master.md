@@ -362,8 +362,8 @@ Output: APPROVED or list of specific gaps.
 
 | Child | Status | Iterations | Review Notes |
 |-------|--------|------------|-------------|
-| 01-canonical-types | PENDING | 0 | |
-| 02-metadata-surface | PENDING | 0 | |
+| 01-canonical-types | COMPLETE    | 0 | |
+| 02-metadata-surface | COMPLETE    | 0 | |
 
 Status values: PENDING | IN_PROGRESS | IMPLEMENTED | REVIEWED | COMPLETE | BLOCKED
 

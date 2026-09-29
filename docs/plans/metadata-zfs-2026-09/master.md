@@ -309,10 +309,10 @@ Output: APPROVED or list of specific gaps.
 
 | Child | Status | Iterations | Review Notes |
 |-------|--------|------------|-------------|
-| 01-provider-interface-probe.md | PENDING | 0 | |
-| 02-zfs-events-consumer.md | PENDING | 0 | |
-| 03-s3-metadata-parity.md | PENDING | 0 | |
-| 04-capability-endpoints.md | PENDING | 0 | |
+| 01-provider-interface-probe.md | COMPLETE    | 0 | |
+| 02-zfs-events-consumer.md | COMPLETE    | 0 | |
+| 03-s3-metadata-parity.md | COMPLETE    | 0 | |
+| 04-capability-endpoints.md | COMPLETE    | 0 | |
 
 Status values: PENDING | IN_PROGRESS | IMPLEMENTED | REVIEWED | COMPLETE | BLOCKED
 
