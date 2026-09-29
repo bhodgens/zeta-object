@@ -15,8 +15,8 @@
 package main
 
 import (
-	"mini-s3/internal/backend"
-	s3 "mini-s3/internal/frontend/s3"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	s3 "github.com/bhodgens/zeta-object/internal/frontend/s3"
 )
 
 // XML/data-structure types (types.go move).
@@ -50,8 +50,6 @@ type (
 	PartEntry                      = s3.PartEntry
 	ListPartsResult                = s3.ListPartsResult
 	listObjectsParams              = s3.ListObjectsParams
-	rangeOutcome                   = s3.RangeOutcome
-	rangeRequest                   = s3.RangeRequest
 )
 
 // SigV4 protocol constants (moved to the s3 package; test-only aliases —
@@ -86,35 +84,23 @@ var (
 	getCanonicalURI                = s3.GetCanonicalURI
 	getCanonicalQueryString        = s3.GetCanonicalQueryString
 	getCanonicalHeaders            = s3.GetCanonicalHeaders
-	getPayloadHash                 = s3.GetPayloadHash
-	isLowercaseHex64               = s3.IsLowercaseHex64
 	VerifyDecodedLength            = s3.VerifyDecodedLength
 	decodeAWSChunked               = s3.DecodeAWSChunked
 	decodeAndVerifyChunked         = s3.DecodeAndVerifyChunked
 	isDecodedStreaming             = s3.IsDecodedStreaming
-	withDecodedStreaming           = s3.WithDecodedStreaming
-	debugAuthEnabled               = s3.DebugAuthEnabled
-	isPresignedRequest             = s3.IsPresignedRequest
 	requiredPresignedParams        = s3.RequiredPresignedParams
 	authenticateRequest            = s3.AuthenticateRequestFn
-	authenticatePresigned          = s3.AuthenticatePresignedFn
 	errorToXML                     = s3.ErrorToXML
-	writeXML                       = s3.WriteXML
 	writeS3Error                   = s3.WriteS3Error
-	handleACL                      = s3.HandleACL
 	parseInt                       = s3.ParseInt
 	validateObjectKey              = s3.ValidateObjectKey
 	validateBucketName             = s3.ValidateBucketName
-	bucketExists                   = s3.BucketExists
 	validBucket                    = s3.ValidBucket
 	cleanupEmptyDirs               = s3.CleanupEmptyDirs
 	parseRangeHeader               = s3.ParseRangeHeader
 	parseCopySource                = s3.ParseCopySource
 	listObjectsFromKeys            = s3.ListObjectsFromKeys
-	collectObjectKeys              = s3.CollectObjectKeys
-	readMetasBatch                 = s3.ReadMetasBatch
 	sweepExpiredUploads            = s3.SweepExpiredUploads
-	getMultipartLock               = s3.GetMultipartLock
 	rootHandler                    = s3.RootHandlerFn
 	listBucketsHandler             = s3.ListBucketsHandlerFn
 	createBucketHandler            = s3.CreateBucketHandlerFn
@@ -124,59 +110,18 @@ var (
 	listObjectsV2Handler           = s3.ListObjectsV2HandlerFn
 	listObjectVersionsHandler      = s3.ListObjectVersionsHandlerFn
 	listMultipartUploadsHandler    = s3.ListMultipartUploadsHandlerFn
-	deleteObjectsHandler           = s3.DeleteObjectsHandlerFn
 	bucketLevelDispatch            = s3.BucketLevelDispatchFn
 	putObjectHandler               = s3.PutObjectHandlerFn
 	getObjectHandler               = s3.GetObjectHandlerFn
 	headObjectHandler              = s3.HeadObjectHandlerFn
 	deleteObjectHandler            = s3.DeleteObjectHandlerFn
-	copyObjectHandler              = s3.CopyObjectHandlerFn
 	initiateMultipartUploadHandler = s3.InitiateMultipartUploadHandlerFn
 	uploadPartHandler              = s3.UploadPartHandlerFn
 	completeMultipartUploadHandler = s3.CompleteMultipartUploadHandlerFn
 	abortMultipartUploadHandler    = s3.AbortMultipartUploadHandlerFn
 	listPartsHandler               = s3.ListPartsHandlerFn
-	s3URLEncode                    = s3.S3URLEncode
-	etagMatches                    = s3.EtagMatches
-	evaluatePreconditions          = s3.EvaluatePreconditions
-	checkObjectPreconditions       = s3.CheckObjectPreconditions
-	serveObjectRange               = s3.ServeObjectRange
-	serveObjectRangeFrom           = s3.ServeObjectRangeFrom
-	deleteObjectCore               = s3.DeleteObjectCore
-	buildCopyMetadata              = s3.BuildCopyMetadata
-	resolveObjectDataPath          = s3.ResolveObjectDataPath
-	objectDataPathFor              = s3.ObjectDataPathFor
-	shadowDataPath                 = s3.ShadowDataPath
-	flatDataPathUnusable           = s3.FlatDataPathUnusable
-	readObjectMetaForList          = s3.ReadObjectMetaForList
-	rawMetaHeaders                 = s3.RawMetaHeaders
-	uploadIDRegex                  = &s3.UploadIDRegex
-	validateUploadID               = s3.ValidateUploadID
 	minPartSize                    = s3.MinPartSize
 	multipartUploadExpiry          = s3.MultipartUploadExpiry
-	s3Timestamp                    = s3.S3Timestamp
-	computeMultipartETag           = s3.ComputeMultipartETag
-	assembleCompletedObject        = s3.AssembleCompletedObject
-	copyPartsToAssembly            = s3.CopyPartsToAssembly
-	finalizeComplete               = s3.FinalizeComplete
-	appendEntries                  = s3.AppendEntries
-	gatherListWindow               = s3.GatherListWindow
-	noteBudgetExhausted            = s3.NoteBudgetExhausted
-	keyExcludedByCursor            = s3.KeyExcludedByCursor
-	keyMatchesPrefixFilter         = s3.KeyMatchesPrefixFilter
-	gatherDelimiterKey             = s3.GatherDelimiterKey
-	groupConsumedByCursor          = s3.GroupConsumedByCursor
-	batchWorkerCount               = s3.BatchWorkerCount
-	parseListObjectsParams         = s3.ParseListObjectsParams
-	rawSourceSidecarMeta           = s3.RawSourceSidecarMeta
-	nullVersionID                  = s3.NullVersionID
-	backendCall                    = s3.BackendCallFn
-	backendCallBucket              = s3.BackendCallBucketFn
-	backendCallBucketErr           = s3.BackendCallBucketErrFn
-	backendCallBucketStat          = s3.BackendCallBucketStatFn
-	backendCallBucket2             = s3.BackendCallBucket2Fn
-	s3ErrorFrom                    = s3.S3ErrorFromFn
-	writeS3ErrorFrom               = s3.WriteS3ErrorFromFn
 )
 
 // installTestConfigSync installs the config-view sync hook used by the
