@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // ---- range/conditional (port of range_conditional_test.go) ----

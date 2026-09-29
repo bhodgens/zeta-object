@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"strings"
 
-	"mini-s3/internal/auth"
+	"github.com/bhodgens/zeta-object/internal/auth"
 )
 
 // authFailureError carries the S3 error triple an authentication rejection
@@ -211,7 +211,7 @@ func (f *Frontend) authenticateRequest(r *http.Request) (auth.Identity, *authFai
 
 	// Step 5: Compare the Signatures — timing-safe (fix 1)
 	if !hmacEqual([]byte(serverSignature), []byte(clientSignature)) {
-		// Fix 9: verbose diagnostics only when MINIS3_DEBUG_AUTH=1; one line always.
+		// Fix 9: verbose diagnostics only when ZETAOBJECT_DEBUG_AUTH=1; one line always.
 		if debugAuthEnabled() {
 			log.Printf("Authentication Error: Signature mismatch.\nServer Signature: %s\nClient Signature: %s\nString To Sign:\n%s\nCanonical Request:\n%s", //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
 				strconvQuote(serverSignature), strconvQuote(clientSignature), strconvQuote(stringToSign), strconvQuote(canonicalRequest)) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format

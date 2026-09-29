@@ -41,7 +41,7 @@ cat > "$CUSTOM_WORK/config.json" <<EOF
 EOF
 
 # Launch a private server for this case; the SUITE server stays untouched.
-MINIS3_CONFIG="$CUSTOM_WORK/config.json" ./mini-s3-server >>"$E2E_SERVER_LOG" 2>&1 &
+ZETAOBJECT_CONFIG="$CUSTOM_WORK/config.json" ./zeta-object-server >>"$E2E_SERVER_LOG" 2>&1 &
 CUSTOM_PID=$!
 CUSTOM_ENDPOINT="https://127.0.0.1:$CUSTOM_PORT"
 cleanup_custom() {

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install git hooks for mini-s3.
+# Install git hooks for zeta-object.
 #
 # Configures git to use the project's .githooks directory, makes hooks
 # executable, and reports which optional tools are missing (warn, not fail).
@@ -11,7 +11,7 @@ PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 GITHOOKS_DIR="$PROJECT_ROOT/.githooks"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  mini-s3 Git Hooks Installation"
+echo "  zeta-object Git Hooks Installation"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
@@ -19,7 +19,7 @@ echo ""
 if [ ! -d "$GITHOOKS_DIR" ]; then
   echo "❌ Error: .githooks directory not found at $GITHOOKS_DIR"
   echo ""
-  echo "Make sure you're running this from inside the mini-s3 repository."
+  echo "Make sure you're running this from inside the zeta-object repository."
   exit 1
 fi
 

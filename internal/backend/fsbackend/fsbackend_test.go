@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"mini-s3/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/backend"
 )
 
 func TestNewRootedAndInterface(t *testing.T) {

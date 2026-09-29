@@ -1,3 +1,3 @@
-module mini-s3
+module github.com/bhodgens/zeta-object
 
 go 1.25.6

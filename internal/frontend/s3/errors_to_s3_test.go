@@ -17,9 +17,9 @@ import (
 	"strings"
 	"testing"
 
-	"mini-s3/internal/backend"
-	"mini-s3/internal/frontend/s3"
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/frontend/s3"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // failingBucketsBackend is a Backend double whose Buckets() always fails

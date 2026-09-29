@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // compile-time shape probe: a stub satisfying the interface must exist.

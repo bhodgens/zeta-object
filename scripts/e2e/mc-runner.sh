@@ -23,7 +23,7 @@ set -u
 
 MC_BIN=${INTEROP_MC_BIN:?INTEROP_MC_BIN not set}
 ENDPOINT=${INTEROP_ENDPOINT:?INTEROP_ENDPOINT not set}
-ALIAS=minis3
+ALIAS=zetaobject
 
 jemit() {
 	# jemit <ok 0/1> <status> <code> <data> <detail>

@@ -184,7 +184,7 @@ func TestCreateBucketValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create temp test directory
-			tmpDir, err := os.MkdirTemp("", "minis3-test-*")
+			tmpDir, err := os.MkdirTemp("", "zetaobject-test-*")
 			if err != nil {
 				t.Fatalf("Failed to create temp dir: %v", err)
 			}
@@ -370,7 +370,7 @@ func TestMultipartUploadJSON(t *testing.T) {
 
 // Test cleanupEmptyDirs helper
 func TestCleanupEmptyDirs(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "minis3-test-*")
+	tmpDir, err := os.MkdirTemp("", "zetaobject-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}

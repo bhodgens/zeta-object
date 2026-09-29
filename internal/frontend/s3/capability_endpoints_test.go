@@ -26,10 +26,10 @@ import (
 	"sync"
 	"testing"
 
-	"mini-s3/internal/backend"
-	"mini-s3/internal/backend/fsbackend"
-	"mini-s3/internal/frontend/s3"
-	"mini-s3/internal/metadata"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/backend/fsbackend"
+	"github.com/bhodgens/zeta-object/internal/frontend/s3"
+	"github.com/bhodgens/zeta-object/internal/metadata"
 )
 
 // eventsAttachMarker marks a bucket root as provider-attached for the

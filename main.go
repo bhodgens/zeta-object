@@ -17,13 +17,13 @@ import (
 	// internal/backend registry (each package's init() calls
 	// backend.Register). Without them the production binary's registry is
 	// empty and every bucket lookup fails with unknown backend type "fs".
-	_ "mini-s3/internal/backend/fsbackend"
+	_ "github.com/bhodgens/zeta-object/internal/backend/fsbackend"
 
 	// Blank import links internal/metadata into the production binary so
 	// installS3Seams (s3_wiring.go) can register the built-in
 	// "zfs-events" MetadataProvider; without it every ?events request
 	// 503s regardless of the host's ZFS state (bughunt C1).
-	_ "mini-s3/internal/metadata"
+	_ "github.com/bhodgens/zeta-object/internal/metadata"
 )
 
 // main.go — server entrypoint and root request router
@@ -57,7 +57,7 @@ func newServer(addr string, handler http.Handler, certFile, keyFile string) *htt
 
 func main() {
 	// Load configuration (fatal on any error other than a missing file)
-	configPath := getEnvOrDefault("MINIS3_CONFIG", defaultConfigFile)
+	configPath := getEnvOrDefaultLegacy("ZETAOBJECT_CONFIG", defaultConfigFile)
 	if err := loadConfig(configPath); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}

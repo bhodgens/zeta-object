@@ -362,9 +362,9 @@ func TestRealZFSSkipsWithoutBinary(t *testing.T) {
 	if _, err := exec.LookPath("zfs"); err != nil {
 		t.Skip("zfs binary not on PATH (macOS dev host) — integration skipped")
 	}
-	ds := os.Getenv("MINIS3_ZFS_TEST_DATASET")
+	ds := os.Getenv("ZETAOBJECT_ZFS_TEST_DATASET")
 	if ds == "" {
-		t.Skip("set MINIS3_ZFS_TEST_DATASET to run real zfs integration")
+		t.Skip("set ZETAOBJECT_ZFS_TEST_DATASET to run real zfs integration")
 	}
 	// Real-host path: exercise Probe + History + Purge against the real
 	// dataset via the provider, no seams.

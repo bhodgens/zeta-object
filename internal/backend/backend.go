@@ -24,7 +24,7 @@ import (
 	"context"
 	"io"
 
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // Backend is the pluggable data-plane seam. Implementations MUST be safe for

@@ -1,10 +1,10 @@
 #!/bin/bash
 # Superseded by scripts/e2e/ — kept for reference.
-# Manual test script for mini-s3 server
+# Manual test script for zeta-object server
 # This script tests basic S3 operations using AWS CLI
 #
 # Environment variables:
-#   PORT                - Server port (default: 8443; wired via MINIS3_LISTEN_ADDR)
+#   PORT                - Server port (default: 8443; wired via ZETAOBJECT_LISTEN_ADDR)
 #   SKIP_SERVER         - Set to 1 to use an already-running server (started externally)
 #   RUN_MULTIPART_TEST  - Set to 1 to include the multipart upload test
 
@@ -13,13 +13,13 @@ set -euo pipefail
 # ---- Configuration ----
 PORT="${PORT:-8443}"
 ENDPOINT="https://localhost:${PORT}"
-AWS_ACCESS_KEY_ID="${MINIS3_ACCESS_KEY:-minioadmin}"
-AWS_SECRET_ACCESS_KEY="${MINIS3_SECRET_KEY:-minioadmin}"
+AWS_ACCESS_KEY_ID="${ZETAOBJECT_ACCESS_KEY:-minioadmin}"
+AWS_SECRET_ACCESS_KEY="${ZETAOBJECT_SECRET_KEY:-minioadmin}"
 REGION="us-east-1"
 BUCKET="test-bucket-$(date +%s)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-TEST_DIR="$(mktemp -d /tmp/minis3-ops-test-XXXXXX)"
+TEST_DIR="$(mktemp -d /tmp/zetaobject-ops-test-XXXXXX)"
 CONFIG_FILE="$TEST_DIR/config.json"
 CERTS_DIR="$TEST_DIR/certs"
 TEST_FILE="/tmp/test-upload-$$.txt"
@@ -105,20 +105,20 @@ start_server() {
 }
 EOF
 
-    log_info "Building mini-s3 server..."
-    (cd "$PROJECT_DIR" && go build -o "$TEST_DIR/mini-s3-server" .) || {
+    log_info "Building zeta-object server..."
+    (cd "$PROJECT_DIR" && go build -o "$TEST_DIR/zeta-object-server" .) || {
         log_error "Build failed"
         exit 1
     }
 
-    log_info "Starting mini-s3 server on port $PORT..."
-    MINIS3_CONFIG="$CONFIG_FILE" \
-    MINIS3_ACCESS_KEY="$AWS_ACCESS_KEY_ID" \
-    MINIS3_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" \
-    MINIS3_LISTEN_ADDR=":$PORT" \
-    MINIS3_CERT_FILE="$CERTS_DIR/cert.pem" \
-    MINIS3_KEY_FILE="$CERTS_DIR/key.pem" \
-    "$TEST_DIR/mini-s3-server" &
+    log_info "Starting zeta-object server on port $PORT..."
+    ZETAOBJECT_CONFIG="$CONFIG_FILE" \
+    ZETAOBJECT_ACCESS_KEY="$AWS_ACCESS_KEY_ID" \
+    ZETAOBJECT_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" \
+    ZETAOBJECT_LISTEN_ADDR=":$PORT" \
+    ZETAOBJECT_CERT_FILE="$CERTS_DIR/cert.pem" \
+    ZETAOBJECT_KEY_FILE="$CERTS_DIR/key.pem" \
+    "$TEST_DIR/zeta-object-server" &
     SERVER_PID=$!
 
     for i in $(seq 1 30); do

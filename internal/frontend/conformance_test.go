@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"mini-s3/internal/frontend"
+	"github.com/bhodgens/zeta-object/internal/frontend"
 )
 
 // ConformanceOptions tunes which checks run.

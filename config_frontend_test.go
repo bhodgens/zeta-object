@@ -31,7 +31,7 @@ func TestLoadConfig_Frontends(t *testing.T) {
 	tests := []struct {
 		name       string
 		configJSON string
-		envAddr    string // MINIS3_LISTEN_ADDR override, "" = unset
+		envAddr    string // ZETAOBJECT_LISTEN_ADDR override, "" = unset
 		want       []FrontendConfig
 		wantAddr   string // effective default listen addr after normalization
 	}{
@@ -60,7 +60,7 @@ func TestLoadConfig_Frontends(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.envAddr != "" {
-				t.Setenv("MINIS3_LISTEN_ADDR", tt.envAddr)
+				t.Setenv("ZETAOBJECT_LISTEN_ADDR", tt.envAddr)
 			}
 			cfg := loadConfigForTest(t, writeTempConfig(t, tt.configJSON))
 			if len(cfg.Frontends) != len(tt.want) {
@@ -78,7 +78,7 @@ func TestLoadConfig_Frontends(t *testing.T) {
 	}
 }
 
-// MINIS3_LISTEN_ADDR keeps overriding only the default listener address
+// ZETAOBJECT_LISTEN_ADDR keeps overriding only the default listener address
 // (the env override itself is applied in main() via applyListenAddrOverride;
 // loadConfig stays env-free).
 func TestLoadConfig_EnvAddrOverridesDefaultListenerOnly(t *testing.T) {
@@ -87,7 +87,7 @@ func TestLoadConfig_EnvAddrOverridesDefaultListenerOnly(t *testing.T) {
 	if cfg.ListenAddr != ":8443" {
 		t.Fatalf("ListenAddr = %q, want :8443 (loadConfig ignores env)", cfg.ListenAddr)
 	}
-	t.Setenv("MINIS3_LISTEN_ADDR", ":9999")
+	t.Setenv("ZETAOBJECT_LISTEN_ADDR", ":9999")
 	applyListenAddrOverride(&cfg)
 	if cfg.ListenAddr != ":9999" {
 		t.Fatalf("ListenAddr = %q, want :9999 (env override)", cfg.ListenAddr)

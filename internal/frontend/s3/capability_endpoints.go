@@ -41,7 +41,7 @@ import (
 	"strconv"
 	"strings"
 
-	"mini-s3/internal/metadata"
+	"github.com/bhodgens/zeta-object/internal/metadata"
 )
 
 // zfsEventsProviderName is the reserved provider name these endpoints

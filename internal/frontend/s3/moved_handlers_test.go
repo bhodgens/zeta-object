@@ -26,9 +26,9 @@ import (
 	"testing"
 	"time"
 
-	"mini-s3/internal/backend"
-	"mini-s3/internal/backend/fsbackend"
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/backend/fsbackend"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // ---- test env (port of root setupTestEnv / setupBucket / writeTestObject) ----

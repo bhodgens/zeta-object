@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"mini-s3/internal/frontend"
+	"github.com/bhodgens/zeta-object/internal/frontend"
 )
 
 func TestErrCapability(t *testing.T) {

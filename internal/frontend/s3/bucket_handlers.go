@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"mini-s3/internal/backend"
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // bucket_handlers.go — S3 bucket-level operation handlers
@@ -81,7 +81,7 @@ func listBucketsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 
 	result := ListAllMyBucketsResult{
-		Owner:   Owner{ID: "minis3-user-id", DisplayName: "minis3-user"}, // Placeholder owner
+		Owner:   Owner{ID: "zetaobject-user-id", DisplayName: "zetaobject-user"}, // Placeholder owner
 		Buckets: Buckets{Bucket: s3Buckets},
 	}
 

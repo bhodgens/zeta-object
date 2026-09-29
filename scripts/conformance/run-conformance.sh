@@ -14,9 +14,9 @@
 #     that now fails, or an error where there was none).
 #
 # Environment:
-#   MINIS3_CONFORMANCE_PORT  preferred port (default 18499; a free port is
+#   ZETAOBJECT_CONFORMANCE_PORT  preferred port (default 18499; a free port is
 #                            substituted if busy)
-#   MINIS3_CONFORMANCE_HTTP=1  fallback: not needed — the suite accepts the
+#   ZETAOBJECT_CONFORMANCE_HTTP=1  fallback: not needed — the suite accepts the
 #                            self-signed cert via ssl_verify=false. Kept as a
 #                            documented no-op hook; see docs/conformance/.
 set -u
@@ -46,11 +46,11 @@ if [ ! -x "$PY" ]; then
 fi
 
 # --- build ---------------------------------------------------------------------
-echo '== building mini-s3-server =='
-go build -o mini-s3-server . || { echo 'FATAL: go build failed'; exit 1; }
+echo '== building zeta-object-server =='
+go build -o zeta-object-server . || { echo 'FATAL: go build failed'; exit 1; }
 
 # --- workdir, certs, config ------------------------------------------------------
-WORK=$(mktemp -d /tmp/minis3-conf.XXXXXX)
+WORK=$(mktemp -d /tmp/zetaobject-conf.XXXXXX)
 mkdir -p "$WORK/data"
 openssl req -x509 -newkey rsa:2048 -keyout "$WORK/key.pem" -out "$WORK/cert.pem" \
 	-days 1 -nodes -subj '/CN=localhost' \
@@ -61,7 +61,7 @@ if [ ! -s "$WORK/cert.pem" ]; then
 fi
 
 # --- port: prefer the configured one, fall back to a free port -------------------
-PREFERRED_PORT="${MINIS3_CONFORMANCE_PORT:-18499}"
+PREFERRED_PORT="${ZETAOBJECT_CONFORMANCE_PORT:-18499}"
 port_in_use() { python3 -c "
 import socket,sys
 s=socket.socket()
@@ -92,8 +92,8 @@ EOF
 sed "s/^port = .*/port = $FREE_PORT/" "$CONF_ROOT/s3tests.conf" > "$WORK/s3tests.conf"
 
 # --- launch server ---------------------------------------------------------------
-echo "== launching mini-s3 on 127.0.0.1:$FREE_PORT (HTTPS, self-signed) =="
-MINIS3_CONFIG="$WORK/config.json" ./mini-s3-server >"$WORK/server.log" 2>&1 &
+echo "== launching zeta-object on 127.0.0.1:$FREE_PORT (HTTPS, self-signed) =="
+ZETAOBJECT_CONFIG="$WORK/config.json" ./zeta-object-server >"$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 cleanup() {
 	if kill -0 "$SERVER_PID" 2>/dev/null; then
@@ -144,7 +144,7 @@ S3TEST_CONF="$WORK/s3tests.conf" AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_
 	> "$WORK/pytest.log" 2>&1
 PYTEST_RC=$?
 
-RAW_LOG="/tmp/minis3-conformance-pytest.log"
+RAW_LOG="/tmp/zetaobject-conformance-pytest.log"
 cp "$WORK/pytest.log" "$RAW_LOG" 2>/dev/null || RAW_LOG="$PWD/pytest.log"
 echo "raw pytest log: $RAW_LOG (pytest rc=$PYTEST_RC)"
 tail -3 "$WORK/pytest.log"

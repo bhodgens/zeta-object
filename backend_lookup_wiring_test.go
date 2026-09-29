@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"mini-s3/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/backend"
 )
 
 // TestBuildBackendLookupInstallsInMain pins the wiring order: main() must

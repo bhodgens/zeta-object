@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"mini-s3/internal/backend"
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // putGetDeleteList drives one full CRUD+List round through the Backend

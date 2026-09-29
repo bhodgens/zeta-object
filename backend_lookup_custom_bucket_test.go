@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // TestBuildBackendLookupCustomBucketPathParity pins the bughunt-D1 fix: a

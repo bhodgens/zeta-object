@@ -115,7 +115,7 @@ func listObjectVersionsHandler(w http.ResponseWriter, r *http.Request, bucketNam
 			ETag:         fmt.Sprintf("%q", meta.ETag),
 			Size:         meta.ContentLength,
 			StorageClass: "STANDARD",
-			Owner:        Owner{ID: "minis3-user", DisplayName: "minis3-user"},
+			Owner:        Owner{ID: "zetaobject-user", DisplayName: "zetaobject-user"},
 		})
 		lastKey = key
 		lastVersionID = nullVersionID

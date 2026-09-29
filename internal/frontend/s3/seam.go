@@ -12,9 +12,9 @@ import (
 	"os"
 	"sync"
 
-	"mini-s3/internal/auth"
-	"mini-s3/internal/backend"
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/auth"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // serverConfigView is the slice of server configuration the S3 handlers

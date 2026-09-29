@@ -1,4 +1,4 @@
-# 11-lifecycle.sh — MINIS3_LISTEN_ADDR honored (the whole suite runs on a
+# 11-lifecycle.sh — ZETAOBJECT_LISTEN_ADDR honored (the whole suite runs on a
 # non-default detected port — that IS the proof, asserted against the log),
 # graceful SIGTERM shutdown (pid exits, log contains shutdown line),
 # concurrent PUT+GET loop (20 iters background) never serves torn content.

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // legacyMeta mirrors package main's ObjectMetadata (types.go) WITHOUT

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lib.sh — shared helpers for the mini-s3 e2e suite (sourced by run-e2e.sh).
+# lib.sh — shared helpers for the zeta-object e2e suite (sourced by run-e2e.sh).
 #
 # Contract (leaf 3.6): set -u (never set -e); assert helpers count failures
 # with a REAL exit code at suite end; no `|| true` anywhere.
@@ -120,7 +120,7 @@ aws_cap() {
 }
 
 # launch_expect_fail <config.json> <logfile> <timeout_seconds>
-# Fail-loud startup contract: start ./mini-s3-server with <config> and
+# Fail-loud startup contract: start ./zeta-object-server with <config> and
 # expect it to EXIT BY ITSELF within <timeout> seconds (log.Fatalf aborts
 # startup on bad backend/frontend config — the server must never keep
 # running with a half-built table). Mirrors run-e2e.sh's launch_server
@@ -133,7 +133,7 @@ launch_expect_fail() {
 	local cfg=$1 logf=$2 timeout=$3 waited=0
 	FAILSTART_EXIT=1
 	FAILSTART_RC=''
-	MINIS3_CONFIG="$cfg" ./mini-s3-server >"$logf" 2>&1 &
+	ZETAOBJECT_CONFIG="$cfg" ./zeta-object-server >"$logf" 2>&1 &
 	FAILSTART_PID=$!
 	# 0.2s steps, 5 per second.
 	while [ "$waited" -lt "$((timeout * 5))" ]; do

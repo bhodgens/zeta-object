@@ -14,7 +14,7 @@ import (
 	"os"
 	"testing"
 
-	"mini-s3/internal/auth"
+	"github.com/bhodgens/zeta-object/internal/auth"
 )
 
 // --- fixtures ---------------------------------------------------------------
@@ -42,8 +42,8 @@ func (s staticCreds) SecretKey(accessKeyID string) (string, bool) {
 }
 
 const (
-	envAccessKey = "MINIS3_ACCESS_KEY"
-	envSecretKey = "MINIS3_SECRET_KEY"
+	envAccessKey = "ZETAOBJECT_ACCESS_KEY"
+	envSecretKey = "ZETAOBJECT_SECRET_KEY"
 	// defaultAccessKey mirrors package main's config.go defaultAccessKey.
 	defaultAccessKey = "minioadmin"
 )

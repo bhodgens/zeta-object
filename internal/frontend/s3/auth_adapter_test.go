@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"mini-s3/internal/frontend/s3"
+	"github.com/bhodgens/zeta-object/internal/frontend/s3"
 )
 
 type staticCreds map[string]string

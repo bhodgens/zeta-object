@@ -25,9 +25,9 @@ import (
 	"testing"
 	"time"
 
-	"mini-s3/internal/auth"
-	"mini-s3/internal/backend"
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/auth"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // ---- export_test_surface: sigv4 helper aliases ----
@@ -144,11 +144,11 @@ func TestSurface_IsLowercaseHex64(t *testing.T) {
 }
 
 func TestSurface_DebugAuthEnabled(t *testing.T) {
-	t.Setenv("MINIS3_DEBUG_AUTH", "1")
+	t.Setenv("ZETAOBJECT_DEBUG_AUTH", "1")
 	if !DebugAuthEnabled() {
-		t.Error("DebugAuthEnabled() = false with MINIS3_DEBUG_AUTH=1")
+		t.Error("DebugAuthEnabled() = false with ZETAOBJECT_DEBUG_AUTH=1")
 	}
-	t.Setenv("MINIS3_DEBUG_AUTH", "")
+	t.Setenv("ZETAOBJECT_DEBUG_AUTH", "")
 	if DebugAuthEnabled() {
 		t.Error("DebugAuthEnabled() = true when unset")
 	}

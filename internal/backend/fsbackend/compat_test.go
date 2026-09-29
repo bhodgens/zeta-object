@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // newTestFS returns an FS on a fresh temp root.

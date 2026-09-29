@@ -28,10 +28,10 @@ import (
 	"sync"
 	"time"
 
-	"mini-s3/internal/auth"
-	"mini-s3/internal/backend"
-	s3 "mini-s3/internal/frontend/s3"
-	"mini-s3/internal/metadata"
+	"github.com/bhodgens/zeta-object/internal/auth"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	s3 "github.com/bhodgens/zeta-object/internal/frontend/s3"
+	"github.com/bhodgens/zeta-object/internal/metadata"
 )
 
 // mainCredentialSource adapts serverCredentials to auth.CredentialSource.

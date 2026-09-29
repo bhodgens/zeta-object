@@ -6,7 +6,7 @@ import (
 )
 
 // Tests for the loadConfig frontends semantics live in config_frontend_test.go;
-// this file covers the env-override seam: MINIS3_LISTEN_ADDR beats the config
+// this file covers the env-override seam: ZETAOBJECT_LISTEN_ADDR beats the config
 // file for the DEFAULT listener only; per-frontend listenAddr values are
 // untouched.
 func TestApplyListenAddrOverride_EnvBeatsConfigDefaultListenerOnly(t *testing.T) {
@@ -17,7 +17,7 @@ func TestApplyListenAddrOverride_EnvBeatsConfigDefaultListenerOnly(t *testing.T)
 			{Type: "webdav", ListenAddr: ":8444"},
 		},
 	}
-	t.Setenv("MINIS3_LISTEN_ADDR", ":9999")
+	t.Setenv("ZETAOBJECT_LISTEN_ADDR", ":9999")
 	applyListenAddrOverride(&cfg)
 	if cfg.ListenAddr != ":9999" {
 		t.Fatalf("ListenAddr = %q, want :9999 (env override)", cfg.ListenAddr)

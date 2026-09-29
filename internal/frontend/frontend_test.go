@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"testing"
 
-	"mini-s3/internal/auth"
-	"mini-s3/internal/frontend"
+	"github.com/bhodgens/zeta-object/internal/auth"
+	"github.com/bhodgens/zeta-object/internal/frontend"
 )
 
 type fakeFrontend struct{}

@@ -12,7 +12,7 @@ import (
 	"os"
 	"sync"
 
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 type httpRequest = http.Request

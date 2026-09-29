@@ -6,7 +6,7 @@ package frontend
 import (
 	"net/http"
 
-	"mini-s3/internal/auth"
+	"github.com/bhodgens/zeta-object/internal/auth"
 )
 
 type Frontend interface {

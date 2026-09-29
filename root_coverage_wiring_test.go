@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"mini-s3/internal/auth"
-	"mini-s3/internal/backend"
-	"mini-s3/internal/backend/fsbackend"
-	"mini-s3/internal/frontend"
-	"mini-s3/internal/metadata"
+	"github.com/bhodgens/zeta-object/internal/auth"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/backend/fsbackend"
+	"github.com/bhodgens/zeta-object/internal/frontend"
+	"github.com/bhodgens/zeta-object/internal/metadata"
 )
 
 // ---------------------------------------------------------------------------

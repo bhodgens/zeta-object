@@ -15,10 +15,10 @@ import (
 	"os"
 	"sort"
 
-	"mini-s3/internal/auth"
-	"mini-s3/internal/backend"
-	"mini-s3/internal/frontend"
-	s3 "mini-s3/internal/frontend/s3"
+	"github.com/bhodgens/zeta-object/internal/auth"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/frontend"
+	s3 "github.com/bhodgens/zeta-object/internal/frontend/s3"
 )
 
 // frontendFactories maps config Type -> constructor. Future frontends
@@ -125,18 +125,18 @@ func startupPlan(cfg []FrontendConfig, b backend.Backend, creds auth.CredentialS
 	return startupPlanT{registry: reg, mux: mux, shared: shared, listeners: listeners}, nil
 }
 
-// applyListenAddrOverride applies the MINIS3_LISTEN_ADDR env override to the
+// applyListenAddrOverride applies the ZETAOBJECT_LISTEN_ADDR env override to the
 // DEFAULT listener only; per-frontend listenAddr values are untouched.
 // A set-but-EMPTY value is warned about and ignored, matching how the
 // credential env vars treat empty (bughunt E7) — it must not silently
 // behave like an unset variable.
 func applyListenAddrOverride(cfg *ServerConfig) {
-	value, ok := os.LookupEnv("MINIS3_LISTEN_ADDR")
+	value, ok := os.LookupEnv("ZETAOBJECT_LISTEN_ADDR")
 	if !ok {
 		return
 	}
 	if value == "" {
-		log.Printf("Warning: environment variable MINIS3_LISTEN_ADDR is set but empty; ignoring (config listenAddr stays %s)", cfg.ListenAddr)
+		log.Printf("Warning: environment variable ZETAOBJECT_LISTEN_ADDR is set but empty; ignoring (config listenAddr stays %s)", cfg.ListenAddr)
 		return
 	}
 	cfg.ListenAddr = value

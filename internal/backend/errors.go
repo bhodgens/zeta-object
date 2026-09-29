@@ -4,7 +4,7 @@ import (
 	"errors"
 	"io/fs"
 
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // ErrNotSupported is returned for an operation the backend cannot serve at

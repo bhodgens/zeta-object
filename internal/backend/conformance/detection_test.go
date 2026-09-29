@@ -27,8 +27,8 @@ import (
 	"testing"
 	"time"
 
-	"mini-s3/internal/backend"
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // violationProbe couples a subtest name from Run's dispatch table with a
@@ -80,7 +80,7 @@ func TestSuiteDetectsContractViolations(t *testing.T) {
 	results := filepath.Join(t.TempDir(), "detection-results.txt")
 	cmd := exec.Command("go", "test", "-run", "TestViolationProbesChild", "-count=1", "./")
 	cmd.Dir = pkgDir
-	cmd.Env = append(os.Environ(), "MINIS3_VIOLATION_PROBES=1", "MINIS3_DETECTION_RESULTS="+results)
+	cmd.Env = append(os.Environ(), "ZETAOBJECT_VIOLATION_PROBES=1", "ZETAOBJECT_DETECTION_RESULTS="+results)
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("child violation run unexpectedly PASSED:\n%s", output)
@@ -107,8 +107,8 @@ func TestSuiteDetectsContractViolations(t *testing.T) {
 // probes violate the contract by design); it exists only to be spawned by
 // TestSuiteDetectsContractViolations and skips in every other run.
 func TestViolationProbesChild(t *testing.T) {
-	resultsPath := os.Getenv("MINIS3_DETECTION_RESULTS")
-	if os.Getenv("MINIS3_VIOLATION_PROBES") != "1" || resultsPath == "" {
+	resultsPath := os.Getenv("ZETAOBJECT_DETECTION_RESULTS")
+	if os.Getenv("ZETAOBJECT_VIOLATION_PROBES") != "1" || resultsPath == "" {
 		t.Skip("violation probes run only under TestSuiteDetectsContractViolations")
 	}
 	var sb strings.Builder

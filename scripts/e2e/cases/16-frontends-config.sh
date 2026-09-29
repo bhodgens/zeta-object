@@ -60,7 +60,7 @@ cat > "$F16_WORK/config.json" <<EOF
 }
 EOF
 
-MINIS3_CONFIG="$F16_WORK/config.json" ./mini-s3-server >>"$E2E_SERVER_LOG" 2>&1 &
+ZETAOBJECT_CONFIG="$F16_WORK/config.json" ./zeta-object-server >>"$E2E_SERVER_LOG" 2>&1 &
 F16_PID=$!
 F16_ENDPOINT="https://127.0.0.1:$F16_PORT2"
 ENDPOINT="$F16_ENDPOINT"

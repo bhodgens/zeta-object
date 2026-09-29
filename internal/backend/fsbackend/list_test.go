@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 func mustPutAll(t *testing.T, f *FS, bucket string, kv map[string]string) {

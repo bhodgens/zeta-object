@@ -203,8 +203,8 @@ func TestLoadCredentialsEmptyEnvWarns(t *testing.T) {
 	}()
 
 	t.Run("set but empty falls back to default", func(t *testing.T) {
-		t.Setenv("MINIS3_ACCESS_KEY", "")
-		t.Setenv("MINIS3_SECRET_KEY", "realsecret")
+		t.Setenv("ZETAOBJECT_ACCESS_KEY", "")
+		t.Setenv("ZETAOBJECT_SECRET_KEY", "realsecret")
 		loadCredentials()
 		if serverCredentials.AccessKeyID != defaultAccessKey {
 			t.Errorf("AccessKeyID = %q, want default %q", serverCredentials.AccessKeyID, defaultAccessKey)
@@ -215,8 +215,8 @@ func TestLoadCredentialsEmptyEnvWarns(t *testing.T) {
 	})
 
 	t.Run("unset uses default", func(t *testing.T) {
-		os.Unsetenv("MINIS3_ACCESS_KEY")
-		os.Unsetenv("MINIS3_SECRET_KEY")
+		os.Unsetenv("ZETAOBJECT_ACCESS_KEY")
+		os.Unsetenv("ZETAOBJECT_SECRET_KEY")
 		loadCredentials()
 		if serverCredentials.AccessKeyID != defaultAccessKey {
 			t.Errorf("AccessKeyID = %q, want default", serverCredentials.AccessKeyID)
@@ -227,8 +227,8 @@ func TestLoadCredentialsEmptyEnvWarns(t *testing.T) {
 	})
 
 	t.Run("set non-empty is honored", func(t *testing.T) {
-		t.Setenv("MINIS3_ACCESS_KEY", "mykey")
-		t.Setenv("MINIS3_SECRET_KEY", "mysecret")
+		t.Setenv("ZETAOBJECT_ACCESS_KEY", "mykey")
+		t.Setenv("ZETAOBJECT_SECRET_KEY", "mysecret")
 		loadCredentials()
 		if serverCredentials.AccessKeyID != "mykey" {
 			t.Errorf("AccessKeyID = %q, want mykey", serverCredentials.AccessKeyID)

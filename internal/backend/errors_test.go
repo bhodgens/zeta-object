@@ -5,7 +5,7 @@ import (
 	"io/fs"
 	"testing"
 
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 func TestErrorMapping(t *testing.T) {

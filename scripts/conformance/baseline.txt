@@ -1,4 +1,4 @@
-# mini-s3 conformance baseline (leaf 5.1) — 2026-09-28 run (ratchet state)
+# zeta-object conformance baseline (leaf 5.1) — 2026-09-28 run (ratchet state)
 # Format: <pytest node id>=<STATUS>. Ratchet: a test PASSED here that
 # later fails/errors is a regression and fails `make conformance`.
 # Run: 277 selected, 132 passed, 77 failed, 68 setup-errors (shared

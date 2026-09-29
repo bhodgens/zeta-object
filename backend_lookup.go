@@ -18,8 +18,8 @@ import (
 	"strings"
 	"sync"
 
-	"mini-s3/internal/backend"
-	"mini-s3/internal/backend/fsbackend"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/backend/fsbackend"
 )
 
 // defaultBackendName is the backend type used when a bucket (or the whole

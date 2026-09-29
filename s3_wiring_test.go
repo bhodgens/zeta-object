@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"mini-s3/internal/metadata"
+	"github.com/bhodgens/zeta-object/internal/metadata"
 )
 
 // TestS3WiringRegistersZFSEventsProvider pins the C1 fix: installS3Seams

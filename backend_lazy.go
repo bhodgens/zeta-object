@@ -3,7 +3,7 @@
 // (the var's initializer must not (transitively) reference the var).
 package main
 
-import "mini-s3/internal/backend"
+import "github.com/bhodgens/zeta-object/internal/backend"
 
 // lazyDefaultBackendFor builds the config-driven lookup against
 // serverConfig on first use. In production main() installs the lookup

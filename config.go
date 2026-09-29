@@ -282,18 +282,28 @@ var serverCredentials = struct {
 	SecretAccessKey: defaultAccessKey,
 }
 
-// loadCredentials reads MINIS3_ACCESS_KEY / MINIS3_SECRET_KEY. An env var
+// loadCredentials reads ZETAOBJECT_ACCESS_KEY / ZETAOBJECT_SECRET_KEY. An env var
 // that is SET but EMPTY is warned about and falls back to the default
 // (minioadmin) instead of silently behaving like an unset variable.
+//
+// Deprecated prefix: MINIS3_* remains a fallback until two minor releases
+// after the zeta-object rename. ZETAOBJECT_* always wins when both are set.
 func loadCredentials() {
-	serverCredentials.AccessKeyID = credentialFromEnv("MINIS3_ACCESS_KEY")
-	serverCredentials.SecretAccessKey = credentialFromEnv("MINIS3_SECRET_KEY")
+	serverCredentials.AccessKeyID = credentialFromEnv("ZETAOBJECT_ACCESS_KEY", "MINIS3_ACCESS_KEY")
+	serverCredentials.SecretAccessKey = credentialFromEnv("ZETAOBJECT_SECRET_KEY", "MINIS3_SECRET_KEY")
 }
 
 // credentialFromEnv returns the env value, the default when unset, and warns
-// + defaults when the variable is set but empty.
-func credentialFromEnv(key string) string {
+// + defaults when the variable is set but empty. legacyKey is the pre-rename
+// prefix ("") when no fallback applies.
+func credentialFromEnv(key, legacyKey string) string {
 	value, ok := os.LookupEnv(key)
+	if !ok && legacyKey != "" {
+		value, ok = os.LookupEnv(legacyKey)
+		if ok {
+			log.Printf("Note: %s is deprecated; set %s instead", legacyKey, key)
+		}
+	}
 	if !ok {
 		return defaultAccessKey
 	}
@@ -307,6 +317,22 @@ func credentialFromEnv(key string) string {
 func getEnvOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
+	}
+	return defaultValue
+}
+
+// getEnvOrDefaultLegacy is getEnvOrDefault with the deprecated MINIS3_ fallback.
+// Remove alongside credentialFromEnv's legacyKey in two minor releases.
+func getEnvOrDefaultLegacy(key, defaultValue string) string {
+	legacyKey := strings.Replace(key, "ZETAOBJECT_", "MINIS3_", 1)
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	if legacyKey != key {
+		if value := os.Getenv(legacyKey); value != "" {
+			log.Printf("Note: %s is deprecated; set %s instead", legacyKey, key)
+			return value
+		}
 	}
 	return defaultValue
 }

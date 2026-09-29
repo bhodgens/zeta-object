@@ -40,8 +40,8 @@ import (
 	"sync"
 	"testing"
 
-	"mini-s3/internal/backend"
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // Run exercises every Backend contract against the instance produced by

@@ -40,7 +40,7 @@ import (
 	"testing"
 	"time"
 
-	"mini-s3/internal/objectmodel"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // parityMatrixStep is one operation in the identical request matrix. Both

@@ -8,8 +8,8 @@ package backend_test
 import (
 	"testing"
 
-	"mini-s3/internal/backend"
-	"mini-s3/internal/backend/conformance"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/backend/conformance"
 )
 
 // RunBackendConformance is the in-package entry point pinned by the leaf:

@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"mini-s3/internal/auth"
-	"mini-s3/internal/backend"
-	"mini-s3/internal/frontend"
+	"github.com/bhodgens/zeta-object/internal/auth"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/frontend"
 )
 
 type nilBackend struct{ backend.Backend } // embeds interface; methods unused in these tests
@@ -145,11 +145,11 @@ func TestStartupPlan_DuplicateSharedMountRejected(t *testing.T) {
 	}
 }
 
-// A set-but-EMPTY MINIS3_LISTEN_ADDR is warned about and ignored — it must
+// A set-but-EMPTY ZETAOBJECT_LISTEN_ADDR is warned about and ignored — it must
 // not silently behave like an unset variable (bughunt E7).
 func TestApplyListenAddrOverride_EmptyEnvWarnsAndIgnores(t *testing.T) {
 	cfg := ServerConfig{ListenAddr: ":8443"}
-	t.Setenv("MINIS3_LISTEN_ADDR", "")
+	t.Setenv("ZETAOBJECT_LISTEN_ADDR", "")
 	applyListenAddrOverride(&cfg)
 	if cfg.ListenAddr != ":8443" {
 		t.Fatalf("ListenAddr = %q, want :8443 (empty env ignored)", cfg.ListenAddr)

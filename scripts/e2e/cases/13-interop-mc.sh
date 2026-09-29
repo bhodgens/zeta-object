@@ -41,7 +41,7 @@ if [ ! -x "$MC_BIN" ]; then
 fi
 
 BKT='e2e-13-interop'
-ALIAS=minis3
+ALIAS=zetaobject
 export INTEROP_ENDPOINT="$ENDPOINT"
 export INTEROP_MC_BIN="$MC_BIN"
 INTEROP_SHIM_ERR=$(mktemp /tmp/e2e13-shimerr.XXXXXX)

@@ -3,8 +3,8 @@ package s3_test
 import (
 	"testing"
 
-	"mini-s3/internal/frontend"
-	"mini-s3/internal/frontend/s3"
+	"github.com/bhodgens/zeta-object/internal/frontend"
+	"github.com/bhodgens/zeta-object/internal/frontend/s3"
 )
 
 // TestS3Frontend_ImplementsFrontend pins the frontend contract surface.

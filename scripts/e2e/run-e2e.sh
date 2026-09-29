@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-e2e.sh — mini-s3 end-to-end suite entry point (leaf 3.6).
+# run-e2e.sh — zeta-object end-to-end suite entry point (leaf 3.6).
 #
 # - builds the server binary
 # - generates temp certs + temp dataDir (never touches repo ./data or ./certs)
@@ -22,14 +22,14 @@ else
 fi
 
 # --- build -------------------------------------------------------------------
-echo '== building mini-s3-server =='
-if ! go build -o mini-s3-server . ; then
+echo '== building zeta-object-server =='
+if ! go build -o zeta-object-server . ; then
 	echo 'FATAL: go build failed'
 	exit 1
 fi
 
 # --- workdir, certs, config ---------------------------------------------------
-WORK=$(mktemp -d /tmp/minis3-e2e.XXXXXX)
+WORK=$(mktemp -d /tmp/zetaobject-e2e.XXXXXX)
 E2E_DATA_DIR="$WORK/data"
 E2E_SENTINEL_DIR="$WORK/sentinels"
 mkdir -p "$E2E_DATA_DIR" "$E2E_SENTINEL_DIR"
@@ -66,7 +66,7 @@ EOF
 
 # --- launch server -------------------------------------------------------------
 echo "== launching server on 127.0.0.1:$FREE_PORT =="
-MINIS3_CONFIG="$WORK/config.json" ./mini-s3-server >"$WORK/server.log" 2>&1 &
+ZETAOBJECT_CONFIG="$WORK/config.json" ./zeta-object-server >"$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 cleanup() {
 	if kill -0 "$SERVER_PID" 2>/dev/null; then
@@ -132,7 +132,7 @@ PY
   "keyFile": "$WORK/key.pem"
 }
 EOF
-	MINIS3_CONFIG="$WORK/config.json" ./mini-s3-server >>"$WORK/server.log" 2>&1 &
+	ZETAOBJECT_CONFIG="$WORK/config.json" ./zeta-object-server >>"$WORK/server.log" 2>&1 &
 	SERVER_PID=$!
 	E2E_SERVER_PID="$SERVER_PID"
 	# 127.0.0.1, not localhost: mc resolves localhost to ::1 first and never

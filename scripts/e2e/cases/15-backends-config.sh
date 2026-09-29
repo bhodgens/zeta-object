@@ -66,7 +66,7 @@ EOF
 # This server's log is case-local (not the shared suite log) so the
 # 'Registered backends:' grep below sees only THIS startup's line.
 : > "$B15_WORK/server.log"
-MINIS3_CONFIG="$B15_WORK/config.json" ./mini-s3-server >"$B15_WORK/server.log" 2>&1 &
+ZETAOBJECT_CONFIG="$B15_WORK/config.json" ./zeta-object-server >"$B15_WORK/server.log" 2>&1 &
 B15_PID=$!
 B15_ENDPOINT="https://127.0.0.1:$B15_PORT"
 ENDPOINT="$B15_ENDPOINT"

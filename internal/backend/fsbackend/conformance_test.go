@@ -7,8 +7,8 @@ package fsbackend
 import (
 	"testing"
 
-	"mini-s3/internal/backend"
-	"mini-s3/internal/backend/conformance"
+	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/backend/conformance"
 )
 
 // TestConformanceFS runs the full contract suite against the fs backend.

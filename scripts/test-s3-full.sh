@@ -3,7 +3,7 @@
 # =============================================================================
 # Mini-S3 Full Integration Test Suite
 # =============================================================================
-# Starts the mini-s3 server with a temporary test directory, runs a
+# Starts the zeta-object server with a temporary test directory, runs a
 # comprehensive set of S3 operations via AWS CLI, and stops the server.
 #
 # Usage: ./scripts/test-s3-full.sh
@@ -25,12 +25,12 @@ set -euo pipefail
 # ---- Configuration ----
 PORT="${PORT:-8443}"
 ENDPOINT="https://localhost:${PORT}"
-AWS_ACCESS_KEY_ID="${MINIS3_ACCESS_KEY:-minioadmin}"
-AWS_SECRET_ACCESS_KEY="${MINIS3_SECRET_KEY:-minioadmin}"
+AWS_ACCESS_KEY_ID="${ZETAOBJECT_ACCESS_KEY:-minioadmin}"
+AWS_SECRET_ACCESS_KEY="${ZETAOBJECT_SECRET_KEY:-minioadmin}"
 REGION="us-east-1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-TEST_DIR="$(mktemp -d /tmp/minis3-full-test-XXXXXX)"
+TEST_DIR="$(mktemp -d /tmp/zetaobject-full-test-XXXXXX)"
 CONFIG_FILE="$TEST_DIR/config.json"
 CERTS_DIR="$TEST_DIR/certs"
 BUCKET="full-test-bucket"
@@ -41,9 +41,9 @@ FAILED_TESTS=0
 SKIPPED_TESTS=0
 SERVER_PID=""
 
-# Also honor MINIS3_CERT_FILE / MINIS3_KEY_FILE if the operator relocated certs
-CERT_FILE="${MINIS3_CERT_FILE:-certs/cert.pem}"
-KEY_FILE="${MINIS3_KEY_FILE:-certs/key.pem}"
+# Also honor ZETAOBJECT_CERT_FILE / ZETAOBJECT_KEY_FILE if the operator relocated certs
+CERT_FILE="${ZETAOBJECT_CERT_FILE:-certs/cert.pem}"
+KEY_FILE="${ZETAOBJECT_KEY_FILE:-certs/key.pem}"
 
 export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 
@@ -152,7 +152,7 @@ cleanup() {
 
     # Stop server if we started it
     if [[ -n "${SERVER_PID:-}" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
-        info "Stopping mini-s3 server (PID $SERVER_PID)..."
+        info "Stopping zeta-object server (PID $SERVER_PID)..."
         kill "$SERVER_PID" 2>/dev/null || true
         wait "$SERVER_PID" 2>/dev/null || true
     fi
@@ -238,8 +238,8 @@ EBUCKET
 
     # Build or check server
     if [[ "${SKIP_SERVER:-0}" != "1" ]]; then
-        info "Building mini-s3 server..."
-        (cd "$PROJECT_DIR" && go build -o "$TEST_DIR/mini-s3-server" .) || {
+        info "Building zeta-object server..."
+        (cd "$PROJECT_DIR" && go build -o "$TEST_DIR/zeta-object-server" .) || {
             error "Build failed"
             exit 1
         }
@@ -249,15 +249,15 @@ EBUCKET
         # Create a symlink so server can use local certs
         (cd "$TEST_DIR" && ln -sf certs-link certs)
 
-        # Start server — MINIS3_LISTEN_ADDR wires the PORT env var into the
+        # Start server — ZETAOBJECT_LISTEN_ADDR wires the PORT env var into the
         # server's bind address (config key: listenAddr)
-        info "Starting mini-s3 server on port $PORT..."
-        MINIS3_CONFIG="$CONFIG_FILE" \
-        MINIS3_ACCESS_KEY="$AWS_ACCESS_KEY_ID" \
-        MINIS3_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" \
-        MINIS3_LISTEN_ADDR=":$PORT" \
-        MINIS3_CERT_FILE="$CERTS_DIR/cert.pem" MINIS3_KEY_FILE="$CERTS_DIR/key.pem" \
-        "$TEST_DIR/mini-s3-server" &
+        info "Starting zeta-object server on port $PORT..."
+        ZETAOBJECT_CONFIG="$CONFIG_FILE" \
+        ZETAOBJECT_ACCESS_KEY="$AWS_ACCESS_KEY_ID" \
+        ZETAOBJECT_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" \
+        ZETAOBJECT_LISTEN_ADDR=":$PORT" \
+        ZETAOBJECT_CERT_FILE="$CERTS_DIR/cert.pem" ZETAOBJECT_KEY_FILE="$CERTS_DIR/key.pem" \
+        "$TEST_DIR/zeta-object-server" &
         SERVER_PID=$!
 
         # Wait for server to be ready

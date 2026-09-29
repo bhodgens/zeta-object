@@ -1,7 +1,7 @@
 # mini-s3 Makefile — meept-grade quality gates.
 # Module is at the repo root (single package main): no cd needed anywhere.
 
-BINARY_NAME := mini-s3-server
+BINARY_NAME := zeta-object-server
 
 # Coverage floor. Measured 47.9% aggregate (go test -cover ./...) after the
 # frontend-interface split (2026-09) moved code from package main into
@@ -44,7 +44,7 @@ help:
 	@echo "  check            precommit + test-race + vuln + secrets (full local gate)"
 	@echo "  lint             golangci-lint run ./... (NEW_FROM_REV=<rev> limits to new issues)"
 	@echo "  vet              go vet ./..."
-	@echo "  fmt              gofmt + goimports -local mini-s3"
+	@echo "  fmt              gofmt + goimports -local github.com/bhodgens/zeta-object"
 	@echo "  fmt-check        Verify formatting without modifying files"
 	@echo "  vuln             govulncheck ./..."
 	@echo "  secrets          gitleaks detect (scripts/.gitleaks.toml)"
@@ -137,9 +137,9 @@ vet:
 	@go vet ./...
 
 fmt:
-	@echo "Formatting code (gofmt + goimports -local mini-s3)..."
+	@echo "Formatting code (gofmt + goimports -local github.com/bhodgens/zeta-object)..."
 	@go fmt ./...
-	@goimports -local mini-s3 -w $$(git ls-files '*.go' 2>/dev/null || find . -name '*.go')
+	@goimports -local github.com/bhodgens/zeta-object -w $$(git ls-files '*.go' 2>/dev/null || find . -name '*.go')
 	@echo "Done"
 
 fmt-check:
