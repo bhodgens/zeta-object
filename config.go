@@ -11,13 +11,6 @@ import (
 // config.go — server configuration, credentials, and shared constants
 
 const (
-	awsAlgorithm      = "AWS4-HMAC-SHA256"
-	defaultRegion     = "us-east-1" // Default region for our S3 server
-	serviceName       = "s3"
-	unsignedPayload   = "UNSIGNED-PAYLOAD"
-	streamingPayload  = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
-	iso8601Format     = "20060102T150405Z"
-	shortDateFormat   = "20060102"
 	defaultDataDir    = "./data/"
 	defaultConfigFile = "config.json"
 	defaultListenAddr = ":8443"
@@ -33,6 +26,74 @@ type ServerConfig struct {
 	ListenAddr string            `json:"listenAddr"` // Host:port to listen on (default ":8443")
 	CertFile   string            `json:"certFile"`   // TLS certificate path (default certs/cert.pem)
 	KeyFile    string            `json:"keyFile"`    // TLS private key path (default certs/key.pem)
+
+	// Backends maps a backend type name to its construction config
+	// (leaf 03; frozen JSON keys). Absent ⇒ every bucket uses the
+	// default backend ("fs").
+	Backends map[string]BackendCfg `json:"backends"`
+	// BucketBackends records each bucket's selected backend name (the
+	// object form of the buckets value). Absent/empty ⇒ default backend.
+	BucketBackends map[string]string `json:"-"`
+}
+
+// BackendCfg is the per-backend-type config from config.json "backends".
+// Root is the storage root; Options carries backend-specific string
+// settings (fs ignores them in v1 — they exist for future backends).
+type BackendCfg struct {
+	Root    string            `json:"root"`
+	Options map[string]string `json:"options"`
+}
+
+// bucketCfg is the JSON decoding form of a buckets map value: either the
+// legacy bare string ("photos": "/mnt/photos") or the object form
+// ("photos": {"path": ..., "backend": ...}).
+type bucketCfg struct {
+	Path    string `json:"path"`
+	Backend string `json:"backend"`
+}
+
+// UnmarshalJSON accepts both encodings. The legacy string form decodes to
+// Path with an empty Backend (default backend at resolve time).
+func (b *bucketCfg) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	if trimmed[0] == '"' {
+		return json.Unmarshal(data, &b.Path)
+	}
+	type plain bucketCfg
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	b.Path, b.Backend = p.Path, p.Backend
+	return nil
+}
+
+// bucketsRaw is the raw buckets map shape used only for JSON decoding.
+type bucketsRaw map[string]bucketCfg
+
+// UnmarshalJSON decodes either encoding of each value and fans the result
+// out into the legacy Buckets (name → path) and BucketBackends
+// (name → backend) fields so every existing caller of serverConfig.Buckets
+// keeps its exact behavior.
+func (m bucketsRaw) apply(cfg *ServerConfig) {
+	if cfg.Buckets == nil {
+		cfg.Buckets = make(map[string]string, len(m))
+	}
+	if len(m) == 0 {
+		return
+	}
+	if cfg.BucketBackends == nil {
+		cfg.BucketBackends = make(map[string]string)
+	}
+	for name, bc := range m {
+		cfg.Buckets[name] = bc.Path
+		if bc.Backend != "" {
+			cfg.BucketBackends[name] = bc.Backend
+		}
+	}
 }
 
 var serverConfig = ServerConfig{
@@ -100,6 +161,33 @@ func loadConfig(configPath string) error {
 	log.Printf("Loaded config: DataDir=%s, ListenAddr=%s, CertFile=%s, KeyFile=%s, CustomBuckets=%d",
 		serverConfig.DataDir, serverConfig.ListenAddr, serverConfig.CertFile,
 		serverConfig.KeyFile, len(serverConfig.Buckets))
+	return nil
+}
+
+// UnmarshalJSON decodes a ServerConfig, accepting BOTH encodings of the
+// "buckets" values (legacy bare string and the object form with an
+// optional "backend" key). The object form's backend selections land in
+// BucketBackends; the path form stays in the legacy Buckets field so every
+// existing caller keeps its exact behavior.
+func (c *ServerConfig) UnmarshalJSON(data []byte) error {
+	type alias struct {
+		DataDir    string                `json:"dataDir"`
+		ListenAddr string                `json:"listenAddr"`
+		CertFile   string                `json:"certFile"`
+		KeyFile    string                `json:"keyFile"`
+		Backends   map[string]BackendCfg `json:"backends"`
+		Buckets    bucketsRaw            `json:"buckets"`
+	}
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	c.DataDir = a.DataDir
+	c.ListenAddr = a.ListenAddr
+	c.CertFile = a.CertFile
+	c.KeyFile = a.KeyFile
+	c.Backends = a.Backends
+	a.Buckets.apply(c)
 	return nil
 }
 

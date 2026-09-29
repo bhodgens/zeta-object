@@ -64,16 +64,16 @@ func FuzzParseRangeHeader(f *testing.F) {
 			t.Skip("negative object size is not a reachable wire state (size comes from file size)")
 		}
 		rr := parseRangeHeader(spec, size)
-		switch rr.outcome {
+		switch rr.Outcome {
 		case rangeFull:
 		case rangeUnsatisfiable:
 		case rangePartial:
-			if rr.start < 0 || rr.length < 0 || rr.start+rr.length > size {
+			if rr.Start < 0 || rr.Length < 0 || rr.Start+rr.Length > size {
 				t.Fatalf("parseRangeHeader(%q, %d) = partial start=%d length=%d: slice out of bounds",
-					spec, size, rr.start, rr.length)
+					spec, size, rr.Start, rr.Length)
 			}
 		default:
-			t.Fatalf("parseRangeHeader(%q, %d) returned unknown outcome %d", spec, size, rr.outcome)
+			t.Fatalf("parseRangeHeader(%q, %d) returned unknown outcome %d", spec, size, rr.Outcome)
 		}
 	})
 }

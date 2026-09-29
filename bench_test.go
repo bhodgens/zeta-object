@@ -53,16 +53,16 @@ func benchmarkListObjectsFromKeys(b *testing.B, p listObjectsParams) {
 }
 
 func BenchmarkListObjectsFromKeysPlain(b *testing.B) {
-	benchmarkListObjectsFromKeys(b, listObjectsParams{maxKeys: 1000})
+	benchmarkListObjectsFromKeys(b, listObjectsParams{MaxKeys: 1000})
 }
 
 func BenchmarkListObjectsFromKeysDelimiter(b *testing.B) {
-	benchmarkListObjectsFromKeys(b, listObjectsParams{maxKeys: 1000, delimiter: "/"})
+	benchmarkListObjectsFromKeys(b, listObjectsParams{MaxKeys: 1000, Delimiter: "/"})
 }
 
 func BenchmarkListObjectsFromKeysPrefix(b *testing.B) {
 	// Only "dir00NN" buckets match — a strict subset of the 10k keys.
-	benchmarkListObjectsFromKeys(b, listObjectsParams{maxKeys: 1000, prefix: "dir00"})
+	benchmarkListObjectsFromKeys(b, listObjectsParams{MaxKeys: 1000, Prefix: "dir00"})
 }
 
 // BenchmarkWriteFileAtomic measures a 4KB overwrite of an existing file (the

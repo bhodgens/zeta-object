@@ -1,4 +1,4 @@
-package main
+package s3
 
 // bucket_versions.go — ListObjectVersions (GET /bucket?versions) sub-resource
 // (leaf 5.1 [a]-2, found by ceph/s3-tests: the suite's per-test teardown

@@ -15,9 +15,23 @@
   // Custom bucket name -> filesystem path mappings. These buckets appear in
   // ListBuckets alongside auto-discovered buckets, cannot be created or
   // deleted via the S3 API, and may point to any directory (incl. symlinks).
+  //
+  // Each bucket may also select its storage backend with the object form:
+  //   "photos": { "path": "/mnt/storage/photos", "backend": "fs" }
+  // The legacy bare-string form and the object form can be mixed freely.
+  // "backend" absent or "" selects the default backend ("fs").
   "buckets": {
     "photos": "/mnt/storage/photos",
     "backups": "/var/backups/s3-mirror"
+  },
+
+  // Storage backend configurations, keyed by backend type name. Absent ⇒
+  // every bucket uses the built-in "fs" backend rooted at dataDir / the
+  // bucket's custom path. A bucket naming an UNKNOWN backend aborts
+  // startup (never a silent fallback to fs). fs ignores "options"; they
+  // exist for future backends (e.g. an S3 proxy's endpoint/region).
+  "backends": {
+    "fs": { "root": "./data/" }
   }
 }
 

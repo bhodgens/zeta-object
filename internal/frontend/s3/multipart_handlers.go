@@ -1,4 +1,4 @@
-package main
+package s3
 
 import (
 	"crypto/md5" //nolint:gosec // G501: MD5 is the S3 ETag/upload-ID algorithm — protocol requirement, not crypto.
@@ -1035,7 +1035,7 @@ func startMultipartExpirySweeper() {
 // (Extracted verbatim from the former sweepAllBuckets body.)
 func sweepAllBucketsOnce() int {
 	total := 0
-	bucketRoots := filepath.Join(serverConfig.DataDir, "*")
+	bucketRoots := filepath.Join(currentServerConfig().DataDir, "*")
 	paths, _ := filepath.Glob(bucketRoots)
 	for _, p := range paths {
 		info, err := os.Stat(p)
@@ -1044,10 +1044,14 @@ func sweepAllBucketsOnce() int {
 		}
 		total += sweepExpiredUploads(p)
 	}
-	for _, p := range serverConfig.Buckets {
+	for _, p := range currentServerConfig().Buckets {
 		if info, err := os.Stat(p); err == nil && info.IsDir() {
 			total += sweepExpiredUploads(p)
 		}
 	}
 	return total
 }
+
+// SweepAllBucketsOnce is the exported sweep entry package main's hourly
+// ticker drives (wiring installs it as the sweep pass).
+func SweepAllBucketsOnce() int { return sweepAllBucketsOnce() }

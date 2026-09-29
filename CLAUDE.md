@@ -120,11 +120,17 @@ The server loads configuration from `config.json` (or the path specified by the
 | `listenAddr` | `:8443` | HTTPS listen address; `MINIS3_LISTEN_ADDR` env var overrides |
 | `certFile` | `certs/cert.pem` | TLS certificate path |
 | `keyFile` | `certs/key.pem` | TLS private key path |
-| `buckets` | `{}` | Bucket name to custom filesystem path |
+| `buckets` | `{}` | Bucket name to custom filesystem path (bare string, or object `{ "path": ..., "backend": ... }`) |
+| `backends` | `{}` | Backend type name to `{ "root": ..., "options": {...} }` construction config |
 
 - **Custom buckets** appear in ListBuckets, cannot be created or deleted via the
   S3 API, and can point to any directory (including symlinks). Both the dataDir
   scan and custom bucket paths follow symlinks.
+- **Backend selection** (per bucket): a bucket's `backend` key names a backend
+  registered in the `internal/backend` registry (`"fs"` is built in via
+  `fsbackend`'s `init()`); absent/`""` selects the default (`fs`). Root
+  precedence: explicit bucket path > named backend's `root` > `dataDir`. An
+  unknown backend name **aborts startup** (never a silent fallback to fs).
 - **Graceful shutdown**: SIGINT/SIGTERM stops accepting new connections and
   drains in-flight requests for up to 30 seconds before exit (`main.go`).
 

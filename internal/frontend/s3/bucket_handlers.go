@@ -1,4 +1,4 @@
-package main
+package s3
 
 import (
 	"context"
@@ -18,13 +18,18 @@ import (
 
 // bucket_handlers.go — S3 bucket-level operation handlers
 
-// getBucketPath returns the filesystem path for a bucket.
-// It checks custom bucket mappings first, then falls back to dataDir.
+// getBucketPath returns the filesystem path for a bucket: the wiring-
+// installed fs-root resolver wins, else the config-view layout math
+// (custom mapping first, then dataDir) — the pre-move precedence.
 func getBucketPath(bucketName string) string {
-	if customPath, ok := serverConfig.Buckets[bucketName]; ok {
+	if backendRootResolverHook != nil {
+		return backendRootResolverHook(bucketName)
+	}
+	cfg := currentServerConfig()
+	if customPath, ok := cfg.Buckets[bucketName]; ok {
 		return customPath
 	}
-	return filepath.Join(serverConfig.DataDir, bucketName)
+	return filepath.Join(cfg.DataDir, bucketName)
 }
 
 // validBucket reports whether a bucket-level request may proceed for this
@@ -33,7 +38,7 @@ func getBucketPath(bucketName string) string {
 // naming rules). Rejects traversal names like "../escape" and "." before
 // they can reach getBucketPath (leaf 2.4 fix 7).
 func validBucket(name string) bool {
-	if _, isCustom := serverConfig.Buckets[name]; isCustom {
+	if _, isCustom := currentServerConfig().Buckets[name]; isCustom {
 		return true
 	}
 	return validateBucketName(name) == nil
@@ -97,7 +102,7 @@ func backendDiscovery() []objectmodel.BucketInfo {
 	if f, err := backendFor(""); err == nil && f != nil {
 		add(f)
 	}
-	for name := range serverConfig.Buckets {
+	for name := range currentServerConfig().Buckets {
 		if f, err := backendFor(name); err == nil && f != nil {
 			add(f)
 		}
@@ -124,8 +129,8 @@ func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 	// Custom buckets are config-controlled: if the configured path exists on
 	// disk, PUT is idempotent success; if missing, report 409 with a message
 	// about the custom path (still no create — leaf 2.4 fix 8).
-	if _, isCustom := serverConfig.Buckets[bucketName]; isCustom {
-		customPath := serverConfig.Buckets[bucketName]
+	if _, isCustom := currentServerConfig().Buckets[bucketName]; isCustom {
+		customPath := currentServerConfig().Buckets[bucketName]
 		if info, err := os.Stat(customPath); err != nil || !info.IsDir() {
 			log.Printf("Bucket %s is a custom-configured bucket whose path %s is missing on disk.", strconv.Quote(bucketName), customPath)
 			writeS3Error(w, "BucketAlreadyExists",
@@ -205,7 +210,7 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 	}
 
 	// Prevent deletion of custom-configured buckets via API
-	if _, isCustom := serverConfig.Buckets[bucketName]; isCustom {
+	if _, isCustom := currentServerConfig().Buckets[bucketName]; isCustom {
 		log.Printf("Cannot delete custom-configured bucket %s via API", strconv.Quote(bucketName))
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusForbidden)

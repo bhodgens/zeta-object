@@ -1,4 +1,4 @@
-package main
+package s3
 
 // object_paths.go — shadow data layout for key/directory path collisions
 // (leaf 5.1 [a]-1, found by ceph/s3-tests test_bucket_list_delimiter_basic).

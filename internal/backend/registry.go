@@ -5,7 +5,11 @@
 // Lookup/Names, thread-safety hardening, and the config-driven installer.
 package backend
 
-import "sync"
+import (
+	"fmt"
+	"sort"
+	"sync"
+)
 
 // BackendConfig carries the construction parameters for a registered
 // backend type. Root is the storage root (dataDir or a custom bucket path);
@@ -18,14 +22,15 @@ type BackendConfig struct {
 }
 
 // registry is the name → constructor table, populated by each backend
-// package's init() and consumed by Lookup (leaf 03).
+// package's init() and consumed by Lookup.
 var (
 	registryMu sync.RWMutex
 	registry   = map[string]func(cfg BackendConfig) (Backend, error){}
 )
 
 // Register installs a constructor under name. Panics on duplicate
-// registration (an init-time programming error, pinned by leaf 03's spec).
+// registration (an init-time programming error, same convention as
+// database/sql).
 func Register(name string, fn func(cfg BackendConfig) (Backend, error)) {
 	registryMu.Lock()
 	defer registryMu.Unlock()
@@ -35,26 +40,36 @@ func Register(name string, fn func(cfg BackendConfig) (Backend, error)) {
 	registry[name] = fn
 }
 
-// Lookup returns the constructor registered under name, or
-// ErrUnknownBackend (never a silent fs fallback).
+// Lookup returns the constructor registered under name, or an error
+// wrapping ErrUnknownBackend that names the type plus the sorted list of
+// registered names (startup diagnostics come free). Unknown names are NEVER
+// resolved to a default backend — no silent fs fallback.
 func Lookup(name string) (func(cfg BackendConfig) (Backend, error), error) {
 	registryMu.RLock()
-	defer registryMu.RUnlock()
 	fn, ok := registry[name]
+	names := sortedNamesLocked()
+	registryMu.RUnlock()
 	if !ok {
-		return nil, ErrUnknownBackend
+		return nil, fmt.Errorf("%w %q (registered: %s)", ErrUnknownBackend, name, names)
 	}
 	return fn, nil
 }
 
-// Names returns the sorted registered backend type names (leaf 03's
-// error-message convention).
+// Names returns the sorted registered backend type names (startup
+// diagnostics).
 func Names() []string {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
+	return sortedNamesLocked()
+}
+
+// sortedNamesLocked returns the sorted registry keys; caller must hold a
+// registry lock (read is sufficient).
+func sortedNamesLocked() []string {
 	names := make([]string, 0, len(registry))
 	for name := range registry {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }

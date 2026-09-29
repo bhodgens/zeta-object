@@ -1,4 +1,4 @@
-package main
+package s3
 
 import (
 	"bytes"
@@ -183,9 +183,9 @@ const (
 // rangeRequest is the parsed Range outcome: what to serve and, for
 // rangePartial, which byte slice (start..start+length-1).
 type rangeRequest struct {
-	outcome rangeOutcome
-	start   int64
-	length  int64
+	Outcome rangeOutcome
+	Start   int64
+	Length  int64
 }
 
 // parseRangeHeader parses a Range header value for an object of the given
@@ -200,17 +200,17 @@ type rangeRequest struct {
 func parseRangeHeader(spec string, size int64) rangeRequest {
 	const unit = "bytes="
 	if !strings.HasPrefix(spec, unit) {
-		return rangeRequest{outcome: rangeFull}
+		return rangeRequest{Outcome: rangeFull}
 	}
 	specPart := strings.TrimSpace(spec[len(unit):])
 	// Multi-range: comma present → fall back to a full-body 200 (documented
 	// choice; S3 itself returns 200 for spec forms it won't honor).
 	if strings.Contains(specPart, ",") {
-		return rangeRequest{outcome: rangeFull}
+		return rangeRequest{Outcome: rangeFull}
 	}
 	startStr, endStr, found := strings.Cut(specPart, "-")
 	if !found {
-		return rangeRequest{outcome: rangeFull}
+		return rangeRequest{Outcome: rangeFull}
 	}
 	startStr = strings.TrimSpace(startStr)
 	endStr = strings.TrimSpace(endStr)
@@ -218,40 +218,40 @@ func parseRangeHeader(spec string, size int64) rangeRequest {
 	switch {
 	case startStr == "" && endStr == "":
 		// "bytes=-" — no numbers at all: malformed.
-		return rangeRequest{outcome: rangeFull}
+		return rangeRequest{Outcome: rangeFull}
 	case startStr == "":
 		// Suffix form: last <endStr> bytes.
 		suffixLen, err := strconv.ParseInt(endStr, 10, 64)
 		if err != nil || suffixLen < 0 {
-			return rangeRequest{outcome: rangeFull}
+			return rangeRequest{Outcome: rangeFull}
 		}
 		if suffixLen == 0 || size == 0 {
-			return rangeRequest{outcome: rangeUnsatisfiable}
+			return rangeRequest{Outcome: rangeUnsatisfiable}
 		}
 		if suffixLen > size {
 			suffixLen = size // "-N" beyond EOF → whole object
 		}
-		return rangeRequest{outcome: rangePartial, start: size - suffixLen, length: suffixLen}
+		return rangeRequest{Outcome: rangePartial, Start: size - suffixLen, Length: suffixLen}
 	default:
 		start, err := strconv.ParseInt(startStr, 10, 64)
 		if err != nil || start < 0 {
-			return rangeRequest{outcome: rangeFull}
+			return rangeRequest{Outcome: rangeFull}
 		}
 		if start >= size {
-			return rangeRequest{outcome: rangeUnsatisfiable}
+			return rangeRequest{Outcome: rangeUnsatisfiable}
 		}
 		end := size - 1
 		if endStr != "" {
 			parsedEnd, err := strconv.ParseInt(endStr, 10, 64)
 			if err != nil || parsedEnd < start {
 				// "5-2" (inverted) or garbage end: malformed.
-				return rangeRequest{outcome: rangeFull}
+				return rangeRequest{Outcome: rangeFull}
 			}
 			if parsedEnd < end {
 				end = parsedEnd
 			}
 		}
-		return rangeRequest{outcome: rangePartial, start: start, length: end - start + 1}
+		return rangeRequest{Outcome: rangePartial, Start: start, Length: end - start + 1}
 	}
 }
 
@@ -343,21 +343,21 @@ func checkObjectPreconditions(w http.ResponseWriter, r *http.Request, etag strin
 // sliced Content-Length, seeking into the file; isHead suppresses the body.
 // Returns true when the response is fully written.
 func serveObjectRange(w http.ResponseWriter, file *os.File, rr rangeRequest, actualSize int64, isHead bool, logPrefix string) bool {
-	switch rr.outcome {
+	switch rr.Outcome {
 	case rangeUnsatisfiable:
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", actualSize))
 		writeS3Error(w, "InvalidRange", "The requested range is not satisfiable", http.StatusRequestedRangeNotSatisfiable)
 		return true
 	case rangePartial:
-		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rr.start, rr.start+rr.length-1, actualSize))
-		w.Header().Set("Content-Length", strconv.FormatInt(rr.length, 10))
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rr.Start, rr.Start+rr.Length-1, actualSize))
+		w.Header().Set("Content-Length", strconv.FormatInt(rr.Length, 10))
 		w.WriteHeader(http.StatusPartialContent)
 		if !isHead {
-			if _, err := file.Seek(rr.start, io.SeekStart); err != nil {
-				log.Printf("%s: error seeking to range start %d: %v", logPrefix, rr.start, err) //nolint:gosec // G706: logPrefix is handler-constructed, not client input.
+			if _, err := file.Seek(rr.Start, io.SeekStart); err != nil {
+				log.Printf("%s: error seeking to range start %d: %v", logPrefix, rr.Start, err) //nolint:gosec // G706: logPrefix is handler-constructed, not client input.
 				return true
 			}
-			if _, err := io.CopyN(w, file, rr.length); err != nil {
+			if _, err := io.CopyN(w, file, rr.Length); err != nil {
 				log.Printf("%s: error streaming range to client: %v", logPrefix, err) //nolint:gosec // G706: logPrefix is handler-constructed, not client input.
 			}
 		}
@@ -419,7 +419,7 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	// Leaf 3.1 fix 5: advertise byte-range support on every 200/206.
 	w.Header().Set("Accept-Ranges", "bytes")
 	rr := parseRangeHeader(r.Header.Get("Range"), actualSize)
-	if rr.outcome != rangeFull {
+	if rr.Outcome != rangeFull {
 		// serveObjectRange needs an *os.File for seeking; the seam returns
 		// an ReadCloser. A range-read through the seam is done by draining
 		// and discarding the leading bytes, then copying the window.
@@ -480,23 +480,23 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 // serveObjectRangeFrom applies the parsed Range outcome using a stream
 // (seam ReadCloser) instead of a seekable *os.File. rangeFull returns
 // false (caller serves the normal 200); rangeUnsatisfiable writes 416;
-// rangePartial discards rr.start bytes then copies rr.length bytes.
+// rangePartial discards rr.Start bytes then copies rr.Length bytes.
 func serveObjectRangeFrom(ctx context.Context, w http.ResponseWriter, rc io.Reader, rr rangeRequest, actualSize int64, isHead bool, logPrefix string) bool {
-	switch rr.outcome {
+	switch rr.Outcome {
 	case rangeUnsatisfiable:
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", actualSize))
 		writeS3Error(w, "InvalidRange", "The requested range is not satisfiable", http.StatusRequestedRangeNotSatisfiable)
 		return true
 	case rangePartial:
-		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rr.start, rr.start+rr.length-1, actualSize))
-		w.Header().Set("Content-Length", strconv.FormatInt(rr.length, 10))
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rr.Start, rr.Start+rr.Length-1, actualSize))
+		w.Header().Set("Content-Length", strconv.FormatInt(rr.Length, 10))
 		w.WriteHeader(http.StatusPartialContent)
 		if !isHead {
-			if _, err := io.CopyN(io.Discard, rc, rr.start); err != nil {
-				log.Printf("%s: error seeking to range start %d: %v", logPrefix, rr.start, err) //nolint:gosec // G706: logPrefix is handler-constructed.
+			if _, err := io.CopyN(io.Discard, rc, rr.Start); err != nil {
+				log.Printf("%s: error seeking to range start %d: %v", logPrefix, rr.Start, err) //nolint:gosec // G706: logPrefix is handler-constructed.
 				return true
 			}
-			if _, err := io.CopyN(w, rc, rr.length); err != nil {
+			if _, err := io.CopyN(w, rc, rr.Length); err != nil {
 				log.Printf("%s: error streaming range to client: %v", logPrefix, err) //nolint:gosec // G706: logPrefix is handler-constructed.
 			}
 		}
@@ -625,7 +625,7 @@ func headObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 	// Leaf 3.1 fix 5: advertise byte-range support on 200/206 HEAD.
 	w.Header().Set("Accept-Ranges", "bytes")
 	rr := parseRangeHeader(r.Header.Get("Range"), actualSize)
-	if rr.outcome != rangeFull {
+	if rr.Outcome != rangeFull {
 		// HEAD never streams the data file — headers only (leaf 3.1 fix 6).
 		if serveObjectRange(w, nil, rr, actualSize, true, fmt.Sprintf("HeadObject %s/%s", bucketName, objectName)) {
 			log.Printf("Served range HEAD for object %s/%s (%s)", strconv.Quote(bucketName), strconv.Quote(objectName), strconv.Quote(r.Header.Get("Range"))) //nolint:gosec // G706: Range is strconv.Quote-escaped.
@@ -676,16 +676,16 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 	params := parseListObjectsParams(r)
 
 	// Leaf 2.4 fix 13: max-keys=0 → empty result, no prefixes, not truncated
-	if params.maxKeys == 0 {
+	if params.MaxKeys == 0 {
 		result := ListBucketResult{
 			IsTruncated: false,
 			Name:        bucketName,
-			Prefix:      params.prefix,
-			Delimiter:   params.delimiter,
+			Prefix:      params.Prefix,
+			Delimiter:   params.Delimiter,
 			MaxKeys:     0,
 			KeyCount:    0,
 		}
-		if params.encodeKeys {
+		if params.EncodeKeys {
 			result.EncodingType = "url"
 		}
 		writeXML(w, http.StatusOK, result)
@@ -698,16 +698,16 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 	// exclusion semantics — leaf 5.1 [a]-3); encoding-type=url and the
 	// NextMarker wire field stay HANDLER-side.
 	backendParams := objectmodel.ListParams{
-		Prefix:            params.prefix,
-		Delimiter:         params.delimiter,
-		ContinuationToken: params.continuationToken,
-		StartAfter:        params.startAfter,
-		MaxKeys:           params.maxKeys,
+		Prefix:            params.Prefix,
+		Delimiter:         params.Delimiter,
+		ContinuationToken: params.ContinuationToken,
+		StartAfter:        params.StartAfter,
+		MaxKeys:           params.MaxKeys,
 	}
-	if params.marker != "" && params.continuationToken == "" && params.startAfter == "" {
+	if params.Marker != "" && params.ContinuationToken == "" && params.StartAfter == "" {
 		// V1 marker: exclusive at-or-below — the backend's StartAfter has
 		// exactly those semantics.
-		backendParams.StartAfter = params.marker
+		backendParams.StartAfter = params.Marker
 	}
 	var page objectmodel.ListPage
 	listErr := backendCallBucketErr(bucketName, func(b backend.Backend) error {
@@ -736,7 +736,7 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 	var lastItem string
 	for _, o := range page.Objects {
 		keyOut := o.Key
-		if params.encodeKeys {
+		if params.EncodeKeys {
 			keyOut = s3URLEncode(keyOut)
 		}
 		objects = append(objects, Object{
@@ -752,7 +752,7 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 	var commonPrefixEntries []CommonPrefix
 	for _, cp := range page.CommonPrefixes {
 		cpOut := cp
-		if params.encodeKeys {
+		if params.EncodeKeys {
 			cpOut = s3URLEncode(cp)
 		}
 		commonPrefixEntries = append(commonPrefixEntries, CommonPrefix{Prefix: cpOut})
@@ -770,24 +770,24 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 		IsTruncated:           truncated,
 		Contents:              objects,
 		Name:                  bucketName,
-		Prefix:                params.prefix,
-		Delimiter:             params.delimiter,
-		MaxKeys:               params.maxKeys,
+		Prefix:                params.Prefix,
+		Delimiter:             params.Delimiter,
+		MaxKeys:               params.MaxKeys,
 		CommonPrefixes:        commonPrefixEntries,
 		KeyCount:              len(objects) + len(commonPrefixEntries),
-		ContinuationToken:     params.continuationToken,
+		ContinuationToken:     params.ContinuationToken,
 		NextContinuationToken: nextToken,
-		StartAfter:            params.startAfter,
-		Marker:                params.marker,
+		StartAfter:            params.StartAfter,
+		Marker:                params.Marker,
 	}
 	// Leaf 5.1 [a]-3/[a]-4: AWS V1 rule — NextMarker is returned only when
 	// the response is truncated AND a delimiter was requested; its value is
 	// the page's last emitted item in MERGED key order (a key that sorts
 	// before a roll-up wins the slot).
-	if truncated && params.delimiter != "" && lastItem != "" {
+	if truncated && params.Delimiter != "" && lastItem != "" {
 		result.NextMarker = lastItem
 	}
-	if params.encodeKeys {
+	if params.EncodeKeys {
 		result.EncodingType = "url"
 	}
 
@@ -797,13 +797,13 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 
 // listObjectsParams holds the parsed ListObjectsV2 query parameters.
 type listObjectsParams struct {
-	prefix            string
-	delimiter         string
-	continuationToken string
-	startAfter        string
-	marker            string // ListObjects V1 marker (leaf 5.1 [a]-3)
-	encodeKeys        bool
-	maxKeys           int
+	Prefix            string
+	Delimiter         string
+	ContinuationToken string
+	StartAfter        string
+	Marker            string // ListObjects V1 marker (leaf 5.1 [a]-3)
+	EncodeKeys        bool
+	MaxKeys           int
 }
 
 // parseListObjectsParams extracts and clamps the ListObjectsV2 query
@@ -811,13 +811,13 @@ type listObjectsParams struct {
 // log line (S3 caps maxKeys at 1000).
 func parseListObjectsParams(r *http.Request) listObjectsParams {
 	p := listObjectsParams{
-		prefix:            r.URL.Query().Get("prefix"),
-		delimiter:         r.URL.Query().Get("delimiter"),
-		continuationToken: r.URL.Query().Get("continuation-token"),
-		startAfter:        r.URL.Query().Get("start-after"),
-		marker:            r.URL.Query().Get("marker"),
-		encodeKeys:        r.URL.Query().Get("encoding-type") == "url",
-		maxKeys:           1000,
+		Prefix:            r.URL.Query().Get("prefix"),
+		Delimiter:         r.URL.Query().Get("delimiter"),
+		ContinuationToken: r.URL.Query().Get("continuation-token"),
+		StartAfter:        r.URL.Query().Get("start-after"),
+		Marker:            r.URL.Query().Get("marker"),
+		EncodeKeys:        r.URL.Query().Get("encoding-type") == "url",
+		MaxKeys:           1000,
 	}
 	maxKeysStr := r.URL.Query().Get("max-keys")
 	if maxKeysStr == "" {
@@ -830,9 +830,9 @@ func parseListObjectsParams(r *http.Request) listObjectsParams {
 	case n < 0:
 		log.Printf("max-keys must be non-negative. Received %d. Using default %d.", n, 1000)
 	case n > 1000:
-		p.maxKeys = 1000 // S3 caps at 1000
+		p.MaxKeys = 1000 // S3 caps at 1000
 	default:
-		p.maxKeys = n
+		p.MaxKeys = n
 	}
 	return p
 }
@@ -896,7 +896,7 @@ func listObjectsFromKeys(allObjectKeys []string, p listObjectsParams, bucketName
 func appendEntries(p *listObjectsParams, allObjectKeys []string, bucketName, metadataDir string, truncated bool, nextToken string, objects []Object, commonPrefixes []string, processedCount *int, seenPrefixes map[string]struct{}, lastEmitted *string) (bool, string, []Object, []string) {
 	i := 0
 	for i < len(allObjectKeys) {
-		need := p.maxKeys - *processedCount
+		need := p.MaxKeys - *processedCount
 		if need <= 0 {
 			break
 		}
@@ -925,7 +925,7 @@ func appendEntries(p *listObjectsParams, allObjectKeys []string, bucketName, met
 		metaIdx := 0
 		lastEmittedItem := ""
 		for _, item := range window.items {
-			if *processedCount >= p.maxKeys {
+			if *processedCount >= p.MaxKeys {
 				// Budget exhausted mid-window. The next page resumes after
 				// the LAST EMITTED item (leaf 5.1 [a]-4): the token is the
 				// raw key/prefix last emitted, so a roll-up group the
@@ -956,7 +956,7 @@ func appendEntries(p *listObjectsParams, allObjectKeys []string, bucketName, met
 				continue
 			}
 			objectKeyOut := e.objectKey
-			if p.encodeKeys {
+			if p.EncodeKeys {
 				objectKeyOut = s3URLEncode(objectKeyOut)
 			}
 			objects = append(objects, Object{
@@ -972,7 +972,7 @@ func appendEntries(p *listObjectsParams, allObjectKeys []string, bucketName, met
 		// Leaf 5.1 [a]-4: the V1 NextMarker is the page's last emitted
 		// item (key or prefix) in merged order.
 		*lastEmitted = lastEmittedItem
-		if *processedCount >= p.maxKeys {
+		if *processedCount >= p.MaxKeys {
 			break
 		}
 	}
@@ -1006,7 +1006,7 @@ type listItem struct {
 // Delimiter roll-ups and keys count toward maxKeys in the order they appear
 // in the sorted key space (AWS merged-order semantics; leaf 5.1 [a]-4).
 func gatherListWindow(allObjectKeys []string, start int, p *listObjectsParams, processedCount *int, seenPrefixes map[string]struct{}, commonPrefixes []string, truncated *bool, nextToken *string) (window listWindow) {
-	need := p.maxKeys - *processedCount
+	need := p.MaxKeys - *processedCount
 	if need <= 0 {
 		window.advanced = start
 		window.commonPrefixes = commonPrefixes
@@ -1028,7 +1028,7 @@ func gatherListWindow(allObjectKeys []string, start int, p *listObjectsParams, p
 		if !keyMatchesPrefixFilter(objectKey, p) {
 			continue
 		}
-		if p.delimiter != "" {
+		if p.Delimiter != "" {
 			if gatherDelimiterKey(&window, objectKey, p, seenPrefixes) {
 				continue
 			}
@@ -1047,16 +1047,16 @@ func gatherListWindow(allObjectKeys []string, start int, p *listObjectsParams, p
 // reports consumed=false meaning the key is a plain page entry.
 func gatherDelimiterKey(window *listWindow, objectKey string, p *listObjectsParams, seenPrefixes map[string]struct{}) (consumed bool) {
 	keyPartAfterRequestPrefix := objectKey
-	if strings.HasPrefix(objectKey, p.prefix) {
-		keyPartAfterRequestPrefix = objectKey[len(p.prefix):]
-	} else if p.prefix != "" {
+	if strings.HasPrefix(objectKey, p.Prefix) {
+		keyPartAfterRequestPrefix = objectKey[len(p.Prefix):]
+	} else if p.Prefix != "" {
 		return true // outside the request prefix: excluded
 	}
-	idx := strings.Index(keyPartAfterRequestPrefix, p.delimiter)
+	idx := strings.Index(keyPartAfterRequestPrefix, p.Delimiter)
 	if idx == -1 {
 		return false // no delimiter after the prefix: plain key
 	}
-	commonPrefixValue := p.prefix + keyPartAfterRequestPrefix[:idx+len(p.delimiter)]
+	commonPrefixValue := p.Prefix + keyPartAfterRequestPrefix[:idx+len(p.Delimiter)]
 	if _, exists := seenPrefixes[commonPrefixValue]; exists {
 		return true // duplicate roll-up: free (dedupe before counting)
 	}
@@ -1079,8 +1079,8 @@ func gatherDelimiterKey(window *listWindow, objectKey string, p *listObjectsPara
 // continuation token lies INSIDE the prefix group, meaning the page that
 // issued the token already emitted the group.
 func groupConsumedByCursor(commonPrefixValue string, p *listObjectsParams) bool {
-	if p.continuationToken != "" {
-		return strings.HasPrefix(p.continuationToken, commonPrefixValue)
+	if p.ContinuationToken != "" {
+		return strings.HasPrefix(p.ContinuationToken, commonPrefixValue)
 	}
 	return keyExcludedByCursor(commonPrefixValue, p)
 }
@@ -1096,15 +1096,15 @@ func noteBudgetExhausted(allObjectKeys []string, i int, p *listObjectsParams, se
 		if keyExcludedByCursor(later, p) || !keyMatchesPrefixFilter(later, p) {
 			continue
 		}
-		if p.delimiter != "" {
+		if p.Delimiter != "" {
 			// The key folds into a roll-up; it yields a NEW item only if
 			// that roll-up is unseen and unconsumed.
 			after := later
-			if strings.HasPrefix(later, p.prefix) {
-				after = later[len(p.prefix):]
+			if strings.HasPrefix(later, p.Prefix) {
+				after = later[len(p.Prefix):]
 			}
-			if idx := strings.Index(after, p.delimiter); idx != -1 {
-				pv := p.prefix + after[:idx+len(p.delimiter)]
+			if idx := strings.Index(after, p.Delimiter); idx != -1 {
+				pv := p.Prefix + after[:idx+len(p.Delimiter)]
 				if _, seen := seenPrefixes[pv]; seen {
 					continue
 				}
@@ -1140,21 +1140,21 @@ func noteBudgetExhausted(allObjectKeys []string, i int, p *listObjectsParams, se
 //     at or below it (<=). AWS V1: "Specifies the key to start with";
 //     the marker itself is never listed.
 func keyExcludedByCursor(objectKey string, p *listObjectsParams) bool {
-	if p.continuationToken != "" {
-		return objectKey < p.continuationToken
+	if p.ContinuationToken != "" {
+		return objectKey < p.ContinuationToken
 	}
-	if p.startAfter != "" {
-		return objectKey <= p.startAfter
+	if p.StartAfter != "" {
+		return objectKey <= p.StartAfter
 	}
-	if p.marker != "" {
-		return objectKey <= p.marker
+	if p.Marker != "" {
+		return objectKey <= p.Marker
 	}
 	return false
 }
 
 // keyMatchesPrefixFilter reports whether objectKey passes the prefix filter.
 func keyMatchesPrefixFilter(objectKey string, p *listObjectsParams) bool {
-	return p.prefix == "" || strings.HasPrefix(objectKey, p.prefix)
+	return p.Prefix == "" || strings.HasPrefix(objectKey, p.Prefix)
 }
 
 // parseInt converts a string to an integer, rejecting partial parses like "5a"

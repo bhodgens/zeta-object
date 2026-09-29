@@ -1,4 +1,4 @@
-package main
+package s3
 
 // Batched meta reads for ListObjectsV2 (design Option A,
 // docs/design/cached-meta-listing.md): bounded-worker concurrent reads of the

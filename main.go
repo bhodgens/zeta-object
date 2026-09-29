@@ -8,10 +8,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
+
+	// Blank imports register the built-in storage backends with the
+	// internal/backend registry (each package's init() calls
+	// backend.Register). Without them the production binary's registry is
+	// empty and every bucket lookup fails with unknown backend type "fs".
+	_ "mini-s3/internal/backend/fsbackend"
+	s3 "mini-s3/internal/frontend/s3"
 )
 
 // main.go — server entrypoint and root request router
@@ -82,11 +87,27 @@ func main() {
 	InitInactivityTracker()
 	initializeInactivityTimers()
 
-	// Leaf 3.3: hourly lazy expiry of abandoned multipart uploads (>7d old)
+	// Leaf 3.3: hourly lazy expiry of abandoned multipart uploads (>7d old).
+	// The sweep logic moved with the multipart staging into the s3
+	// frontend; package main keeps the hourly ticker and calls the
+	// frontend's exported sweep entry.
 	startMultipartExpirySweeper()
 
+	// Build and install the config-driven bucket→Backend table BEFORE the
+	// listener opens; an unknown backend type name aborts startup loudly
+	// (no silent fs fallback — leaf 03).
+	if err := initBackendLookup(); err != nil {
+		log.Fatalf("Backend initialization failed: %v", err)
+	}
+
+	// Leaf 02 frontend extraction: build the s3 frontend, install the
+	// process seams it consumes, and mount its Handler where rootHandler
+	// used to be registered. Leaf 03 replaces this direct mount with the
+	// frontend registry.
+	installS3Seams()
+	s3Frontend := s3.New(nil)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", rootHandler)
+	mux.Handle("/", s3Frontend.Handler())
 	srv := newServer(serverConfig.ListenAddr, mux, serverConfig.CertFile, serverConfig.KeyFile)
 
 	// Graceful shutdown: SIGINT/SIGTERM stop accepting new connections and
@@ -116,147 +137,5 @@ func main() {
 		} else {
 			log.Println("Server shut down cleanly")
 		}
-	}
-}
-
-func rootHandler(w http.ResponseWriter, r *http.Request) {
-	// Basic path parsing to differentiate between service-level and bucket-level requests
-	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	bucketName := ""
-	objectName := ""
-
-	if len(pathParts) >= 1 && pathParts[0] != "" {
-		bucketName = pathParts[0]
-	}
-	if len(pathParts) >= 2 {
-		objectName = strings.Join(pathParts[1:], "/")
-	}
-
-	log.Printf("Request: %s %s, Bucket: '%s', Object: '%s'", strconv.Quote(r.Method), strconv.Quote(r.URL.Path), strconv.Quote(bucketName), strconv.Quote(objectName))
-
-	// Authenticate request: presigned query auth when X-Amz-* params present
-	// and no Authorization header; header auth wins otherwise (leaf 3.2).
-	if isPresignedRequest(r) {
-		if !authenticatePresigned(w, r) {
-			// authenticatePresigned writes the error response on failure.
-			return
-		}
-	} else if !authenticateRequest(w, r) {
-		// authenticateRequest will write the error response if authentication fails
-		return
-	}
-
-	// ACL specific handling (stubbed)
-	if _, aclPresent := r.URL.Query()["acl"]; aclPresent {
-		handleACL(w, r, bucketName, objectName)
-		return
-	}
-
-	switch {
-	case bucketName == "":
-		serviceLevelDispatch(w, r)
-	case objectName == "":
-		bucketLevelDispatch(w, r, bucketName)
-	default:
-		objectLevelDispatch(w, r, bucketName, objectName)
-	}
-}
-
-// serviceLevelDispatch routes service-level (no bucket) requests.
-func serviceLevelDispatch(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case "GET":
-		listBucketsHandler(w, r)
-	default:
-		http.Error(w, "Method Not Allowed at service level", http.StatusMethodNotAllowed)
-	}
-}
-
-// bucketLevelDispatch routes bucket-level requests (bucket set, no object),
-// including the ?location and ?list-type=2 sub-resources.
-func bucketLevelDispatch(w http.ResponseWriter, r *http.Request, bucketName string) {
-	// Check if location parameter is present for GetBucketLocation
-	if _, ok := r.URL.Query()["location"]; ok && r.Method == "GET" {
-		getBucketLocationHandler(w, r, bucketName)
-		return
-	}
-	// Check if list-type=2 parameter is present for ListObjectsV2
-	if val, ok := r.URL.Query()["list-type"]; ok && val[0] == "2" && r.Method == "GET" {
-		listObjectsV2Handler(w, r, bucketName)
-		return
-	}
-	// Leaf 3.3: ListMultipartUploads sub-resource
-	if _, ok := r.URL.Query()["uploads"]; ok && r.Method == "GET" {
-		listMultipartUploadsHandler(w, r, bucketName)
-		return
-	}
-	// Leaf 5.1 [a]-2: ListObjectVersions sub-resource (GET /bucket?versions).
-	// Unversioned wire shape: every object = one version with the null ID.
-	if _, ok := r.URL.Query()["versions"]; ok && r.Method == "GET" {
-		listObjectVersionsHandler(w, r, bucketName)
-		return
-	}
-	// Leaf 3.5: DeleteObjects sub-resource (POST /bucket?delete)
-	if _, ok := r.URL.Query()["delete"]; ok && r.Method == "POST" {
-		deleteObjectsHandler(w, r, bucketName)
-		return
-	}
-
-	switch r.Method {
-	case "PUT":
-		createBucketHandler(w, r, bucketName)
-	case "GET": // This would be ListObjectsV1 or GetBucketACL etc.
-		// For now, assume ListObjectsV2 is the primary way to list.
-		// If no specific query params for listing, could be GetBucketACL or other bucket specific GETs.
-		// We'll default to a simple "Not Implemented" or treat as ListObjectsV2 if query params match.
-		listObjectsV2Handler(w, r, bucketName) // Or a more specific handler based on query params
-	case "DELETE":
-		deleteBucketHandler(w, r, bucketName)
-	case "HEAD":
-		headBucketHandler(w, r, bucketName)
-	default:
-		http.Error(w, "Method Not Allowed for bucket", http.StatusMethodNotAllowed)
-	}
-}
-
-// objectLevelDispatch routes object-level requests, including the multipart
-// sub-resources (?uploads, ?partNumber, ?uploadId).
-func objectLevelDispatch(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
-	// Check for multipart upload query parameters
-	if _, ok := r.URL.Query()["uploads"]; ok && r.Method == "POST" {
-		initiateMultipartUploadHandler(w, r, bucketName, objectName)
-		return
-	}
-	if partNumber, ok := r.URL.Query()["partNumber"]; ok && r.Method == "PUT" {
-		if uploadID, ok := r.URL.Query()["uploadId"]; ok {
-			uploadPartHandler(w, r, bucketName, objectName, partNumber[0], uploadID[0])
-			return
-		}
-	}
-	if uploadID, ok := r.URL.Query()["uploadId"]; ok && r.Method == "POST" {
-		completeMultipartUploadHandler(w, r, bucketName, objectName, uploadID[0])
-		return
-	}
-	if uploadID, ok := r.URL.Query()["uploadId"]; ok && r.Method == "DELETE" {
-		abortMultipartUploadHandler(w, r, bucketName, objectName, uploadID[0])
-		return
-	}
-	// Leaf 3.3: ListParts sub-resource
-	if uploadID, ok := r.URL.Query()["uploadId"]; ok && r.Method == "GET" {
-		listPartsHandler(w, r, bucketName, objectName, uploadID[0])
-		return
-	}
-
-	switch r.Method {
-	case "PUT":
-		putObjectHandler(w, r, bucketName, objectName)
-	case "GET":
-		getObjectHandler(w, r, bucketName, objectName)
-	case "DELETE":
-		deleteObjectHandler(w, r, bucketName, objectName)
-	case "HEAD":
-		headObjectHandler(w, r, bucketName, objectName)
-	default:
-		http.Error(w, "Method Not Allowed for object", http.StatusMethodNotAllowed)
 	}
 }

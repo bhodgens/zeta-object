@@ -501,7 +501,7 @@ func TestRouting_PresignedVsHeaderAuth(t *testing.T) {
 		// (preserved) query params would yield a DIFFERENT error code.
 		q := req.URL.Query()
 		for _, p := range requiredPresignedParams {
-			q.Del(p.name)
+			q.Del(p.Name)
 		}
 		req.URL.RawQuery = q.Encode()
 		req.Header.Set("x-amz-date", time.Now().UTC().Format(iso8601Format))

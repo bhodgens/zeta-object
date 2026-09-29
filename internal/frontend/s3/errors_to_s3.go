@@ -3,7 +3,7 @@
 // backend/objectmodel error here and get (code, message, httpStatus) for
 // writeS3Error. *os.PathError must never reach this point unwrapped: the
 // seam contract (internal/backend) guarantees objectmodel.Error identity.
-package main
+package s3
 
 import (
 	"errors"

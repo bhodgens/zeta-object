@@ -1,4 +1,4 @@
-package main
+package s3
 
 import (
 	"bufio"
@@ -18,7 +18,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // sigv4.go — AWS Signature Version 4 request authentication
@@ -45,6 +44,13 @@ var streamingPayloadAllowlist = map[string]bool{
 const (
 	streamingSignedPayload = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
 	chunkSigAlgorithm      = "AWS4-HMAC-SHA256-PAYLOAD"
+)
+
+// Exported chunk-streaming constants.
+const (
+	StreamingSignedPayload = streamingSignedPayload
+	ChunkSigAlgorithm      = chunkSigAlgorithm
+	EmptyPayloadSHA256     = emptyPayloadSHA256
 )
 
 // decodedStreamingContextKey is the request-context key marking a body that
@@ -435,180 +441,6 @@ func isLowercaseHex64(s string) bool {
 	return s == strings.ToLower(s)
 }
 
-func authenticateRequest(w http.ResponseWriter, r *http.Request) bool {
-	authHeader := r.Header.Get("Authorization")
-	xAmzDate := r.Header.Get("x-amz-date")
-	dateHeader := r.Header.Get("Date") // Fallback if x-amz-date is not present
-
-	var requestTimestamp time.Time
-	var err error
-
-	if xAmzDate != "" {
-		requestTimestamp, err = time.Parse(iso8601Format, xAmzDate)
-	} else if dateHeader != "" {
-		requestTimestamp, err = time.Parse(http.TimeFormat, dateHeader)
-	} else {
-		log.Println("Authentication Error: Missing x-amz-date or Date header.")
-		writeS3Error(w, "AccessDenied", "AWS authentication requires a valid Date or x-amz-date header", http.StatusForbidden)
-		return false
-	}
-	if err != nil {
-		log.Printf("Authentication Error: Invalid date format. x-amz-date: '%s', Date: '%s'. Error: %v", strconv.Quote(xAmzDate), strconv.Quote(dateHeader), err)
-		writeS3Error(w, "InvalidDate", "The date provided is invalid.", http.StatusBadRequest)
-		return false
-	}
-
-	if time.Since(requestTimestamp).Abs() > 15*time.Minute {
-		log.Printf("Authentication Error: Request timestamp %s is too skewed from server time %s.", strconv.Quote(requestTimestamp.Format(iso8601Format)), time.Now().UTC().Format(iso8601Format))
-		writeS3Error(w, "RequestTimeTooSkewed", "The difference between the request time and the current time is too large.", http.StatusForbidden)
-		return false
-	}
-
-	if authHeader == "" {
-		log.Println("Authentication Error: Missing Authorization header.")
-		writeS3Error(w, "AuthorizationHeaderMissing", "The authorization header is missing.", http.StatusForbidden)
-		return false
-	}
-
-	matches := authHeaderRegexTolerant.FindStringSubmatch(authHeader)
-	if len(matches) != 6 {
-		log.Printf("Authentication Error: Invalid Authorization header format: %s", strconv.Quote(authHeader))
-		writeS3Error(w, "AuthorizationHeaderMalformed", "The authorization header is malformed; it does not match the expected format.", http.StatusBadRequest)
-		return false
-	}
-
-	accessKeyID := matches[1]
-	dateStampFromCred := matches[2]
-	regionFromCred := matches[3]
-	signedHeadersFromAuth := strings.Split(matches[4], ";")
-	clientSignature := matches[5]
-
-	if accessKeyID != serverCredentials.AccessKeyID {
-		log.Printf("Authentication Error: Unknown AccessKeyID: %s", strconv.Quote(accessKeyID))
-		writeS3Error(w, "InvalidAccessKeyId", "The AWS Access Key Id you provided does not exist in our records.", http.StatusForbidden)
-		return false
-	}
-
-	// Fix 1 precondition: client signature must be 64 lowercase hex chars.
-	if !isLowercaseHex64(clientSignature) {
-		log.Printf("Authentication Error: Client signature is not 64 lowercase hex chars.")
-		writeS3Error(w, "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.", http.StatusForbidden)
-		return false
-	}
-
-	// Fix 8: scope-date mismatch is an InvalidRequest/400, not a signature failure.
-	requestDateStamp := requestTimestamp.UTC().Format(shortDateFormat)
-	if dateStampFromCred != requestDateStamp {
-		log.Printf("Authentication Error: Date mismatch. Credential scope date: %s, Request date: %s", strconv.Quote(dateStampFromCred), strconv.Quote(requestDateStamp))
-		writeS3Error(w, "InvalidRequest", "Date in credential scope does not match request date", http.StatusBadRequest)
-		return false
-	}
-
-	// Fix 7: region mismatch is AuthorizationHeaderMalformed/400 (AWS behavior).
-	if regionFromCred != defaultRegion {
-		log.Printf("Authentication Error: Invalid region. Expected %s, got %s", defaultRegion, strconv.Quote(regionFromCred))
-		writeS3Error(w, "AuthorizationHeaderMalformed", "Region in credential scope ('"+regionFromCred+"') is incorrect; expected '"+defaultRegion+"'.", http.StatusBadRequest)
-		return false
-	}
-
-	// Step 1: Create a Canonical Request
-	payloadHash, _, err := getPayloadHash(r)
-	if err != nil {
-		log.Printf("Authentication Error: Failed to get/verify payload hash: %v", err)
-		writeS3Error(w, "SignatureDoesNotMatch", "Payload hash mismatch or error reading body.", http.StatusForbidden)
-		return false
-	}
-
-	canonicalURI := getCanonicalURI(r)
-	canonicalQueryString := getCanonicalQueryString(r)
-	canonicalHeaders, signedHeadersString := getCanonicalHeaders(r, signedHeadersFromAuth)
-
-	// Fix 4: a SignedHeaders mismatch is now a hard reject. A client that
-	// claims to sign headers it did not send (or vice versa) cannot have
-	// produced a valid canonical request.
-	if signedHeadersString != matches[4] {
-		log.Printf("Authentication Error: SignedHeaders mismatch. Client sent: '%s', Server calculated: '%s'", strconv.Quote(matches[4]), signedHeadersString)
-		writeS3Error(w, "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.", http.StatusForbidden)
-		return false
-	}
-
-	canonicalRequest := strings.Join([]string{
-		r.Method,
-		canonicalURI,
-		canonicalQueryString,
-		canonicalHeaders, // Already ends with a newline
-		signedHeadersString,
-		payloadHash,
-	}, "\n")
-
-	// Step 2: Create the String to Sign
-	credentialScope := fmt.Sprintf("%s/%s/%s/aws4_request", dateStampFromCred, regionFromCred, serviceName)
-	hashedCanonicalRequest := hashSHA256([]byte(canonicalRequest))
-
-	stringToSign := strings.Join([]string{
-		awsAlgorithm,
-		requestTimestamp.UTC().Format(iso8601Format),
-		credentialScope,
-		hashedCanonicalRequest,
-	}, "\n")
-
-	// Step 3: Calculate the Signing Key
-	signingKey := getSigningKey(serverCredentials.SecretAccessKey, dateStampFromCred, regionFromCred, serviceName)
-
-	// Step 4: Calculate the Signature
-	serverSignature := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
-
-	// Step 5: Compare the Signatures — timing-safe (fix 1)
-	if !hmac.Equal([]byte(serverSignature), []byte(clientSignature)) {
-		// Fix 9: verbose diagnostics only when MINIS3_DEBUG_AUTH=1; one line always.
-		if debugAuthEnabled() {
-			log.Printf("Authentication Error: Signature mismatch.\nServer Signature: %s\nClient Signature: %s\nString To Sign:\n%s\nCanonical Request:\n%s",
-				strconv.Quote(serverSignature), strconv.Quote(clientSignature), strconv.Quote(stringToSign), strconv.Quote(canonicalRequest))
-		} else {
-			log.Println("Authentication Error: Signature mismatch.")
-		}
-		writeS3Error(w, "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.", http.StatusForbidden)
-		return false
-	}
-
-	// Leaf 3.4: for signed chunked streaming the header signature is the seed
-	// of the chunk-signature chain — verify every chunk now, while the seed,
-	// signing key, timestamp and scope are in scope. On success the request
-	// body is replaced with the decoded bytes and the context is flagged so
-	// handlers skip their own aws-chunked decode pass.
-	if payloadHash == streamingSignedPayload {
-		bodyBytes, readErr := io.ReadAll(r.Body)
-		if readErr != nil {
-			log.Printf("Authentication Error: failed to read streaming body: %v", readErr)
-			writeS3Error(w, "InvalidArgument", "Error reading request body.", http.StatusBadRequest)
-			return false
-		}
-		decoded, verifyErr := decodeAndVerifyChunked(bodyBytes, serverSignature, signingKey,
-			requestTimestamp.UTC().Format(iso8601Format), credentialScope)
-		if verifyErr != nil {
-			log.Printf("Authentication Error: chunk signature verification failed: %v", verifyErr)
-			writeS3Error(w, "SignatureDoesNotMatch", "Chunk signature verification failed.", http.StatusForbidden)
-			return false
-		}
-		// Leaf 2.2 helper: decoded size must match x-amz-decoded-content-length.
-		if lenErr := VerifyDecodedLength(r.Header.Get("x-amz-decoded-content-length"), len(decoded)); lenErr != nil {
-			log.Printf("Authentication Error: %v", lenErr)
-			writeS3Error(w, "InvalidArgument", "Decoded content length mismatch.", http.StatusBadRequest)
-			return false
-		}
-		r.Body = io.NopCloser(bytes.NewBuffer(decoded))
-		// authenticateRequest receives *http.Request by value; write the
-		// context-flagged request back in place so rootHandler's copy (and
-		// therefore the object/multipart handlers) sees the flag too — same
-		// in-place pattern as the r.Body replacement above.
-		newReq := r.WithContext(withDecodedStreaming(r.Context()))
-		*r = *newReq
-	}
-
-	log.Println("Authentication Successful: SigV4 signature verified.")
-	return true
-}
-
 // isPresignedRequest reports whether the request carries SigV4 query-auth
 // params (X-Amz-Algorithm=AWS4-HMAC-SHA256 + X-Amz-Signature) and no
 // Authorization header. When Authorization is present, header auth wins
@@ -623,153 +455,14 @@ func isPresignedRequest(r *http.Request) bool {
 
 // requiredPresignedParam describes one mandatory X-Amz-* query param.
 type requiredPresignedParam struct {
-	name string
+	Name string
 }
 
 var requiredPresignedParams = []requiredPresignedParam{
-	{name: "X-Amz-Algorithm"},
-	{name: "X-Amz-Credential"},
-	{name: "X-Amz-Date"},
-	{name: "X-Amz-Expires"},
-	{name: "X-Amz-SignedHeaders"},
-	{name: "X-Amz-Signature"},
-}
-
-// authenticatePresigned validates a SigV4 presigned (query-string) request
-// and writes the S3 error response itself on failure. AWS error conventions:
-// AuthorizationQueryParametersError/400 for malformed params,
-// InvalidAccessKeyId/403 for unknown access keys, AccessDenied/403 for
-// expired URLs, SignatureDoesNotMatch/403 for signature failures.
-func authenticatePresigned(w http.ResponseWriter, r *http.Request) bool {
-	q := r.URL.Query()
-
-	// Presence check for every required param (missing → 400).
-	for _, p := range requiredPresignedParams {
-		if q.Get(p.name) == "" {
-			log.Printf("Presigned Auth Error: missing %s query parameter", p.name)
-			writeS3Error(w, "AuthorizationQueryParametersError",
-				"Query-string authentication version 4 requires the X-Amz-Algorithm, X-Amz-Credential, X-Amz-Signature, X-Amz-Date, X-Amz-SignedHeaders, and X-Amz-Expires parameters.",
-				http.StatusBadRequest)
-			return false
-		}
-	}
-
-	credential := q.Get("X-Amz-Credential")
-	scopeParts := strings.Split(credential, "/")
-	if len(scopeParts) != 5 || scopeParts[4] != "aws4_request" || scopeParts[3] != serviceName {
-		log.Printf("Presigned Auth Error: malformed X-Amz-Credential %q", strconv.Quote(credential)) //nolint:gosec // G706: strconv.Quote sanitizes
-		writeS3Error(w, "AuthorizationQueryParametersError",
-			"Error parsing the X-Amz-Credential parameter; the Credential is mal-formed; expecting \"<YOUR-AKID>/YYYYMMDD/REGION/SERVICE/aws4_request\".",
-			http.StatusBadRequest)
-		return false
-	}
-	accessKeyID, dateStampFromCred, regionFromCred := scopeParts[0], scopeParts[1], scopeParts[2]
-
-	if accessKeyID != serverCredentials.AccessKeyID {
-		log.Printf("Presigned Auth Error: unknown AccessKeyID %q", strconv.Quote(accessKeyID)) //nolint:gosec // G706: strconv.Quote sanitizes
-		writeS3Error(w, "InvalidAccessKeyId",
-			"The AWS Access Key Id you provided does not exist in our records.", http.StatusForbidden)
-		return false
-	}
-
-	if regionFromCred != defaultRegion {
-		log.Printf("Presigned Auth Error: region %q incorrect; expected %q", strconv.Quote(regionFromCred), defaultRegion) //nolint:gosec // G706: strconv.Quote sanitizes
-		writeS3Error(w, "AuthorizationQueryParametersError",
-			"Error parsing the X-Amz-Credential parameter; the region is incorrect; expected '"+defaultRegion+"'.",
-			http.StatusBadRequest)
-		return false
-	}
-
-	clientSignature := q.Get("X-Amz-Signature")
-	if !isLowercaseHex64(clientSignature) {
-		log.Printf("Presigned Auth Error: X-Amz-Signature is not 64 lowercase hex chars")
-		writeS3Error(w, "SignatureDoesNotMatch",
-			"The request signature we calculated does not match the signature you provided.", http.StatusForbidden)
-		return false
-	}
-
-	// X-Amz-Date must parse; presigned requests skip the 15-min skew check —
-	// X-Amz-Expires governs validity (AWS behavior).
-	amzDate, err := time.Parse(iso8601Format, q.Get("X-Amz-Date"))
-	if err != nil {
-		log.Printf("Presigned Auth Error: unparseable X-Amz-Date %q", strconv.Quote(q.Get("X-Amz-Date"))) //nolint:gosec // G706: strconv.Quote sanitizes
-		writeS3Error(w, "AuthorizationQueryParametersError",
-			"X-Amz-Date must be in the ISO8601 Long Format \"yyyyMMdd'T'HHmmss'Z'\".", http.StatusBadRequest)
-		return false
-	}
-
-	// Scope date must equal the X-Amz-Date date part.
-	requestDateStamp := amzDate.UTC().Format(shortDateFormat)
-	if dateStampFromCred != requestDateStamp {
-		log.Printf("Presigned Auth Error: credential scope date %s != X-Amz-Date date %s", strconv.Quote(dateStampFromCred), requestDateStamp) //nolint:gosec // G706: strconv.Quote sanitizes
-		writeS3Error(w, "AuthorizationQueryParametersError",
-			"Invalid credential date in X-Amz-Credential. This date must be the same as the X-Amz-Date parameter.",
-			http.StatusBadRequest)
-		return false
-	}
-
-	// X-Amz-Expires: integer seconds, 1..604800 (AWS limits).
-	expires, err := strconv.Atoi(q.Get("X-Amz-Expires"))
-	if err != nil || expires < 1 || expires > 604800 {
-		log.Printf("Presigned Auth Error: invalid X-Amz-Expires %q", strconv.Quote(q.Get("X-Amz-Expires"))) //nolint:gosec // G706: strconv.Quote sanitizes
-		writeS3Error(w, "AuthorizationQueryParametersError",
-			"X-Amz-Expires must be a number between 1 and 604800 seconds.", http.StatusBadRequest)
-		return false
-	}
-
-	// Expiry window: [X-Amz-Date, X-Amz-Date + Expires]. Expired → AccessDenied.
-	expiresAt := amzDate.Add(time.Duration(expires) * time.Second)
-	if time.Now().After(expiresAt) {
-		log.Printf("Presigned Auth Error: URL expired at %s", expiresAt.UTC().Format(iso8601Format)) //nolint:gosec // G706: time.Format output, no tainted input
-		writeS3Error(w, "AccessDenied", "Request has expired", http.StatusForbidden)
-		return false
-	}
-
-	signedHeaderNames := strings.Split(q.Get("X-Amz-SignedHeaders"), ";")
-
-	canonicalHeaders, signedHeadersString := getCanonicalHeaders(r, signedHeaderNames)
-	if signedHeadersString != q.Get("X-Amz-SignedHeaders") {
-		log.Printf("Presigned Auth Error: SignedHeaders mismatch. Client sent: %q, server calculated: %q",
-			strconv.Quote(q.Get("X-Amz-SignedHeaders")), strconv.Quote(signedHeadersString)) //nolint:gosec // G706: strconv.Quote sanitizes
-		writeS3Error(w, "SignatureDoesNotMatch",
-			"The request signature we calculated does not match the signature you provided.", http.StatusForbidden)
-		return false
-	}
-
-	canonicalRequest := strings.Join([]string{
-		r.Method,
-		getCanonicalURI(r),
-		// All query params EXCEPT X-Amz-Signature.
-		getCanonicalQueryStringExcluding(r, "X-Amz-Signature"),
-		canonicalHeaders,
-		signedHeadersString,
-		// Presigned URLs never sign the body (UNSIGNED-PAYLOAD).
-		unsignedPayload,
-	}, "\n")
-
-	credentialScope := fmt.Sprintf("%s/%s/%s/aws4_request", dateStampFromCred, regionFromCred, serviceName)
-	stringToSign := strings.Join([]string{
-		awsAlgorithm,
-		amzDate.UTC().Format(iso8601Format),
-		credentialScope,
-		hashSHA256([]byte(canonicalRequest)),
-	}, "\n")
-
-	signingKey := getSigningKey(serverCredentials.SecretAccessKey, dateStampFromCred, regionFromCred, serviceName)
-	serverSignature := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
-
-	if !hmac.Equal([]byte(serverSignature), []byte(clientSignature)) {
-		if debugAuthEnabled() {
-			log.Printf("Presigned Auth Error: signature mismatch.\nServer Signature: %s\nClient Signature: %s\nString To Sign:\n%s\nCanonical Request:\n%s",
-				strconv.Quote(serverSignature), strconv.Quote(clientSignature), strconv.Quote(stringToSign), strconv.Quote(canonicalRequest))
-		} else {
-			log.Println("Presigned Auth Error: Signature mismatch.")
-		}
-		writeS3Error(w, "SignatureDoesNotMatch",
-			"The request signature we calculated does not match the signature you provided.", http.StatusForbidden)
-		return false
-	}
-
-	log.Println("Authentication Successful: SigV4 presigned URL verified.")
-	return true
+	{Name: "X-Amz-Algorithm"},
+	{Name: "X-Amz-Credential"},
+	{Name: "X-Amz-Date"},
+	{Name: "X-Amz-Expires"},
+	{Name: "X-Amz-SignedHeaders"},
+	{Name: "X-Amz-Signature"},
 }
