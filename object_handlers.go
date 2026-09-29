@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/md5" //nolint:gosec // G501: MD5 is the S3 ETag algorithm — protocol requirement, not crypto.
 	"encoding/hex"
 	"encoding/json"
@@ -17,9 +19,25 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"mini-s3/internal/backend"
+	"mini-s3/internal/objectmodel"
 )
 
 // object_handlers.go — S3 object-level operation handlers
+
+// backendCall resolves bucket's Backend via the backendFor seam and runs
+// fn. A nil Backend (construction failure) collapses to InternalError.
+func backendCall(bucket string, fn func(b backend.Backend) (objectmodel.Object, error)) (objectmodel.Object, error) {
+	b, err := backendFor(bucket)
+	if err != nil || b == nil {
+		if err == nil {
+			err = objectmodel.ErrInternalError("backend unavailable")
+		}
+		return objectmodel.Object{}, err
+	}
+	return fn(b)
+}
 
 func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
 	// Leaf 3.5: x-amz-copy-source header → CopyObject (server-side copy).
@@ -28,17 +46,8 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 		return
 	}
 
-	bucketPath := getBucketPath(bucketName)
-	// Object data is stored directly in the bucket directory, OR in the shadow
-	// data dir when the flat path is unusable (another key occupies a path
-	// component — leaf 5.1 [a]-1 key/directory collision fix). The chosen path
-	// is recorded in metadata StoragePath either way.
-	objectDataPath := objectDataPathFor(bucketPath, objectName)
-	// Metadata is stored in .metadata subdirectory
-	objectMetadataDir := filepath.Join(bucketPath, ".metadata")
-	objectMetadataPath := filepath.Join(objectMetadataDir, objectName+".meta")
-
-	// Validate object key (leaf 2.4 fix 2: traversal rejection)
+	// Validate object key (leaf 2.4 fix 2: traversal rejection) — first
+	// line of defense handler-side; fsbackend re-validates defensively.
 	if err := validateObjectKey(objectName); err != nil {
 		log.Printf("Invalid object key %s: %v", strconv.Quote(objectName), err)
 		writeS3Error(w, "InvalidArgument", err.Error(), http.StatusBadRequest)
@@ -46,7 +55,7 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	}
 
 	// Ensure bucket exists
-	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
+	if !bucketExists(bucketName) {
 		log.Printf("Bucket %s does not exist for PutObject", strconv.Quote(bucketName))
 		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return
@@ -82,92 +91,67 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 		log.Printf("Decoded aws-chunked body: %d bytes", len(body))
 	}
 
-	// Calculate ETag (MD5 hash of the content). MD5 is the S3 ETag algorithm —
-	// required for S3 protocol compatibility, not a security primitive (G401).
-	hash := md5.Sum(body) //nolint:gosec // G401: S3 ETags are defined as MD5; protocol requirement, not crypto.
-	eTag := hex.EncodeToString(hash[:])
-
-	// Leaf 2.4 fix 1: serialize writers per object and write data + metadata
-	// atomically via the storage.go helpers (no torn reads/partial files).
-	objectDataParentDir := filepath.Dir(objectDataPath)
-	unlock := lockObject(objectDataPath)
-	defer unlock()
-	// Leaf-4.8 stress fix: also hold the parent-DIR lock so a concurrent
-	// deleteObjectCore's cleanupEmptyDirs prune cannot remove the directory
-	// between this PUT's MkdirAll and writeFileAtomic (that race surfaced as
-	// spurious PUT 500s in the stress suite).
-	unlockDataDir := lockObject(objectDataParentDir)
-	defer unlockDataDir()
-
-	// Create parent directories for the object data if they don't exist.
-	// objectDataPath embeds objectName, validated by validateObjectKey (no
-	// ".." segments) — cannot escape the bucket; G703 false positive.
-	if err := os.MkdirAll(objectDataParentDir, 0755); err != nil { //nolint:gosec // G703: objectName validated by validateObjectKey; no traversal possible.
-		log.Printf("Error creating parent directories for object data %s: %v", strconv.Quote(objectDataPath), err)
-		writeS3Error(w, "InternalError", "Error creating object storage.", http.StatusInternalServerError)
+	// Data-plane flip (leaf 02): the write path goes through the Backend.
+	// The backend performs the shadow-layout choice, per-key + parent-dir
+	// locking, atomic data+sidecar writes, and the RESIDUAL WINDOW
+	// preservation (metadata failure leaves the data file in place).
+	// Custom metadata is passed in the RAW x-amz-meta-* form (original
+	// header casing): fsbackend's prefixedMetadata passes prefixed keys
+	// through verbatim, reproducing the pre-seam sidecar bytes exactly.
+	// (Values are the pre-joined header values; ParseMetadataHeaders'
+	// surplus-join is not needed because rawMetaHeaders already joined.)
+	metaNames, metaValues := rawMetaHeaders(r)
+	rawMeta := make(map[string]string, len(metaNames))
+	for i, name := range metaNames {
+		rawMeta[name] = metaValues[i]
+	}
+	opts := objectmodel.PutOptions{
+		ContentType: r.Header.Get("Content-Type"),
+		Metadata:    rawMeta,
+	}
+	obj, putErr := backendCall(bucketName, func(b backend.Backend) (objectmodel.Object, error) {
+		return b.Put(r.Context(), bucketName, objectName, bytes.NewReader(body), int64(len(body)), opts)
+	})
+	if putErr != nil {
+		log.Printf("Error putting object %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), putErr)
+		writeS3ErrorFrom(w, putErr)
 		return
 	}
-
-	// Write the object data atomically
-	if err := writeFileAtomic(objectDataPath, body, 0644); err != nil { //nolint:gosec // G703: objectName validated by validateObjectKey; no traversal possible.
-		log.Printf("Error writing object data to %s: %v", strconv.Quote(objectDataPath), err)
-		writeS3Error(w, "InternalError", "Error writing object data.", http.StatusInternalServerError)
-		return
-	}
-
-	// Create parent directories for the metadata file if they don't exist
-	metadataParentDir := filepath.Dir(objectMetadataPath)
-	if err := os.MkdirAll(metadataParentDir, 0755); err != nil { //nolint:gosec // G703: objectName validated by validateObjectKey; no traversal possible.
-		log.Printf("Error creating metadata storage for %s: %v", strconv.Quote(objectMetadataPath), err)
-		// RESIDUAL WINDOW (leaf 2.4 fix 1): the data file has been written
-		// but metadata creation failed. We can't tell whether the data file
-		// existed before this request — os.Remove here would delete the old
-		// good object on a PUT-overwrite. Full two-phase commit is out of
-		// scope; serve 500 and leave the new data in place unindexed.
-		writeS3Error(w, "InternalError", "Error creating metadata storage.", http.StatusInternalServerError)
-		return
-	}
-
-	// Store metadata - use actual body length, not Content-Length header
-	meta := ObjectMetadata{
-		ContentType:    r.Header.Get("Content-Type"),
-		ContentLength:  int64(len(body)), // Use actual body length
-		ETag:           eTag,
-		CustomMetadata: make(map[string]string),
-		LastModified:   time.Now().UTC(),
-		StoragePath:    objectDataPath, // Points to actual object data
-	}
-
-	for headerName, headerValues := range r.Header {
-		if strings.HasPrefix(strings.ToLower(headerName), "x-amz-meta-") {
-			meta.CustomMetadata[headerName] = strings.Join(headerValues, ", ")
-		}
-	}
-
-	if err := writeFileAtomicJSON(objectMetadataPath, meta, 0644); err != nil {
-		log.Printf("Error writing metadata file %s: %v", strconv.Quote(objectMetadataPath), err)
-		// RESIDUAL WINDOW (leaf 2.4 fix 1): same as above — do NOT remove the
-		// data file; it may be the pre-overwrite good object. Return 500 with
-		// the new data left unindexed; a retry rewrites both files.
-		writeS3Error(w, "InternalError", "Error writing metadata.", http.StatusInternalServerError)
-		return
-	}
+	eTag := obj.ETag
 
 	log.Printf("Successfully put object %s/%s, ETag: %s", strconv.Quote(bucketName), strconv.Quote(objectName), eTag)
-	w.Header().Set("ETag", fmt.Sprintf("\"%s\"", eTag))
+	w.Header().Set("ETag", fmt.Sprintf("%q", eTag))
 	w.WriteHeader(http.StatusOK)
 
-	// Trigger after_upload actions
+	// Trigger after_upload actions. The action context needs the concrete
+	// data/metadata paths; resolve them handler-side (pure path math — no
+	// data-plane os.* calls).
+	bucketPath := getBucketPath(bucketName)
+	objectDataPath := objectDataPathFor(bucketPath, objectName)
+	objectMetadataPath := filepath.Join(bucketPath, ".metadata", objectName+".meta")
 	go triggerActions("after_upload", ActionContext{
 		FilePath:     objectDataPath,
 		MetadataPath: objectMetadataPath,
 		BucketName:   bucketName,
 		BucketPath:   bucketPath,
 		ObjectKey:    objectName,
-		ContentType:  meta.ContentType,
+		ContentType:  opts.ContentType,
 		ETag:         eTag,
-		Size:         meta.ContentLength,
+		Size:         obj.Size,
 	})
+}
+
+// rawMetaHeaders enumerates the request's x-amz-meta-* header names and
+// their joined values (parallel slices, multi-value headers joined with
+// ", " — the pre-seam CustomMetadata loop's exact semantics).
+func rawMetaHeaders(r *http.Request) (names, values []string) {
+	for headerName, headerValues := range r.Header {
+		if strings.HasPrefix(strings.ToLower(headerName), "x-amz-meta-") {
+			names = append(names, headerName)
+			values = append(values, strings.Join(headerValues, ", "))
+		}
+	}
+	return names, values
 }
 
 // resolveObjectDataPath returns the data file path for an object, honoring
@@ -388,66 +372,36 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	objectMetadataPath := filepath.Join(bucketPath, ".metadata", objectName+".meta")
 
 	// Check if bucket exists
-	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
+	if !bucketExists(bucketName) {
 		log.Printf("Bucket %s does not exist for GetObject", strconv.Quote(bucketName))
 		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return
 	}
 
-	// Read metadata. objectMetadataPath embeds objectName, validated by
-	// validateObjectKey — cannot escape the bucket; G703 false positive.
-	metaJSON, err := os.ReadFile(objectMetadataPath) //nolint:gosec // G703: objectName validated by validateObjectKey; no traversal possible.
-	if os.IsNotExist(err) {
-		log.Printf("Object metadata %s not found for %s/%s", strconv.Quote(objectMetadataPath), strconv.Quote(bucketName), strconv.Quote(objectName))
-		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", http.StatusNotFound)
-		return
-	}
-	if err != nil {
-		log.Printf("Error reading metadata file %s: %v", strconv.Quote(objectMetadataPath), err)
-		writeS3Error(w, "InternalError", "Error reading object metadata.", http.StatusInternalServerError)
+	if err := validateObjectKey(objectName); err != nil {
+		log.Printf("Invalid object key %s: %v", strconv.Quote(objectName), err)
+		writeS3Error(w, "InvalidArgument", err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	var meta ObjectMetadata
-	if err := json.Unmarshal(metaJSON, &meta); err != nil {
-		log.Printf("Error unmarshalling metadata from %s: %v", strconv.Quote(objectMetadataPath), err)
-		writeS3Error(w, "InternalError", "Error parsing object metadata.", http.StatusInternalServerError)
+	// Data-plane flip (leaf 02): read metadata + open the data file through
+	// the Backend seam. The backend performs the corrupt-storagePath
+	// fallback and holds the leaf-4.8 reader locks across stat→open.
+	srcRC, meta, getErr := backendCallBucket2(bucketName, func(b backend.Backend) (io.ReadCloser, objectmodel.Object, error) {
+		return b.Get(r.Context(), bucketName, objectName, objectmodel.GetOptions{})
+	})
+	if getErr != nil {
+		code, message, status := s3ErrorFrom(getErr)
+		log.Printf("GetObject %s/%s failed: %v", strconv.Quote(bucketName), strconv.Quote(objectName), getErr)
+		writeS3Error(w, code, message, status)
 		return
 	}
+	defer srcRC.Close()
+	actualSize := meta.Size
 
-	// Leaf 2.4 fix 6: fall back to the canonical path on corrupt StoragePath
-	objectDataPath := resolveObjectDataPath(bucketPath, objectName, &meta)
-
-	// Leaf-4.8 stress fix: hold the data+meta dir locks across stat→open→copy
-	// so a concurrent deleteObjectCore cannot prune the directories out from
-	// under this read (that race produced spurious GET 500s).
-	unlockDataDir := lockObject(filepath.Dir(objectDataPath))
-	defer unlockDataDir()
-	unlockMetaDir := lockObject(filepath.Dir(objectMetadataPath))
-	defer unlockMetaDir()
-
-	// Check if actual object data file exists
-	if _, err := os.Stat(objectDataPath); os.IsNotExist(err) {
-		log.Printf("Object data file %s not found for %s/%s", objectDataPath, bucketName, objectName)
-		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", http.StatusNotFound)
-		return
-	}
-
-	// Leaf 2.4 fix 5: stat the data file and serve the ACTUAL size. A meta
-	// lie no longer aborts the response — log a warning and serve truth.
-	fileInfo, err := os.Stat(objectDataPath)
-	if err != nil {
-		log.Printf("Error statting object data file %s: %v", objectDataPath, err)
-		writeS3Error(w, "InternalError", "Error reading object data.", http.StatusInternalServerError)
-		return
-	}
-	actualSize := fileInfo.Size()
-	if actualSize != meta.ContentLength {
-		log.Printf("WARNING: metadata ContentLength (%d) differs from actual file size (%d) for %s/%s; serving actual size",
-			meta.ContentLength, actualSize, bucketName, objectName)
-	}
-
-	// Set headers from metadata (leaf 2.4 fix 4: default Content-Type)
+	// Set headers from metadata (leaf 2.4 fix 4: default Content-Type).
+	// Custom metadata rides the neutral model in canonical key form; the
+	// x-amz-meta-* prefix is re-added for the wire.
 	contentType := meta.ContentType
 	if contentType == "" {
 		contentType = "binary/octet-stream"
@@ -456,7 +410,7 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	// The validator headers (ETag, Last-Modified) must be set first so a
 	// 304 response carries them.
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("ETag", fmt.Sprintf("\"%s\"", meta.ETag))
+	w.Header().Set("ETag", fmt.Sprintf("%q", meta.ETag))
 	w.Header().Set("Last-Modified", meta.LastModified.UTC().Format(http.TimeFormat))
 	if checkObjectPreconditions(w, r, meta.ETag, meta.LastModified) {
 		return
@@ -466,81 +420,104 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	w.Header().Set("Accept-Ranges", "bytes")
 	rr := parseRangeHeader(r.Header.Get("Range"), actualSize)
 	if rr.outcome != rangeFull {
-		// Open AFTER headers are computed but write the status only once we
-		// know the file opens; a failed open becomes NoSuchKey/404 rather
-		// than a 206/416 with headers half-set.
-		file, err := os.Open(objectDataPath)
-		if err != nil {
-			log.Printf("Error opening object data file %s: %v", objectDataPath, err)
-			writeS3Error(w, "NoSuchKey", "The specified key does not exist.", http.StatusNotFound)
-			return
-		}
-		defer file.Close()
-		if serveObjectRange(w, file, rr, actualSize, false, fmt.Sprintf("GetObject %s/%s", bucketName, objectName)) {
+		// serveObjectRange needs an *os.File for seeking; the seam returns
+		// an ReadCloser. A range-read through the seam is done by draining
+		// and discarding the leading bytes, then copying the window.
+		if serveObjectRangeFrom(r.Context(), w, srcRC, rr, actualSize, false, fmt.Sprintf("GetObject %s/%s", bucketName, objectName)) {
 			log.Printf("Served range request for object %s/%s (%s)", strconv.Quote(bucketName), strconv.Quote(objectName), strconv.Quote(r.Header.Get("Range"))) //nolint:gosec // G706: Range is strconv.Quote-escaped.
 			go triggerActions("after_download", ActionContext{
-				FilePath:     objectDataPath,
+				FilePath:     objectDataPathFor(bucketPath, objectName),
 				MetadataPath: objectMetadataPath,
 				BucketName:   bucketName,
 				BucketPath:   bucketPath,
 				ObjectKey:    objectName,
 				ContentType:  meta.ContentType,
 				ETag:         meta.ETag,
-				Size:         meta.ContentLength,
+				Size:         meta.Size,
 			})
 			return
 		}
+		// Range handling consumed the stream — reopen for the full-body
+		// fall-through (multi-range/malformed fall back to 200 full body).
+		srcRC2, _, reopenErr := backendCallBucket2(bucketName, func(b backend.Backend) (io.ReadCloser, objectmodel.Object, error) {
+			return b.Get(r.Context(), bucketName, objectName, objectmodel.GetOptions{})
+		})
+		if reopenErr != nil {
+			writeS3ErrorFrom(w, reopenErr)
+			return
+		}
+		srcRC.Close()
+		srcRC = srcRC2
 	}
 
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", actualSize))
-	for k, v := range meta.CustomMetadata {
-		w.Header().Set(k, v)
+	for k, v := range meta.Metadata {
+		w.Header().Set(objectmodel.MetadataHeaderName(k), v)
 	}
 
-	// Stream the object data. Open AFTER headers are computed but write the
-	// status only once we know the file opens; a failed open becomes
-	// NoSuchKey/404 rather than a 500 with headers half-set (leaf 2.4 fix 6).
-	file, err := os.Open(objectDataPath)
-	if err != nil {
-		log.Printf("Error opening object data file %s: %v", objectDataPath, err)
-		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", http.StatusNotFound)
-		return
-	}
-	defer file.Close()
-
+	// Stream the object data (leaf 2.4 fix 6: a failed open becomes
+	// NoSuchKey/404 rather than a 500 with headers half-set — enforced by
+	// the backend Get above, which opens before returning).
 	w.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(w, file); err != nil {
+	if _, err := io.Copy(w, srcRC); err != nil {
 		log.Printf("Error streaming object %s/%s to client: %v", strconv.Quote(bucketName), strconv.Quote(objectName), err)
 	}
 	log.Printf("Successfully served object %s/%s", strconv.Quote(bucketName), strconv.Quote(objectName))
 
 	// Trigger after_download actions
 	go triggerActions("after_download", ActionContext{
-		FilePath:     objectDataPath,
+		FilePath:     objectDataPathFor(bucketPath, objectName),
 		MetadataPath: objectMetadataPath,
 		BucketName:   bucketName,
 		BucketPath:   bucketPath,
 		ObjectKey:    objectName,
 		ContentType:  meta.ContentType,
 		ETag:         meta.ETag,
-		Size:         meta.ContentLength,
+		Size:         meta.Size,
 	})
 }
 
-func deleteObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
-	bucketPath := getBucketPath(bucketName)
+// serveObjectRangeFrom applies the parsed Range outcome using a stream
+// (seam ReadCloser) instead of a seekable *os.File. rangeFull returns
+// false (caller serves the normal 200); rangeUnsatisfiable writes 416;
+// rangePartial discards rr.start bytes then copies rr.length bytes.
+func serveObjectRangeFrom(ctx context.Context, w http.ResponseWriter, rc io.Reader, rr rangeRequest, actualSize int64, isHead bool, logPrefix string) bool {
+	switch rr.outcome {
+	case rangeUnsatisfiable:
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", actualSize))
+		writeS3Error(w, "InvalidRange", "The requested range is not satisfiable", http.StatusRequestedRangeNotSatisfiable)
+		return true
+	case rangePartial:
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rr.start, rr.start+rr.length-1, actualSize))
+		w.Header().Set("Content-Length", strconv.FormatInt(rr.length, 10))
+		w.WriteHeader(http.StatusPartialContent)
+		if !isHead {
+			if _, err := io.CopyN(io.Discard, rc, rr.start); err != nil {
+				log.Printf("%s: error seeking to range start %d: %v", logPrefix, rr.start, err) //nolint:gosec // G706: logPrefix is handler-constructed.
+				return true
+			}
+			if _, err := io.CopyN(w, rc, rr.length); err != nil {
+				log.Printf("%s: error streaming range to client: %v", logPrefix, err) //nolint:gosec // G706: logPrefix is handler-constructed.
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
 
+func deleteObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
 	// Leaf 2.4 fix 3: a missing bucket is a real 404 (missing KEY in an
 	// existing bucket still stays 204 per S3 semantics).
-	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
+	if !bucketExists(bucketName) {
 		log.Printf("Bucket %s does not exist for DeleteObject", strconv.Quote(bucketName))
 		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return
 	}
 
-	if err := deleteObjectCore(bucketPath, bucketName, objectName); err != nil {
+	if err := deleteObjectCore(getBucketPath(bucketName), bucketName, objectName); err != nil {
 		log.Printf("Error deleting object %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), err)
-		writeS3Error(w, "InternalError", "Error deleting object data.", http.StatusInternalServerError)
+		writeS3ErrorFrom(w, err)
 		return
 	}
 
@@ -551,141 +528,84 @@ func deleteObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, obj
 // leaf 2.4) and DeleteObjects (batch, leaf 3.5). The bucket's existence must
 // be checked by the caller. A missing key deletes nothing and succeeds (S3
 // semantics). Returns an error only on real I/O failure of the data file.
+// Data-plane flip (leaf 02): the delete goes through the Backend seam; this
+// wrapper keeps the after_delete action-context plumbing handler-side.
 func deleteObjectCore(bucketPath, bucketName, objectName string) error {
+	if err := validateObjectKey(objectName); err != nil {
+		return objectmodel.ErrInvalidArgument(err.Error())
+	}
+	delErr := backendCallBucketErr(bucketName, func(b backend.Backend) error {
+		return b.Delete(context.Background(), bucketName, objectName)
+	})
+	if delErr != nil {
+		return delErr
+	}
+
+	// Action context: resolve the concrete paths the action may reference
+	// (pure path math, no data-plane os.* calls; the sidecar is gone, so
+	// the canonical location is the best-available approximation — the
+	// pre-seam code reported the sidecar-resolved path, but after a
+	// successful delete that path no longer exists either way).
 	objectMetadataPath := filepath.Join(bucketPath, ".metadata", objectName+".meta")
-	objectDataPath := filepath.Join(bucketPath, objectName)
-
-	// Leaf-4.8 stress fix: serialize against concurrent writers on this key
-	// AND against empty-dir pruning. cleanupEmptyDirs has a check-then-act
-	// window (ReadDir empty -> Remove) that can delete a directory a
-	// concurrent PUT's MkdirAll just created, turning that PUT's atomic
-	// write into a 500. Holding the parent-dir lock across the delete +
-	// prune closes the window against PUTs into the same directory.
-	unlockDataDir := lockObject(filepath.Dir(objectDataPath))
-	defer unlockDataDir()
-	unlockMetaDir := lockObject(filepath.Dir(objectMetadataPath))
-	defer unlockMetaDir()
-
-	// Try to read metadata to get actual storage path
-	var actualDataPath string
-	metaJSON, err := os.ReadFile(objectMetadataPath) //nolint:gosec // G703: objectName validated by validateObjectKey; no traversal possible.
-	if err == nil {
-		var meta ObjectMetadata
-		if jsonErr := json.Unmarshal(metaJSON, &meta); jsonErr == nil && meta.StoragePath != "" {
-			actualDataPath = meta.StoragePath
-		} else {
-			actualDataPath = objectDataPath
-		}
-	} else {
-		actualDataPath = objectDataPath
-	}
-
-	// Delete the object data file
-	dataDeleted := false
-	if err := os.Remove(actualDataPath); err != nil { //nolint:gosec // G703: actualDataPath derived from validated objectName; no traversal possible.
-		if !os.IsNotExist(err) {
-			log.Printf("Error deleting object data file %s: %v", strconv.Quote(actualDataPath), err)
-			return fmt.Errorf("deleting object data %s: %w", actualDataPath, err)
-		}
-	} else {
-		dataDeleted = true
-	}
-
-	// Delete the metadata file
-	metaDeleted := false
-	if err := os.Remove(objectMetadataPath); err != nil { //nolint:gosec // G703: objectName validated by validateObjectKey; no traversal possible.
-		if !os.IsNotExist(err) {
-			log.Printf("Error deleting metadata file %s: %v", strconv.Quote(objectMetadataPath), err)
-			// Don't fail - data is already deleted
-		}
-	} else {
-		metaDeleted = true
-	}
-
-	// Clean up empty parent directories (best effort)
-	cleanupEmptyDirs(filepath.Dir(actualDataPath), bucketPath)
-	cleanupEmptyDirs(filepath.Dir(objectMetadataPath), filepath.Join(bucketPath, ".metadata"))
-
-	if dataDeleted || metaDeleted {
-		log.Printf("Successfully deleted object %s/%s", strconv.Quote(bucketName), strconv.Quote(objectName))
-
-		// Trigger after_delete actions
-		go triggerActions("after_delete", ActionContext{
-			FilePath:     actualDataPath,
-			MetadataPath: objectMetadataPath,
-			BucketName:   bucketName,
-			BucketPath:   bucketPath,
-			ObjectKey:    objectName,
-		})
-	} else {
-		log.Printf("Object %s/%s did not exist for deletion", strconv.Quote(bucketName), strconv.Quote(objectName))
-	}
-
+	actualDataPath := objectDataPathFor(bucketPath, objectName)
+	log.Printf("Successfully deleted object %s/%s", strconv.Quote(bucketName), strconv.Quote(objectName))
+	go triggerActions("after_delete", ActionContext{
+		FilePath:     actualDataPath,
+		MetadataPath: objectMetadataPath,
+		BucketName:   bucketName,
+		BucketPath:   bucketPath,
+		ObjectKey:    objectName,
+	})
 	return nil
 }
 
-func headObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
-	bucketPath := getBucketPath(bucketName)
-	objectMetadataPath := filepath.Join(bucketPath, ".metadata", objectName+".meta")
+// backendCallBucket is backendCall for error-only operations (Delete).
+func backendCallBucket(bucket string, fn func(b backend.Backend) error) error {
+	b, err := backendFor(bucket)
+	if err != nil || b == nil {
+		if err == nil {
+			err = objectmodel.ErrInternalError("backend unavailable")
+		}
+		return err
+	}
+	return fn(b)
+}
 
+// backendCallBucketErr is an alias for backendCallBucket (error-only ops).
+func backendCallBucketErr(bucket string, fn func(b backend.Backend) error) error {
+	return backendCallBucket(bucket, fn)
+}
+
+func headObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
 	// Check if bucket exists
-	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
+	if !bucketExists(bucketName) {
 		log.Printf("Bucket %s does not exist for HeadObject", strconv.Quote(bucketName))
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
-	// Read metadata (HeadObject path). objectMetadataPath embeds objectName,
-	// validated by validateObjectKey — G703 false positive.
-	metaJSON, err := os.ReadFile(objectMetadataPath) //nolint:gosec // G703: objectName validated by validateObjectKey; no traversal possible.
-	if os.IsNotExist(err) {
-		log.Printf("Object metadata %s not found for %s/%s for HeadObject", strconv.Quote(objectMetadataPath), strconv.Quote(bucketName), strconv.Quote(objectName))
-		w.WriteHeader(http.StatusNotFound)
+	if err := validateObjectKey(objectName); err != nil {
+		log.Printf("Invalid object key %s for HeadObject: %v", strconv.Quote(objectName), err)
+		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	if err != nil {
-		log.Printf("Error reading metadata file %s for HeadObject: %v", strconv.Quote(objectMetadataPath), err)
+
+	// Data-plane flip (leaf 02): Stat through the Backend seam. The backend
+	// performs the corrupt-storagePath fallback, serves the ACTUAL file
+	// size, and holds the leaf-4.8 reader locks across stat.
+	meta, statErr := backendCallBucketStat(bucketName, func(b backend.Backend) (objectmodel.Object, error) {
+		return b.Stat(r.Context(), bucketName, objectName)
+	})
+	if statErr != nil {
+		if _, _, status := s3ErrorFrom(statErr); status == http.StatusNotFound {
+			log.Printf("HeadObject %s/%s not found: %v", strconv.Quote(bucketName), strconv.Quote(objectName), statErr)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-
-	var meta ObjectMetadata
-	if err := json.Unmarshal(metaJSON, &meta); err != nil {
-		log.Printf("Error unmarshalling metadata from %s for HeadObject: %v", strconv.Quote(objectMetadataPath), err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	// Leaf 2.4 fix 6: fall back to the canonical path on corrupt StoragePath
-	objectDataPath := resolveObjectDataPath(bucketPath, objectName, &meta)
-
-	// Leaf-4.8 stress fix: hold the data+meta dir locks across stat→open→copy
-	// so a concurrent deleteObjectCore cannot prune the directories out from
-	// under this read (that race produced spurious GET 500s).
-	unlockDataDir := lockObject(filepath.Dir(objectDataPath))
-	defer unlockDataDir()
-	unlockMetaDir := lockObject(filepath.Dir(objectMetadataPath))
-	defer unlockMetaDir()
-
-	// Check if actual object data file exists
-	if _, err := os.Stat(objectDataPath); os.IsNotExist(err) {
-		log.Printf("Object data file %s not found for %s/%s during HeadObject", objectDataPath, bucketName, objectName)
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-
-	// Leaf 2.4 fix 5: serve the ACTUAL file size; warn when meta lies.
-	fileInfo, err := os.Stat(objectDataPath)
-	if err != nil {
-		log.Printf("Error statting object data file %s during HeadObject: %v", objectDataPath, err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	actualSize := fileInfo.Size()
-	if actualSize != meta.ContentLength {
-		log.Printf("WARNING: metadata ContentLength (%d) differs from actual file size (%d) for %s/%s during HeadObject; serving actual size",
-			meta.ContentLength, actualSize, bucketName, objectName)
-	}
+	actualSize := meta.Size
 
 	// Set headers from metadata (leaf 2.4 fix 4: default Content-Type)
 	contentType := meta.ContentType
@@ -696,7 +616,7 @@ func headObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 	// Validator headers (ETag, Last-Modified) are set first so a 304
 	// carries them.
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("ETag", fmt.Sprintf("\"%s\"", meta.ETag))
+	w.Header().Set("ETag", fmt.Sprintf("%q", meta.ETag))
 	w.Header().Set("Last-Modified", meta.LastModified.UTC().Format(http.TimeFormat))
 	if checkObjectPreconditions(w, r, meta.ETag, meta.LastModified) {
 		return
@@ -714,12 +634,24 @@ func headObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 	}
 
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", actualSize))
-	for k, v := range meta.CustomMetadata {
-		w.Header().Set(k, v)
+	for k, v := range meta.Metadata {
+		w.Header().Set(objectmodel.MetadataHeaderName(k), v)
 	}
 
 	w.WriteHeader(http.StatusOK)
 	log.Printf("Successfully served HEAD for object %s/%s", strconv.Quote(bucketName), strconv.Quote(objectName))
+}
+
+// backendCallBucketStat is backendCall for (Object, error) operations (Stat).
+func backendCallBucketStat(bucket string, fn func(b backend.Backend) (objectmodel.Object, error)) (objectmodel.Object, error) {
+	b, err := backendFor(bucket)
+	if err != nil || b == nil {
+		if err == nil {
+			err = objectmodel.ErrInternalError("backend unavailable")
+		}
+		return objectmodel.Object{}, err
+	}
+	return fn(b)
 }
 
 // s3URLEncode percent-encodes a key for encoding-type=url responses: S3
@@ -733,11 +665,8 @@ func s3URLEncode(key string) string {
 
 // listObjectsV2Handler implementation
 func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName string) {
-	bucketPath := getBucketPath(bucketName)
-	metadataDir := filepath.Join(bucketPath, ".metadata")
-
 	// Check if bucket exists
-	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
+	if !bucketExists(bucketName) {
 		log.Printf("Bucket %s does not exist for ListObjectsV2", strconv.Quote(bucketName))
 		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return
@@ -763,28 +692,75 @@ func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName str
 		return
 	}
 
-	allObjectKeys, walkErr := collectObjectKeys(metadataDir)
-	if walkErr != nil {
-		log.Printf("Error walking metadata directory %s: %v", metadataDir, walkErr)
-		writeS3Error(w, "InternalError", "Error listing objects.", http.StatusInternalServerError)
+	// Data-plane flip (leaf 02): key enumeration, filtering, roll-up and
+	// pagination go through the Backend seam. The S3-specific V1 marker is
+	// folded into the backend cursor as an at-or-below StartAfter (identical
+	// exclusion semantics — leaf 5.1 [a]-3); encoding-type=url and the
+	// NextMarker wire field stay HANDLER-side.
+	backendParams := objectmodel.ListParams{
+		Prefix:            params.prefix,
+		Delimiter:         params.delimiter,
+		ContinuationToken: params.continuationToken,
+		StartAfter:        params.startAfter,
+		MaxKeys:           params.maxKeys,
+	}
+	if params.marker != "" && params.continuationToken == "" && params.startAfter == "" {
+		// V1 marker: exclusive at-or-below — the backend's StartAfter has
+		// exactly those semantics.
+		backendParams.StartAfter = params.marker
+	}
+	var page objectmodel.ListPage
+	listErr := backendCallBucketErr(bucketName, func(b backend.Backend) error {
+		var lErr error
+		page, lErr = b.List(r.Context(), bucketName, backendParams)
+		return lErr
+	})
+	if listErr != nil {
+		log.Printf("Error listing bucket %s: %v", strconv.Quote(bucketName), listErr)
+		writeS3ErrorFrom(w, listErr)
 		return
 	}
-	sort.Strings(allObjectKeys)
 
+	truncated := page.IsTruncated
+	nextToken := page.NextToken
 	// Leaf 2.4 fix 14: IsTruncated=true must carry a non-empty token; if the
 	// token is empty, no next page exists → report IsTruncated=false.
-	truncated, nextToken, objects, commonPrefixes, lastItem := listObjectsFromKeys(allObjectKeys, params, bucketName, metadataDir)
 	if truncated && nextToken == "" {
 		truncated = false
 	}
 
+	// S3 Contents entries carry quoted ETags and RFC3339 millisecond
+	// timestamps; the backend's neutral model carries the bare ETag and
+	// time.Time. Convert here (presentation, not data access).
+	var objects []Object
+	var lastItem string
+	for _, o := range page.Objects {
+		keyOut := o.Key
+		if params.encodeKeys {
+			keyOut = s3URLEncode(keyOut)
+		}
+		objects = append(objects, Object{
+			Key:          keyOut,
+			LastModified: o.LastModified.UTC().Format("2006-01-02T15:04:05.000Z"),
+			ETag:         fmt.Sprintf("%q", o.ETag),
+			Size:         o.Size,
+			StorageClass: "STANDARD",
+		})
+		lastItem = o.Key
+	}
+
 	var commonPrefixEntries []CommonPrefix
-	for _, cp := range commonPrefixes {
+	for _, cp := range page.CommonPrefixes {
 		cpOut := cp
 		if params.encodeKeys {
 			cpOut = s3URLEncode(cp)
 		}
 		commonPrefixEntries = append(commonPrefixEntries, CommonPrefix{Prefix: cpOut})
+		// Merged-order NextMarker: a roll-up sorts among the keys; recompute
+		// the page's last emitted item in MERGED order.
+		if lastItem == "" || cp > lastItem {
+			lastItem = cp
+		}
 	}
 	sort.Slice(commonPrefixEntries, func(i, j int) bool {
 		return commonPrefixEntries[i].Prefix < commonPrefixEntries[j].Prefix
@@ -1351,47 +1327,27 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 		return
 	}
 
-	srcBucketPath := getBucketPath(srcBucket)
-	if _, err := os.Stat(srcBucketPath); os.IsNotExist(err) {
+	if !bucketExists(srcBucket) {
 		log.Printf("Source bucket %s does not exist for CopyObject", strconv.Quote(srcBucket))
 		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return
 	}
 
-	srcMetaPath := filepath.Join(srcBucketPath, ".metadata", srcKey+".meta")
-	srcMetaJSON, err := os.ReadFile(srcMetaPath) //nolint:gosec // G703: srcKey validated by validateObjectKey; no traversal possible.
-	if os.IsNotExist(err) {
-		log.Printf("Source object %s/%s does not exist for CopyObject", strconv.Quote(srcBucket), strconv.Quote(srcKey))
-		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", http.StatusNotFound)
+	// Data-plane flip (leaf 02): read the source through the Backend seam.
+	srcRC, srcObj, srcErr := backendCallBucket2(srcBucket, func(b backend.Backend) (io.ReadCloser, objectmodel.Object, error) {
+		return b.Get(r.Context(), srcBucket, srcKey, objectmodel.GetOptions{})
+	})
+	if srcErr != nil {
+		code, message, status := s3ErrorFrom(srcErr)
+		log.Printf("CopyObject source read %s/%s failed: %v", strconv.Quote(srcBucket), strconv.Quote(srcKey), srcErr)
+		writeS3Error(w, code, message, status)
 		return
 	}
-	if err != nil {
-		log.Printf("Error reading source metadata %s: %v", strconv.Quote(srcMetaPath), err)
-		writeS3Error(w, "InternalError", "Error reading source object metadata.", http.StatusInternalServerError)
-		return
-	}
-	var srcMeta ObjectMetadata
-	if err := json.Unmarshal(srcMetaJSON, &srcMeta); err != nil {
-		log.Printf("Error parsing source metadata %s: %v", strconv.Quote(srcMetaPath), err)
-		writeS3Error(w, "InternalError", "Error parsing source object metadata.", http.StatusInternalServerError)
-		return
-	}
-	srcDataPath := resolveObjectDataPath(srcBucketPath, srcKey, &srcMeta)
-
-	// Read the source data. Lock both source and destination so a concurrent
-	// writer cannot tear the copy.
-	srcUnlock := lockObject(srcDataPath)
-	defer srcUnlock()
-
-	data, err := os.ReadFile(srcDataPath) //nolint:gosec // G703: srcDataPath derived from validated srcKey; no traversal possible.
-	if err != nil {
-		if os.IsNotExist(err) {
-			log.Printf("Source object data %s does not exist for CopyObject", strconv.Quote(srcDataPath))
-			writeS3Error(w, "NoSuchKey", "The specified key does not exist.", http.StatusNotFound)
-			return
-		}
-		log.Printf("Error reading source object data %s: %v", strconv.Quote(srcDataPath), err)
-		writeS3Error(w, "InternalError", "Error reading source object data.", http.StatusInternalServerError)
+	data, readErr := io.ReadAll(srcRC)
+	srcRC.Close()
+	if readErr != nil {
+		log.Printf("Error reading source object data %s/%s: %v", strconv.Quote(srcBucket), strconv.Quote(srcKey), readErr)
+		writeS3ErrorFrom(w, readErr)
 		return
 	}
 
@@ -1399,46 +1355,54 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 	hash := md5.Sum(data) //nolint:gosec // G401: S3 ETags are defined as MD5; protocol requirement, not crypto.
 	eTag := hex.EncodeToString(hash[:])
 
+	// Destination metadata per the directive: COPY (default) preserves the
+	// source Content-Type and x-amz-meta-* (ORIGINAL on-disk casing — the
+	// pre-seam buildCopyMetadata maps.Copy'ed the sidecar map verbatim);
+	// REPLACE takes both from the request headers (original header casing).
+	// The seam canonicalizes keys, so the raw sidecar keys are re-read from
+	// the source metadata file for the COPY branch (one read-only stat/
+	// read of the sidecar — no data-plane write touches os.* here).
+	dstMeta := map[string]string{}
+	if directive == "REPLACE" {
+		for headerName, headerValues := range r.Header {
+			if strings.HasPrefix(strings.ToLower(headerName), "x-amz-meta-") {
+				// Raw prefixed form: fsbackend passes prefixed keys
+				// through verbatim (original casing preserved).
+				dstMeta[headerName] = strings.Join(headerValues, ", ")
+			}
+		}
+	} else {
+		// COPY: preserve the source sidecar custom keys verbatim
+		// (original casing — the pre-seam maps.Copy semantics).
+		maps.Copy(dstMeta, rawSourceSidecarMeta(getBucketPath(srcBucket), srcKey))
+	}
+
 	dstBucketPath := getBucketPath(bucketName)
-	// Shadow-aware data path (leaf 5.1 [a]-1): same collision rules as PUT.
 	dstDataPath := objectDataPathFor(dstBucketPath, objectName)
+	dstContentType := srcObj.ContentType
+	if directive == "REPLACE" {
+		dstContentType = r.Header.Get("Content-Type")
+	}
+
+	_, putErr := backendCall(bucketName, func(b backend.Backend) (objectmodel.Object, error) {
+		return b.Put(r.Context(), bucketName, objectName, bytes.NewReader(data), int64(len(data)),
+			objectmodel.PutOptions{ContentType: dstContentType, Metadata: dstMeta})
+	})
+	if putErr != nil {
+		log.Printf("Error writing copy destination %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), putErr)
+		writeS3ErrorFrom(w, putErr)
+		return
+	}
+
+	// Action context: resolve the concrete paths the action may reference.
 	dstMetaPath := filepath.Join(dstBucketPath, ".metadata", objectName+".meta")
-
-	dstUnlock := lockObject(dstDataPath)
-	defer dstUnlock()
-
-	if err := os.MkdirAll(filepath.Dir(dstDataPath), 0755); err != nil { //nolint:gosec // G703: objectName validated by validateObjectKey; no traversal possible.
-		log.Printf("Error creating destination directories for %s: %v", strconv.Quote(dstDataPath), err)
-		writeS3Error(w, "InternalError", "Error creating object storage.", http.StatusInternalServerError)
-		return
-	}
-	if err := writeFileAtomic(dstDataPath, data, 0644); err != nil { //nolint:gosec // G703: objectName validated by validateObjectKey; no traversal possible.
-		log.Printf("Error writing destination object data %s: %v", strconv.Quote(dstDataPath), err)
-		writeS3Error(w, "InternalError", "Error writing object data.", http.StatusInternalServerError)
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(dstMetaPath), 0755); err != nil { //nolint:gosec // G703: objectName validated by validateObjectKey; no traversal possible.
-		log.Printf("Error creating destination metadata storage for %s: %v", strconv.Quote(dstMetaPath), err)
-		writeS3Error(w, "InternalError", "Error creating metadata storage.", http.StatusInternalServerError)
-		return
-	}
-
-	// Build the destination metadata per the directive.
-	meta := buildCopyMetadata(&srcMeta, r, data, eTag, dstDataPath)
-
-	if err := writeFileAtomicJSON(dstMetaPath, meta, 0644); err != nil {
-		log.Printf("Error writing destination metadata %s: %v", strconv.Quote(dstMetaPath), err)
-		writeS3Error(w, "InternalError", "Error writing metadata.", http.StatusInternalServerError)
-		return
-	}
-
 	log.Printf("Successfully copied %s/%s to %s/%s, ETag: %s",
 		strconv.Quote(srcBucket), strconv.Quote(srcKey), strconv.Quote(bucketName), strconv.Quote(objectName), eTag)
 
 	// S3 quirk: a 200 response with an XML body.
 	writeXML(w, http.StatusOK, CopyObjectResult{
 		ETag:         fmt.Sprintf("%q", eTag),
-		LastModified: meta.LastModified.UTC().Format("2006-01-02T15:04:05.000Z"),
+		LastModified: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
 	})
 
 	// Trigger after_upload actions for the new object.
@@ -1448,18 +1412,52 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 		BucketName:   bucketName,
 		BucketPath:   dstBucketPath,
 		ObjectKey:    objectName,
-		ContentType:  meta.ContentType,
+		ContentType:  dstContentType,
 		ETag:         eTag,
-		Size:         meta.ContentLength,
+		Size:         int64(len(data)),
 	})
+}
+
+// backendCallBucket2 is backendCall for (ReadCloser, Object, error)
+// operations (Get).
+func backendCallBucket2(bucket string, fn func(b backend.Backend) (io.ReadCloser, objectmodel.Object, error)) (io.ReadCloser, objectmodel.Object, error) {
+	b, err := backendFor(bucket)
+	if err != nil || b == nil {
+		if err == nil {
+			err = objectmodel.ErrInternalError("backend unavailable")
+		}
+		return nil, objectmodel.Object{}, err
+	}
+	return fn(b)
+}
+
+// rawSourceSidecarMeta reads the source object's sidecar CustomMetadata
+// verbatim (original key casing preserved) for CopyObject's COPY branch.
+// Read-only: the seam does not surface raw key casing, and the frozen
+// on-disk format for a copied object is byte-identical to the source's.
+// Missing/unparsable sidecar yields an empty map (copy proceeds metaless —
+// the pre-seam code would have failed the copy; but the seam Get above
+// already proved the object exists, so this is unreachable in practice).
+func rawSourceSidecarMeta(bucketPath, key string) map[string]string {
+	raw, err := os.ReadFile(filepath.Join(bucketPath, ".metadata", key+".meta")) //nolint:gosec // G703: key validated by validateObjectKey.
+	if err != nil {
+		return map[string]string{}
+	}
+	var meta ObjectMetadata
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return map[string]string{}
+	}
+	if meta.CustomMetadata == nil {
+		return map[string]string{}
+	}
+	return meta.CustomMetadata
 }
 
 // deleteObjectsHandler implements DeleteObjects (POST /bucket?delete): batch
 // deletion of up to 1000 keys with a DeleteResult XML response. In Quiet
 // mode only errors are reported.
 func deleteObjectsHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
-	bucketPath := getBucketPath(bucketName)
-	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
+	if !bucketExists(bucketName) {
 		log.Printf("Bucket %s does not exist for DeleteObjects", strconv.Quote(bucketName))
 		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return
@@ -1497,7 +1495,7 @@ func deleteObjectsHandler(w http.ResponseWriter, r *http.Request, bucketName str
 			})
 			continue
 		}
-		if err := deleteObjectCore(bucketPath, bucketName, obj.Key); err != nil {
+		if err := deleteObjectCore(getBucketPath(bucketName), bucketName, obj.Key); err != nil {
 			log.Printf("Error deleting %s/%s in DeleteObjects: %v", strconv.Quote(bucketName), strconv.Quote(obj.Key), err)
 			result.Error = append(result.Error, DeleteErrorEntry{
 				Key:     obj.Key,

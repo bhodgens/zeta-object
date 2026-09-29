@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,6 +11,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"mini-s3/internal/backend"
+	"mini-s3/internal/objectmodel"
 )
 
 // bucket_handlers.go — S3 bucket-level operation handlers
@@ -47,56 +51,13 @@ func bucketExists(bucketName string) bool {
 
 // Placeholder handlers - to be implemented in handlers.go or similar
 func listBucketsHandler(w http.ResponseWriter, r *http.Request) {
-	bucketSet := make(map[string]Bucket) // Use map to deduplicate
-
-	// First, add all custom-configured buckets
-	for bucketName, bucketPath := range serverConfig.Buckets {
-		info, err := os.Stat(bucketPath) // os.Stat follows symlinks
-		if err != nil {
-			log.Printf("Warning: Custom bucket '%s' at '%s' not accessible: %v", bucketName, bucketPath, err)
-			continue
-		}
-		if !info.IsDir() {
-			continue
-		}
-		creationDate := info.ModTime().UTC().Format("2006-01-02T15:04:05.000Z")
-		bucketSet[bucketName] = Bucket{Name: bucketName, CreationDate: creationDate}
-	}
-
-	// Then, scan the data directory for buckets (including symlinks)
-	dirs, err := os.ReadDir(serverConfig.DataDir)
-	if err != nil {
-		log.Printf("Error reading data directory %s: %v", serverConfig.DataDir, err)
-		// Don't fail if we have custom buckets
-		if len(bucketSet) == 0 {
-			writeS3Error(w, "InternalError", "Internal Server Error", http.StatusInternalServerError)
-			return
-		}
-	} else {
-		for _, dir := range dirs {
-			if strings.HasPrefix(dir.Name(), ".") {
-				continue // Exclude hidden dirs
-			}
-
-			// Use os.Stat to follow symlinks and check if it's a directory
-			fullPath := filepath.Join(serverConfig.DataDir, dir.Name())
-			info, err := os.Stat(fullPath)
-			if err != nil {
-				log.Printf("Warning: Could not stat %s: %v", fullPath, err)
-				continue
-			}
-			if !info.IsDir() {
-				continue
-			}
-
-			// Skip if already defined as a custom bucket (custom takes precedence)
-			if _, exists := serverConfig.Buckets[dir.Name()]; exists {
-				continue
-			}
-
-			creationDate := info.ModTime().UTC().Format("2006-01-02T15:04:05.000Z")
-			bucketSet[dir.Name()] = Bucket{Name: dir.Name(), CreationDate: creationDate}
-		}
+	// Data-plane flip (leaf 02): bucket discovery goes through the Backend
+	// seam (one FS rooted at dataDir). Custom buckets are discovered by
+	// their per-bucket FS (the default backendFor resolves them), keeping
+	// the "custom takes precedence" dedup and the ModTime creation date.
+	bucketSet := make(map[string]Bucket)
+	for _, b := range backendDiscovery() {
+		bucketSet[b.Name] = Bucket{Name: b.Name, CreationDate: b.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z")}
 	}
 
 	// Convert map to sorted slice
@@ -115,6 +76,38 @@ func listBucketsHandler(w http.ResponseWriter, r *http.Request) {
 
 	writeXML(w, http.StatusOK, result)
 	log.Printf("Successfully listed buckets")
+}
+
+// backendDiscovery merges Buckets() from every backend serving configured
+// buckets: the dataDir FS plus one FS per custom bucket path. Hidden dirs
+// and non-dirs are skipped inside the seam; custom-over-auto dedup happens
+// in the map above (custom wins by overwriting the same name).
+func backendDiscovery() []objectmodel.BucketInfo {
+	seen := map[string]objectmodel.BucketInfo{}
+	add := func(b backend.Backend) {
+		buckets, err := b.Buckets(context.Background())
+		if err != nil {
+			log.Printf("Warning: backend discovery failed: %v", err)
+			return
+		}
+		for _, bi := range buckets {
+			seen[bi.Name] = bi
+		}
+	}
+	if f, err := backendFor(""); err == nil && f != nil {
+		add(f)
+	}
+	for name := range serverConfig.Buckets {
+		if f, err := backendFor(name); err == nil && f != nil {
+			add(f)
+		}
+	}
+	out := make([]objectmodel.BucketInfo, 0, len(seen))
+	for _, bi := range seen {
+		out = append(out, bi)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
