@@ -451,3 +451,295 @@ func indexByteStr(h, n string) bool {
 	}
 	return false
 }
+
+// --- T1: rename guards ------------------------------------------------------
+
+// TestRenameOntoItselfIsNoOp — RNTO with a destination resolving to the
+// same bucket+key succeeds WITHOUT touching storage (the old Put-then-
+// Delete sequence deleted the object). Also covers a path.Clean-aliased
+// spelling of the same key ("/bkt/./x.txt" → "/bkt/x.txt").
+func TestRenameOntoItselfIsNoOp(t *testing.T) {
+	be := newRecordingBackend()
+	be.objects["bkt/x.txt"] = []byte("precious-bytes")
+	_, lsn := startTestServer(t, be, testConfig(t, be))
+	sc := dialSFTP(t, lsn, "user", "pass")
+
+	if err := sc.Rename("/bkt/x.txt", "/bkt/x.txt"); err != nil {
+		t.Fatalf("rename onto itself: %v", err)
+	}
+	if len(be.puts) != 0 || len(be.deletes) != 0 {
+		t.Fatalf("storage touched: puts=%+v deletes=%+v, want none", be.puts, be.deletes)
+	}
+	if got, ok := be.objects["bkt/x.txt"]; !ok || string(got) != "precious-bytes" {
+		t.Fatalf("object lost/changed: %q", got)
+	}
+
+	// Aliased spelling: same resolved key after path.Clean.
+	if err := sc.Rename("/bkt/./x.txt", "/bkt//x.txt"); err != nil {
+		t.Fatalf("aliased self-rename: %v", err)
+	}
+	if len(be.puts) != 0 || len(be.deletes) != 0 {
+		t.Fatalf("aliased self-rename touched storage: puts=%+v deletes=%+v", be.puts, be.deletes)
+	}
+	if got, ok := be.objects["bkt/x.txt"]; !ok || string(got) != "precious-bytes" {
+		t.Fatalf("object lost after aliased self-rename: %q", got)
+	}
+}
+
+// TestRenameExistingDestinationFailsWithoutTouching — SFTP v3 RENAME must
+// not clobber: an existing destination fails and NOTHING is written or
+// deleted.
+func TestRenameExistingDestinationFailsWithoutTouching(t *testing.T) {
+	be := newRecordingBackend()
+	be.objects["bkt/a.txt"] = []byte("aaa-source")
+	be.objects["bkt/b.txt"] = []byte("bbb-dest")
+	_, lsn := startTestServer(t, be, testConfig(t, be))
+	sc := dialSFTP(t, lsn, "user", "pass")
+
+	if err := sc.Rename("/bkt/a.txt", "/bkt/b.txt"); err == nil {
+		t.Fatal("rename onto existing destination must fail (no clobber)")
+	}
+	if len(be.puts) != 0 || len(be.deletes) != 0 {
+		t.Fatalf("failed rename touched storage: puts=%+v deletes=%+v", be.puts, be.deletes)
+	}
+	if got := string(be.objects["bkt/a.txt"]); got != "aaa-source" {
+		t.Fatalf("source changed: %q", got)
+	}
+	if got := string(be.objects["bkt/b.txt"]); got != "bbb-dest" {
+		t.Fatalf("destination clobbered: %q", got)
+	}
+}
+
+// TestRenameToFreshKeyStillWorks — the happy path keeps working: fresh
+// destination copies the bytes and deletes the source.
+func TestRenameToFreshKeyStillWorks(t *testing.T) {
+	be := newRecordingBackend()
+	be.objects["bkt/old.txt"] = []byte("move-me")
+	_, lsn := startTestServer(t, be, testConfig(t, be))
+	sc := dialSFTP(t, lsn, "user", "pass")
+
+	if err := sc.Rename("/bkt/old.txt", "/bkt/new.txt"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if got, ok := be.objects["bkt/new.txt"]; !ok || string(got) != "move-me" {
+		t.Fatalf("destination = %q, want move-me", got)
+	}
+	if _, ok := be.objects["bkt/old.txt"]; ok {
+		t.Fatal("source still present after rename")
+	}
+}
+
+// --- T2: zero-write close commits nothing -----------------------------------
+
+// TestZeroWriteCloseDoesNotCommit — opening a handle for write and closing
+// it without any successful write (an aborted APPE / upload) must not Put:
+// the previous object keeps its exact bytes and no empty object appears.
+func TestZeroWriteCloseDoesNotCommit(t *testing.T) {
+	be := newRecordingBackend()
+	be.objects["bkt/keep.txt"] = []byte("original-bytes")
+	_, lsn := startTestServer(t, be, testConfig(t, be))
+	sc := dialSFTP(t, lsn, "user", "pass")
+
+	// Abort over an existing object.
+	wf, err := sc.OpenFile("/bkt/keep.txt", os.O_WRONLY)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	if err := wf.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Abort onto a fresh key.
+	nf, err := sc.OpenFile("/bkt/never.txt", os.O_WRONLY)
+	if err != nil {
+		t.Fatalf("OpenFile new: %v", err)
+	}
+	if err := nf.Close(); err != nil {
+		t.Fatalf("Close new: %v", err)
+	}
+	if len(be.puts) != 0 {
+		t.Fatalf("zero-write close committed: puts=%+v", be.puts)
+	}
+	if got, ok := be.objects["bkt/keep.txt"]; !ok || string(got) != "original-bytes" {
+		t.Fatalf("previous object lost: %q", got)
+	}
+	if _, ok := be.objects["bkt/never.txt"]; ok {
+		t.Fatal("empty object created by aborted upload")
+	}
+}
+
+// TestPutWriterNormalUploadStillCommits — after ≥1 successful WriteAt the
+// Close still Puts the exact buffered bytes (the guard only fires on the
+// zero-write path).
+func TestPutWriterNormalUploadStillCommits(t *testing.T) {
+	be := newRecordingBackend()
+	_, lsn := startTestServer(t, be, testConfig(t, be))
+	sc := dialSFTP(t, lsn, "user", "pass")
+
+	payload := []byte("guarded-upload-still-commits")
+	wf, err := sc.Create("/bkt/upload.bin")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := wf.Write(payload); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := wf.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if len(be.puts) != 1 {
+		t.Fatalf("puts = %+v, want exactly 1", be.puts)
+	}
+	if got, ok := be.objects["bkt/upload.bin"]; !ok || !bytes.Equal(got, payload) {
+		t.Fatalf("committed bytes = %q, want %q", got, payload)
+	}
+}
+
+// --- T3: subsystem request classification -----------------------------------
+
+// TestClassifySubsystemRequestShortPayload — a request whose payload is
+// shorter than 4 bytes (or non-subsystem, or nil) must be rejected without
+// ever slicing Payload[4:] (the old code panicked the process).
+func TestClassifySubsystemRequestShortPayload(t *testing.T) {
+	cases := []struct {
+		name    string
+		req     *ssh.Request
+		wantOK  bool
+		wantSub string
+	}{
+		{name: "nil request", req: nil, wantOK: false},
+		{name: "wrong type", req: &ssh.Request{Type: "exec", Payload: []byte{0, 0, 0, 4, 'x'}}, wantOK: false},
+		{name: "empty payload", req: &ssh.Request{Type: "subsystem", Payload: []byte{}}, wantOK: false},
+		{name: "1-byte payload", req: &ssh.Request{Type: "subsystem", Payload: []byte{0}}, wantOK: false},
+		{name: "4-byte payload", req: &ssh.Request{Type: "subsystem", Payload: []byte{0, 0, 0, 4}}, wantOK: false},
+		{name: "sftp", req: &ssh.Request{Type: "subsystem", Payload: []byte{0, 0, 0, 4, 's', 'f', 't', 'p'}}, wantOK: true, wantSub: "sftp"},
+		{name: "other subsystem", req: &ssh.Request{Type: "subsystem", Payload: []byte{0, 0, 0, 4, 'x', 'y', 's', 'z'}}, wantOK: true, wantSub: "xysz"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sub, ok := classifySubsystemRequest(tc.req)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if tc.wantOK && sub != tc.wantSub {
+				t.Fatalf("subsystem = %q, want %q", sub, tc.wantSub)
+			}
+		})
+	}
+}
+
+// --- T4: nil KeyChecker contract ---------------------------------------------
+
+// TestNilKeyCheckerNoPanicPasswordAuthWorks — the documented nil shape
+// (password auth on, no key checker) must not panic, password auth must
+// still work end-to-end, and public-key auth must NOT be offered.
+func TestNilKeyCheckerNoPanicPasswordAuthWorks(t *testing.T) {
+	be := newRecordingBackend()
+	cfg := testConfig(t, be) // AllowPasswordAuth + Verifier, KeyChecker nil
+	if _, err := New(be, cfg); err != nil {
+		t.Fatalf("New with nil KeyChecker: %v", err)
+	}
+	_, lsn := startTestServer(t, be, cfg)
+
+	// Password auth works.
+	sc := dialSFTP(t, lsn, "user", "pass")
+	wf, err := sc.Create("/bkt/nilchecker.txt")
+	if err != nil {
+		t.Fatalf("Create (password session): %v", err)
+	}
+	if _, err := wf.Write([]byte("password-auth-still-works")); err != nil {
+		t.Fatalf("Write (password session): %v", err)
+	}
+	if err := wf.Close(); err != nil {
+		t.Fatalf("Close (password session): %v", err)
+	}
+	if len(be.puts) != 1 {
+		t.Fatalf("puts = %+v, want 1 (password auth functional)", be.puts)
+	}
+
+	// Public-key auth is not offered: a client with only a key fails.
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, port, _ := net.SplitHostPort(lsn.Addr().String())
+	ccfg := &ssh.ClientConfig{
+		User:            "user",
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // test host key
+		Timeout:         5 * time.Second,
+	}
+	if conn, err := ssh.Dial("tcp", "127.0.0.1:"+port, ccfg); err == nil {
+		_ = conn.Close()
+		t.Fatal("public-key auth must not be offered when KeyChecker is nil")
+	}
+}
+
+// --- T6: host key exclusive create -------------------------------------------
+
+// TestHostKeyExistingFileNeverOverwritten — when the path already holds a
+// valid key it is reused untouched (no WriteFile clobber): same
+// fingerprint, byte-identical file, generated=false.
+func TestHostKeyExistingFileNeverOverwritten(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := dir + "/host_ed25519"
+
+	_, gen1, fp1, err := loadOrGenerateHostKey(keyPath)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if !gen1 {
+		t.Fatal("first call must generate")
+	}
+	before, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, gen2, fp2, err := loadOrGenerateHostKey(keyPath)
+	if err != nil {
+		t.Fatalf("reuse: %v", err)
+	}
+	if gen2 {
+		t.Fatal("existing key must be reused, not regenerated")
+	}
+	if fp1 != fp2 {
+		t.Fatalf("fingerprint changed: %q vs %q", fp1, fp2)
+	}
+	after, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("existing host key file was rewritten")
+	}
+	if st2, _ := os.Stat(keyPath); !st.ModTime().Equal(st2.ModTime()) {
+		t.Fatal("existing host key file mtime changed (was overwritten)")
+	}
+}
+
+// TestHostKeyDanglingSymlinkNotFollowed — WriteFile used to follow a
+// dangling symlink at the host-key path. The exclusive create must refuse
+// (EEXIST shape) with a loud error and write nothing through the link.
+func TestHostKeyDanglingSymlinkNotFollowed(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := dir + "/host_ed25519"
+	if err := os.Symlink(dir+"/nonexistent-target", keyPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	_, _, _, err := loadOrGenerateHostKey(keyPath)
+	if err == nil {
+		t.Fatal("dangling symlink at hostKeyFile must fail loudly, not write through it")
+	}
+	if _, statErr := os.Lstat(dir + "/nonexistent-target"); !os.IsNotExist(statErr) {
+		t.Fatal("something was written through the dangling symlink")
+	}
+}

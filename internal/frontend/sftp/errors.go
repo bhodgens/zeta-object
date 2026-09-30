@@ -26,6 +26,9 @@ var errPermission = sftp.ErrSSHFxPermissionDenied
 // errNoSuchFile is the miss error (SSH_FX_NO_SUCH_FILE).
 var errNoSuchFile = sftp.ErrSSHFxNoSuchFile
 
+// errFailure is the generic failure error (SSH_FX_FAILURE).
+var errFailure = sftp.ErrSSHFxFailure
+
 // mapBackendError converts a Backend error into a protocol-appropriate
 // sftp status error. Unknown errors map to SSH_FX_FAILURE.
 func mapBackendError(err error) error {

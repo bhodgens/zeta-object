@@ -24,14 +24,20 @@ func (f *Frontend) handleConn(conn net.Conn) {
 	// only per-connection state ssh.ServerConfig hands back.
 	cfg := &ssh.ServerConfig{
 		PasswordCallback: f.passwordCallback(),
-		PublicKeyCallback: func(md ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+	}
+	// Public-key auth is offered ONLY when a KeyChecker is wired (nil
+	// checker = pubkey auth not offered, matching the documented config
+	// contract). Installing the callback unconditionally would nil-panic
+	// inside f.cfg.KeyChecker.Accept on the first publickey offer.
+	if f.cfg.KeyChecker != nil {
+		cfg.PublicKeyCallback = func(md ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 			id, ok := f.cfg.KeyChecker.Accept(key)
 			if !ok {
 				log.Printf("sftp: public-key auth failed for %q from %s", md.User(), md.RemoteAddr())
 				return nil, errAuthFailed
 			}
 			return identityPermissions(id), nil
-		},
+		}
 	}
 	signer, generated, fingerprint, err := loadOrGenerateHostKey(f.cfg.HostKeyFile)
 	if err != nil {
@@ -147,7 +153,16 @@ func identityFromPermissions(p *ssh.Permissions) auth.Identity {
 func (f *Frontend) handleSession(perms *ssh.Permissions, channel ssh.Channel, requests <-chan *ssh.Request) {
 	defer channel.Close()
 	for req := range requests {
-		if req.Type != "subsystem" || string(req.Payload[4:]) != "sftp" {
+		subsystem, ok := classifySubsystemRequest(req)
+		if !ok {
+			if req.WantReply {
+				if err := req.Reply(false, nil); err != nil {
+					log.Printf("sftp: request reply: %v", err)
+				}
+			}
+			continue
+		}
+		if subsystem != "sftp" {
 			if req.WantReply {
 				if err := req.Reply(false, nil); err != nil {
 					log.Printf("sftp: request reply: %v", err)
@@ -167,6 +182,25 @@ func (f *Frontend) handleSession(perms *ssh.Permissions, channel ssh.Channel, re
 		}
 		return
 	}
+}
+
+// classifySubsystemRequest validates a session request as a subsystem
+// open. ssh.Request payloads are length-prefixed: byte 0..3 is the
+// big-endian name length, [4:] the name. Anything that is not a
+// "subsystem" request, or whose payload is too short to carry the length
+// prefix + a non-empty name (len < 5), is rejected — a short or hostile
+// payload must NEVER reach the [4:] slice (a 4-byte slice of a shorter
+// payload panics the session goroutine and, unrecovered, the process).
+// ok=false → the request is not a subsystem request at all (Reply(false)
+// and skip); ok=true with a name → it is one (serve only when name=="sftp").
+func classifySubsystemRequest(req *ssh.Request) (name string, ok bool) {
+	if req == nil || req.Type != "subsystem" {
+		return "", false
+	}
+	if len(req.Payload) < 5 {
+		return "", false
+	}
+	return string(req.Payload[4:]), true
 }
 
 // splitComma / cut are small stdlib-shaped helpers.

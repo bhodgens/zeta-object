@@ -33,7 +33,12 @@ func loadOrGenerateHostKey(hostKeyPath string) (signer ssh.Signer, generated boo
 	if !errors.Is(readErr, os.ErrNotExist) {
 		return nil, false, "", fmt.Errorf("sftp: reading host key %s: %w", hostKeyPath, readErr)
 	}
-	// Generate + persist.
+	// Generate + persist. The write is exclusive (O_EXCL, 0600) so two
+	// first-time starts racing on the same path generate two keys but
+	// persist exactly ONE file: the loser re-reads and uses the key that
+	// won the race. O_EXCL also refuses to write through a symlink or
+	// over an existing file of any kind — never clobber a host identity
+	// clients may have pinned.
 	if dir := filepath.Dir(hostKeyPath); dir != "" && dir != "." {
 		if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
 			return nil, false, "", fmt.Errorf("sftp: creating host-key directory %s: %w", dir, mkErr)
@@ -49,8 +54,34 @@ func loadOrGenerateHostKey(hostKeyPath string) (signer ssh.Signer, generated boo
 	}
 	block := &pem.Block{Type: "PRIVATE KEY", Bytes: der}
 	pemBytes := pem.EncodeToMemory(block)
-	if writeErr := os.WriteFile(hostKeyPath, pemBytes, 0o600); writeErr != nil {
+	wf, writeErr := os.OpenFile(hostKeyPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if writeErr != nil {
+		if !errors.Is(writeErr, os.ErrExist) {
+			return nil, false, "", fmt.Errorf("sftp: writing host key %s: %w", hostKeyPath, writeErr)
+		}
+		// Lost the race: a file appeared (or a symlink dangled) at the
+		// path between our ReadFile and here. Re-read and parse the file
+		// that won — reuse its identity, never overwrite it.
+		again, rereadErr := os.ReadFile(hostKeyPath)
+		if rereadErr != nil {
+			return nil, false, "", fmt.Errorf("sftp: re-reading host key %s after create race: %w", hostKeyPath, rereadErr)
+		}
+		parsed, parseErr := ssh.ParsePrivateKey(again)
+		if parseErr != nil {
+			return nil, false, "", fmt.Errorf("sftp: parsing raced host key %s: %w", hostKeyPath, parseErr)
+		}
+		return parsed, false, fingerprintOf(parsed), nil
+	}
+	if _, writeErr = wf.Write(pemBytes); writeErr != nil {
+		if closeErr := wf.Close(); closeErr != nil {
+			// Write already failed; the close error is secondary. Both
+			// are reported so neither is silently dropped.
+			return nil, false, "", fmt.Errorf("sftp: writing host key %s: %w (close: %v)", hostKeyPath, writeErr, closeErr)
+		}
 		return nil, false, "", fmt.Errorf("sftp: writing host key %s: %w", hostKeyPath, writeErr)
+	}
+	if closeErr := wf.Close(); closeErr != nil {
+		return nil, false, "", fmt.Errorf("sftp: closing host key %s: %w", hostKeyPath, closeErr)
 	}
 	parsed, parseErr := ssh.ParsePrivateKey(pemBytes)
 	if parseErr != nil {

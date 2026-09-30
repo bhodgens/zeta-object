@@ -9,6 +9,7 @@ package sftp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path"
@@ -97,21 +98,44 @@ func (p *filePut) Filewrite(req *sftp.Request) (io.WriterAt, error) {
 }
 
 // putWriter buffers an upload; Close commits one Put.
+//
+// Commit guard: Close only Puts when at least one WriteAt SUCCEEDED. A
+// zero-write close (aborted APPE / new upload — the client opened the
+// handle and closed it without transferring) must NOT store an empty
+// object or clobber the previous one, so it is a silent no-op.
+//
+// RESIDUAL (known, unfixable at this layer): pkg/sftp's RequestServer has
+// no transfer-error hook — it calls Close the same way on a clean EOF and
+// on a dropped connection. Once ANY write succeeded we cannot distinguish
+// "client finished" from "connection dropped mid-transfer", so a dropped
+// connection after a partial write still commits the buffered prefix.
+// Fixing that needs an upstream hook (or a temp-key + rename commit).
 type putWriter struct {
 	f      *Frontend
 	bucket string
 	key    string
 	buf    bytes.Buffer
+	writes bool // at least one WriteAt succeeded
 }
 
 func (w *putWriter) WriteAt(p []byte, off int64) (int, error) {
 	if off != int64(w.buf.Len()) {
 		return 0, sftp.ErrSSHFxOpUnsupported // random-access writes are not representable
 	}
-	return w.buf.Write(p)
+	n, err := w.buf.Write(p)
+	if err == nil {
+		w.writes = true
+	}
+	return n, err
 }
 
 func (w *putWriter) Close() error {
+	if !w.writes {
+		// Abort semantics: no write ever succeeded, so commit nothing —
+		// an existing object keeps its exact bytes and no empty object
+		// is created.
+		return nil
+	}
 	payload := w.buf.Bytes()
 	_, err := w.f.be.Put(context.Background(), w.bucket, w.key,
 		bytes.NewReader(payload), int64(len(payload)), objectmodel.PutOptions{})
@@ -195,6 +219,16 @@ func (c *fileCmd) remove(p string) error {
 
 // rename = Get + Put + Delete (Contract C RNTO row: no atomic-rename
 // guarantee; directory markers rename their marker form).
+//
+// Safety guards (SFTP v3 rename semantics — RENAME must not clobber):
+//   - same key: source and destination resolve to the same bucket+key →
+//     idempotent success WITHOUT touching storage (no Put, no Delete).
+//     Without this guard the Put-then-Delete sequence would delete the
+//     object outright.
+//   - existing destination: Stat first; an existing destination key fails
+//     with SSH_FX_FAILURE and NOTHING is touched (no overwrite, SFTP v3
+//     has no implicit clobber — clients use posix-rename@openssh.com for
+//     that, which this server does not offer).
 func (c *fileCmd) rename(oldPath, newPath string) error {
 	oldB, oldK := splitPath(oldPath)
 	newB, newK := splitPath(newPath)
@@ -207,9 +241,21 @@ func (c *fileCmd) rename(oldPath, newPath string) error {
 	if err := authorize(c.id, newB, true); err != nil {
 		return errPermission
 	}
-	ctx := context.Background()
 	srcKey := oldK
 	dstKey := newK + dirMarkerSuffixIfDir(oldK)
+	if oldB == newB && srcKey == dstKey {
+		// Same bucket+key: a no-op. Must precede the destination Stat so
+		// the source's own existence does not read as "clobber attempt".
+		return nil
+	}
+	ctx := context.Background()
+	if _, err := c.f.be.Stat(ctx, newB, dstKey); err == nil {
+		// Destination exists: refuse without touching anything (no
+		// overwrite — SFTP v3 rename must not clobber).
+		return errFailure
+	} else if !isNoSuchKey(err) {
+		return mapBackendError(err)
+	}
 	rc, _, err := c.f.be.Get(ctx, oldB, srcKey, objectmodel.GetOptions{})
 	if err != nil {
 		return mapBackendError(err)
@@ -237,6 +283,17 @@ func dirMarkerSuffixIfDir(key string) string {
 		return dirMarkerSuffix
 	}
 	return ""
+}
+
+// isNoSuchKey reports whether err is the backend's miss error (used by
+// rename's destination probe: "not there" is the expected good path).
+func isNoSuchKey(err error) bool {
+	if err == nil {
+		return false
+	}
+	var oe *objectmodel.Error
+	return errors.As(err, &oe) &&
+		(oe.Code == objectmodel.CodeNoSuchKey || oe.Code == objectmodel.CodeNoSuchBucket)
 }
 
 // --- FileList (List / Stat / Readlink) --------------------------------------
