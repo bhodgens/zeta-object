@@ -9,6 +9,9 @@ package main
 
 import (
 	"encoding/json"
+	"encoding/xml"
+	"net/http"
+	"net/url"
 	"testing"
 )
 
@@ -141,4 +144,109 @@ func containsAny(s, chars string) bool {
 		}
 	}
 	return false
+}
+
+// FuzzGetCanonicalURI: the SigV4 canonical-URI path is computed from raw
+// client bytes (URL.EscapedPath / RequestURI re-encoding). It must never
+// panic and must always return a non-empty path starting with "/" — the
+// signature canonical form requires it.
+func FuzzGetCanonicalURI(f *testing.F) {
+	seeds := []string{
+		"/",
+		"/bucket",
+		"/bucket/key",
+		"/bucket/key with spaces",
+		"/bucket/uni%C3%A7ode",
+		"/bucket/a%2Fb",
+		"/bucket/./dot",
+		"/bucket/../dotdot",
+		"/bucket//double//slash",
+		"/%zz-bad-escape",
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, rawPath string) {
+		// Build the request the way the server receives one: via the HTTP
+		// request URL. Unparseable inputs skip — the server's mux rejects
+		// those before auth (and getCanonicalURI) ever run.
+		u, err := url.ParseRequestURI("https://h" + rawPath)
+		if err != nil {
+			t.Skip("not a parseable request URI — rejected by the HTTP stack before getCanonicalURI")
+		}
+		// httptest.NewRequest panics on targets containing spaces or other
+		// malformed request-line bytes; url.Parse accepts them but no real
+		// HTTP request line can carry them, so skip (the server's request
+		// parser rejects those before getCanonicalURI).
+		req, err := http.NewRequest("GET", u.String(), nil)
+		if err != nil {
+			t.Skip("not a buildable http.Request — rejected by the HTTP stack before getCanonicalURI")
+		}
+		got := getCanonicalURI(req)
+		if got == "" {
+			t.Fatalf("getCanonicalURI(%q) = empty string", rawPath)
+		}
+		if got[0] != '/' {
+			t.Fatalf("getCanonicalURI(%q) = %q: does not start with /", rawPath, got)
+		}
+	})
+}
+
+// FuzzErrorToXML: error code and message come from request-derived strings
+// (S3 error codes, upstream error text). Marshaling must never panic and
+// must produce well-formed XML that round-trips through the decoder with
+// the same Code and Message — an encoding bug here is a cross-protocol
+// response bug.
+func FuzzErrorToXML(f *testing.F) {
+	seeds := []struct{ code, message string }{
+		{"NoSuchKey", "The specified key does not exist."},
+		{"NoSuchBucket", "bucket <gone>"},
+		{"AccessDenied", `quote " and ' apostrophe`},
+		{"&Code", "amp &<brackets>"},
+		{"", ""},
+		{"Code\nWith\nNewlines", "tab	here"},
+	}
+	for _, s := range seeds {
+		f.Add(s.code, s.message)
+	}
+	f.Fuzz(func(t *testing.T, code, message string) {
+		x := errorToXML(code, message)
+		if x == "" {
+			t.Fatal("errorToXML returned empty body")
+		}
+		var decoded struct {
+			Code    string `xml:"Code"`
+			Message string `xml:"Message"`
+		}
+		if err := xml.Unmarshal([]byte(x), &decoded); err != nil {
+			t.Fatalf("errorToXML(%q, %q) = %q: not well-formed XML: %v", code, message, x, err)
+		}
+		// Round-trip comparison: errorToXML must behave exactly like a
+		// direct xml.Marshal of the same fields. encoding/xml replaces
+		// invalid UTF-8 and XML-forbidden control characters with U+FFFD
+		// (documented) — whatever the marshaller does, errorToXML must do
+		// identically; the point of this target is that the wrapper adds
+		// no divergence of its own.
+		var direct struct {
+			XMLName xml.Name `xml:"Error"`
+			Code    string   `xml:"Code"`
+			Message string   `xml:"Message"`
+		}
+		direct.Code, direct.Message = code, message
+		want, err := xml.Marshal(direct)
+		if err != nil {
+			t.Skipf("unmarshalable input: %v", err)
+		}
+		var wantDecoded struct {
+			Code    string `xml:"Code"`
+			Message string `xml:"Message"`
+		}
+		if err := xml.Unmarshal(want, &wantDecoded); err != nil {
+			t.Skipf("direct marshal not decodable: %v", err)
+		}
+		if decoded.Code != wantDecoded.Code || decoded.Message != wantDecoded.Message {
+			t.Fatalf("errorToXML(%q, %q) = Code %q Message %q; direct marshal gives Code %q Message %q",
+				code, message, decoded.Code, decoded.Message, wantDecoded.Code, wantDecoded.Message)
+		}
+	})
 }

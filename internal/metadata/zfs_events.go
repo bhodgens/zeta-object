@@ -573,6 +573,12 @@ type zfsEventsProvider struct {
 	detail   HistoryDetail
 }
 
+// Compile-time assertion: the concrete provider must satisfy the frozen
+// MetadataProvider seam. The interface must not gain methods (master
+// Contract 1); this assertion keeps any drift a compile error, not a
+// runtime registry failure.
+var _ MetadataProvider = (*zfsEventsProvider)(nil)
+
 // LastDetail returns the detail of the most recent completed History call
 // on this provider instance (the frontend's detailReporter seam).
 func (p *zfsEventsProvider) LastDetail() HistoryDetail {

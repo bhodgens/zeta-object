@@ -28,6 +28,11 @@ type Frontend struct {
 	authz *sigv4Authenticator
 }
 
+// Compile-time assertion: *Frontend must satisfy the frontend seam
+// interface. A signature drift breaks the build here instead of failing
+// at Registry.Register time.
+var _ frontend.Frontend = (*Frontend)(nil)
+
 // Option configures a Frontend at construction time.
 type Option func(*Frontend)
 

@@ -98,6 +98,11 @@ type FS struct {
 	maxPutBytes int64
 }
 
+// Compile-time assertion: *FS must satisfy the backend seam interface.
+// (Mirrored in fsbackend_test.go; this copy fails the build at the source
+// file when the interface drifts.)
+var _ backend.Backend = (*FS)(nil)
+
 // maxPutBytesDefault is the default per-object Put size cap: 5 GiB, S3's
 // single-PUT object limit.
 const maxPutBytesDefault int64 = 5 << 30
