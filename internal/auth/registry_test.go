@@ -81,6 +81,15 @@ func TestMultiRegistryValidationFailures(t *testing.T) {
 		{"empty grant key", []auth.IdentityConfig{
 			{Name: "x", AccessKey: "a", SecretKey: "s", Grants: map[string]string{"": "readonly"}},
 		}, "must not be empty"},
+		// T5 pin: a grant key containing "," or "=" would widen when
+		// round-tripped through the SFTP CriticalOptions serialization
+		// (comma-separated key=value pairs); reject at config load.
+		{"grant key with comma", []auth.IdentityConfig{
+			{Name: "x", AccessKey: "a", SecretKey: "s", Grants: map[string]string{"a,b": "readonly"}},
+		}, `grant bucket name "a,b" must not contain`},
+		{"grant key with equals", []auth.IdentityConfig{
+			{Name: "x", AccessKey: "a", SecretKey: "s", Grants: map[string]string{"b=c": "readwrite"}},
+		}, `grant bucket name "b=c" must not contain`},
 		{"duplicate ssh key", []auth.IdentityConfig{
 			{Name: "x", AccessKey: "a1", SecretKey: "s", SSHPublicKeys: []string{"ssh-ed25519 AAAA"}},
 			{Name: "y", AccessKey: "a2", SecretKey: "s", SSHPublicKeys: []string{"ssh-ed25519 AAAA"}},
@@ -138,6 +147,35 @@ func TestMultiRegistryBasicCredential(t *testing.T) {
 	// Empty password.
 	if _, ok := reg.LookupByBasicCredential("AKRO", ""); ok {
 		t.Error("empty password accepted")
+	}
+}
+
+// TestBasicCredentialUsesPrecomputedHash pins the A4 fix structure: the
+// presented password is hashed exactly once and compared against the stored
+// precomputed digest. The external contract is unchanged (hit + all misses
+// return false), which these cases pin so the compare path cannot regress to
+// re-hashing both sides.
+func TestBasicCredentialUsesPrecomputedHash(t *testing.T) {
+	reg, err := auth.NewMultiRegistry(testIdentities())
+	if err != nil {
+		t.Fatalf("NewMultiRegistry: %v", err)
+	}
+	if _, ok := reg.LookupByBasicCredential("AKRO", "sk-ro"); !ok {
+		t.Fatal("valid credential rejected")
+	}
+	for _, tc := range []struct {
+		user, pass string
+	}{
+		{"AKRO", "wrong"},   // known user, wrong password
+		{"AKNOPE", "sk-ro"}, // unknown user, real password
+		{"AKNOPE", "wrong"}, // unknown user, wrong password
+		{"AKRO", ""},        // known user, empty password
+		{"", "sk-ro"},       // empty username
+		{"AKENV", "sk-ro"},  // valid password for a different user
+	} {
+		if _, ok := reg.LookupByBasicCredential(tc.user, tc.pass); ok {
+			t.Errorf("LookupByBasicCredential(%q, %q) accepted, want reject", tc.user, tc.pass)
+		}
 	}
 }
 

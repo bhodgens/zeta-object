@@ -74,6 +74,52 @@ func TestIdentityWriteImpliesRead(t *testing.T) {
 	}
 }
 
+// TestPerBucketGrantBeatsWildcard pins the A1 fix: a PRESENT per-bucket entry
+// is authoritative for that bucket — it overrides the "*" wildcard in BOTH
+// directions (readonly per-bucket denies write; readwrite per-bucket allows
+// write even under a readonly wildcard). Only an ABSENT entry falls through.
+// This is the README.md shape: {"*":"readwrite", "photos":"readonly"}.
+func TestPerBucketGrantBeatsWildcard(t *testing.T) {
+	id := auth.Identity{
+		AccessKeyID: "ak",
+		BucketGrants: map[string]auth.Grant{
+			"*":      {Read: true, Write: true},
+			"photos": {Read: true}, // readonly
+		},
+	}
+	if id.CanRead("photos") != true {
+		t.Error("CanRead(photos) = false, want true (per-bucket readonly reads)")
+	}
+	if id.CanWrite("photos") != false {
+		t.Error("CanWrite(photos) = true, want false (per-bucket readonly must beat wildcard readwrite)")
+	}
+	if !id.CanRead("other") || !id.CanWrite("other") {
+		t.Error("absent per-bucket entry must fall through to wildcard readwrite")
+	}
+	// Reverse direction: per-bucket readwrite beats a readonly wildcard.
+	id2 := auth.Identity{BucketGrants: map[string]auth.Grant{
+		"*":      {Read: true},
+		"photos": {Read: true, Write: true},
+	}}
+	if !id2.CanWrite("photos") {
+		t.Error("CanWrite(photos) = false, want true (per-bucket readwrite beats readonly wildcard)")
+	}
+	if id2.CanWrite("other") {
+		t.Error("CanWrite(other) = true, want false (readonly wildcard)")
+	}
+	// A per-bucket write-only entry is authoritative and does NOT grant read.
+	id3 := auth.Identity{BucketGrants: map[string]auth.Grant{
+		"*":      {Read: true, Write: true},
+		"photos": {Write: true},
+	}}
+	if !id3.CanWrite("photos") {
+		t.Error("CanWrite(photos) = false, want true")
+	}
+	if id3.CanRead("photos") {
+		t.Error("CanRead(photos) = true, want false (per-bucket entry authoritative, no wildcard read rescue)")
+	}
+}
+
 func TestWildcardIdentity(t *testing.T) {
 	id := auth.WildcardIdentity("env-ak")
 	if id.AccessKeyID != "env-ak" {

@@ -64,9 +64,12 @@ func TestCanonicalizePublicKey(t *testing.T) {
 			wantCanon: fakeType1 + " " + blob,
 		},
 		{
+			// A2 pin: blob length is 16 (NOT a multiple of 3), so the padded
+			// StdEncoding form genuinely differs from the raw form. Both must
+			// canonicalize to keytype + StdEncoding(decoded blob).
 			name:      "padded blob same canonical as raw",
-			input:     fakeType1 + " " + base64.StdEncoding.EncodeToString([]byte("fake-key-blob-1")),
-			wantCanon: fakeType1 + " " + blob,
+			input:     fakeType1 + " " + base64.StdEncoding.EncodeToString([]byte("fake-key-blob-1x")),
+			wantCanon: fakeType1 + " " + base64.StdEncoding.EncodeToString([]byte("fake-key-blob-1x")),
 		},
 		{name: "empty", input: "", wantErr: true},
 		{name: "garbage", input: "not-a-key", wantErr: true},
@@ -95,8 +98,13 @@ func TestCanonicalizePublicKey(t *testing.T) {
 			if !strings.HasPrefix(fp, "SHA256:") {
 				t.Fatalf("fingerprint = %q, want SHA256: prefix", fp)
 			}
-			// Fingerprint is deterministic: SHA256 of the decoded blob.
-			raw, _ := base64.RawStdEncoding.DecodeString(blob)
+			// Fingerprint is deterministic: SHA256 of the decoded blob,
+			// taken from the canonical form's blob field.
+			parts := strings.SplitN(canon, " ", 2)
+			raw, err := base64.StdEncoding.DecodeString(parts[1])
+			if err != nil {
+				t.Fatalf("canonical blob not valid std base64: %v", err)
+			}
 			sum := sha256.Sum256(raw)
 			want := "SHA256:" + base64.StdEncoding.WithPadding(base64.NoPadding).EncodeToString(sum[:])
 			if fp != want {
@@ -128,6 +136,70 @@ func TestCanonicalizeSameBlobDifferentComments(t *testing.T) {
 	}
 	if c1 == c3 {
 		t.Fatal("different blobs canonicalized the same")
+	}
+}
+
+// TestCanonicalizePaddingVariantsMatch pins the A2 fix with a blob whose
+// length is NOT a multiple of 3, so padded and raw encodings really differ:
+// padded-registration + raw-presentation and raw-registration +
+// padded-presentation must both match, with one canonical form and one
+// fingerprint for the same key bytes.
+func TestCanonicalizePaddingVariantsMatch(t *testing.T) {
+	blobBytes := []byte("fake-key-blob-not-mult-3!") // 25 bytes
+	raw := base64.RawStdEncoding.EncodeToString(blobBytes)
+	padded := base64.StdEncoding.EncodeToString(blobBytes)
+	if raw == padded {
+		t.Fatal("test fixture broken: raw and padded encodings are identical")
+	}
+
+	canonPadded, fpPadded, err := auth.CanonicalizePublicKey(fakeType1 + " " + padded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonRaw, fpRaw, err := auth.CanonicalizePublicKey(fakeType1 + " " + raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canonPadded != canonRaw {
+		t.Fatalf("canonical forms differ: %q vs %q", canonPadded, canonRaw)
+	}
+	if fpPadded != fpRaw {
+		t.Fatalf("fingerprints differ: %q vs %q", fpPadded, fpRaw)
+	}
+	// Canonical form is the std-padded re-encoding of the decoded blob.
+	if canonPadded != fakeType1+" "+padded {
+		t.Fatalf("canonical = %q, want %q", canonPadded, fakeType1+" "+padded)
+	}
+}
+
+// TestPublicKeyPaddingRoundTrip pins the registry-level A2 fix: a key
+// registered in one padding variant authenticates when presented in the
+// other, in both directions.
+func TestPublicKeyPaddingRoundTrip(t *testing.T) {
+	blobBytes := []byte("fake-key-blob-not-mult-3!")
+	raw := base64.RawStdEncoding.EncodeToString(blobBytes)
+	padded := base64.StdEncoding.EncodeToString(blobBytes)
+
+	newReg := func(regKey string) *auth.MultiRegistry {
+		t.Helper()
+		reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
+			{Name: "sftp-user", AccessKey: "AKSFTP", SecretKey: "sk", SSHPublicKeys: []string{fakeType1 + " " + regKey}},
+		})
+		if err != nil {
+			t.Fatalf("NewMultiRegistry: %v", err)
+		}
+		return reg
+	}
+
+	// Padded registration, raw presentation.
+	reg := newReg(padded)
+	if _, err := reg.AuthenticatePublicKey(fakeType1 + " " + raw); err != nil {
+		t.Fatalf("padded-registered key rejected when presented raw: %v", err)
+	}
+	// Raw registration, padded presentation.
+	reg = newReg(raw)
+	if _, err := reg.AuthenticatePublicKey(fakeType1 + " " + padded); err != nil {
+		t.Fatalf("raw-registered key rejected when presented padded: %v", err)
 	}
 }
 

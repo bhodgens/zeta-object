@@ -14,6 +14,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // IdentityConfig is the config.json "identities" entry shape (leaf 01,
@@ -57,11 +58,9 @@ const (
 // SHA-256 digests mean comparison time never depends on input length.
 func secretHash(secret string) [sha256.Size]byte { return sha256.Sum256([]byte(secret)) }
 
-// secretsEqual compares two secrets in constant time via their digests.
-func secretsEqual(a, b string) bool {
-	h1, h2 := secretHash(a), secretHash(b)
-	return subtle.ConstantTimeCompare(h1[:], h2[:]) == 1
-}
+// dummySecretHash is the fixed digest the unknown-user path compares against,
+// so its timing depends only on the presented password, not on stored state.
+var dummySecretHash = secretHash("zeta-object-registry-constant-shape-miss")
 
 // storedIdentity is MultiRegistry's internal per-identity record. The raw
 // secret is retained because SigV4 needs it for the signing-key derivation;
@@ -156,6 +155,13 @@ func parseGrants(cfg IdentityConfig) (map[string]Grant, error) {
 		if bucket == "" {
 			return nil, fmt.Errorf("identity %q: grant bucket name must not be empty", cfg.Name)
 		}
+		// The SFTP frontend serializes grants into CriticalOptions as
+		// comma-separated key=value pairs; a bucket name containing "," or
+		// "=" would round-trip as a wider grant. Reject at config load.
+		if strings.ContainsAny(bucket, ",=") {
+			return nil, fmt.Errorf("identity %q: grant bucket name %q must not contain %q or %q",
+				cfg.Name, bucket, ",", "=")
+		}
 		switch value {
 		case GrantReadOnly:
 			grants[bucket] = Grant{Read: true}
@@ -179,18 +185,20 @@ func (r *MultiRegistry) LookupByAccessKey(accessKeyID string) (Identity, bool) {
 }
 
 // LookupByBasicCredential resolves a Basic username+password pair. The
-// username is the access key. Both miss paths (unknown user, wrong
-// password) take the same hash-then-compare work so timing never
-// distinguishes them.
+// username is the access key. The PRESENTED password alone is hashed and
+// compared against the precomputed stored digest (constant-time). Both miss
+// paths (unknown user, wrong password) take the same hash-then-compare work
+// against a fixed dummy digest so timing never distinguishes them.
 func (r *MultiRegistry) LookupByBasicCredential(username, password string) (Identity, bool) {
+	presented := secretHash(password)
 	st, ok := r.byAccessKey[username]
 	if !ok {
-		// Unknown user: burn the same hash+compare work as the hit path
-		// so miss timing matches hit timing.
-		secretsEqual(password, "zeta-object-registry-constant-shape-miss")
+		// Unknown user: hash the presented password and compare against a
+		// fixed dummy digest so timing depends only on the presented input.
+		subtle.ConstantTimeCompare(presented[:], dummySecretHash[:])
 		return Identity{}, false
 	}
-	if !secretsEqual(password, st.secret) {
+	if subtle.ConstantTimeCompare(presented[:], st.secretHash[:]) != 1 {
 		return Identity{}, false
 	}
 	return st.identity, true

@@ -102,7 +102,9 @@ func CanonicalizePublicKey(presentedKey string) (canonical string, fingerprint s
 	}
 	sum := sha256.Sum256(blob)
 	fp := "SHA256:" + base64.StdEncoding.WithPadding(base64.NoPadding).EncodeToString(sum[:])
-	return keytype + " " + fields[blobIdx], fp, nil
+	// Canonical form re-encodes the DECODED blob with base64.StdEncoding, so
+	// padding and alphabet variants of the same key collapse to one string.
+	return keytype + " " + base64.StdEncoding.EncodeToString(blob), fp, nil
 }
 
 // validKeytype accepts the SSH public key algorithm names a real deployment

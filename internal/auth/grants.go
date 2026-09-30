@@ -5,23 +5,23 @@ package auth
 // changing the struct shape. The grant decision lives in exactly one place —
 // these two methods — and every frontend (S3, Basic, future SFTP) asks them.
 
-// CanRead reports whether the identity may read bucket. A "*" grant covers
-// every bucket; a per-bucket grant covers that bucket only. Write implies
-// read. A nil or empty grant map grants nothing.
+// CanRead reports whether the identity may read bucket. A per-bucket grant,
+// when PRESENT, is authoritative for that bucket — only an ABSENT entry
+// falls through to the "*" wildcard. A nil or empty grant map grants nothing.
 func (id Identity) CanRead(bucket string) bool {
-	if g, ok := id.BucketGrants[bucket]; ok && g.Read {
-		return true
+	if g, ok := id.BucketGrants[bucket]; ok {
+		return g.Read
 	}
 	g, ok := id.BucketGrants["*"]
 	return ok && g.Read
 }
 
-// CanWrite reports whether the identity may write bucket. A "*" grant covers
-// every bucket; a per-bucket grant covers that bucket only. A nil or empty
-// grant map grants nothing.
+// CanWrite reports whether the identity may write bucket. A per-bucket grant,
+// when PRESENT, is authoritative for that bucket — only an ABSENT entry
+// falls through to the "*" wildcard. A nil or empty grant map grants nothing.
 func (id Identity) CanWrite(bucket string) bool {
-	if g, ok := id.BucketGrants[bucket]; ok && g.Write {
-		return true
+	if g, ok := id.BucketGrants[bucket]; ok {
+		return g.Write
 	}
 	g, ok := id.BucketGrants["*"]
 	return ok && g.Write
