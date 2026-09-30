@@ -154,14 +154,16 @@ launch_expect_fail() {
 }
 
 # wait_for_port <host> <port> <timeout_seconds>
+# Integer tenths counter (an awk float here made bash 5.9 emit
+# "[: 0.2: integer expected" noise on every 0.2s step).
 wait_for_port() {
 	local host=$1 port=$2 timeout=$3 waited=0
 	while ! nc -z "$host" "$port" >/dev/null 2>&1; do
-		if [ "$waited" -ge "$timeout" ]; then
+		if [ "$waited" -ge $((timeout * 5)) ]; then
 			return 1
 		fi
 		sleep 0.2
-		waited=$(awk "BEGIN{print $waited + 0.2}")
+		waited=$((waited + 1))
 	done
 	return 0
 }

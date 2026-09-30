@@ -156,6 +156,10 @@ for case_file in "$E2E_ROOT"/cases/*.sh; do
 	fi
 	echo
 	echo "== case $name =="
+# Tally file is per-case (named), not shared: a case that exits EARLY
+# (server-did-not-start bail) must not leave a stale tally for the NEXT
+# case to read — that masked a real case failure as PASS (case 21, once).
+	rm -f "$WORK/.case-tally"
 	if bash -c "
 		set -u
 		unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_REGION
@@ -167,7 +171,16 @@ for case_file in "$E2E_ROOT"/cases/*.sh; do
 		source '$case_file'
 		echo \"\$E2E_PASS \$E2E_FAIL\" > '$WORK/.case-tally'
 	"; then
-		read -r cp_ cf_ < "$WORK/.case-tally"
+		if [ ! -f "$WORK/.case-tally" ]; then
+			# The case sourced cleanly but never asserted (e.g. it bailed
+			# on server-did-not-start BEFORE any assert): that is a case
+			# failure, not a pass.
+			cp_=0
+			cf_=1
+			echo '  (case bailed before any assert — counted as failure)'
+		else
+			read -r cp_ cf_ < "$WORK/.case-tally"
+		fi
 		E2E_PASS=$((E2E_PASS + cp_))
 		E2E_FAIL=$((E2E_FAIL + cf_))
 	else
