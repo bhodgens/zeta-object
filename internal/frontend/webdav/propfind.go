@@ -151,6 +151,21 @@ func (f *Frontend) propfindEntries(r *http.Request, res resource, depth1 bool) (
 	if err != nil {
 		return nil, err
 	}
+	if kind == kindMissing && !res.isCollection {
+		// PROPFIND-only relaxation (ownCloud client interop, F-oc-1):
+		// real clients PROPFIND the sync root WITHOUT a trailing slash
+		// (owncloudcmd strips it). A slash-less path that exists only as
+		// a prefix resolves as a collection here; GET/PUT/DELETE keep
+		// the pinned exact-key semantics (resolveKind unchanged).
+		exists, cerr := collectionExists(ctx, f.be, res.bucket, res.collectionPrefix())
+		if cerr != nil {
+			return nil, cerr
+		}
+		if exists {
+			res.isCollection = true
+			obj, kind = objectmodel.Object{}, kindCollection
+		}
+	}
 	if kind == kindMissing {
 		return nil, objectmodel.ErrNoSuchKey(f.davPath(res))
 	}
@@ -433,7 +448,7 @@ func writeXMLDocument(w http.ResponseWriter, status int, v any) {
 		return
 	}
 	full := append([]byte(xml.Header), body...)
-	w.Header().Set("Content-Type", `application/xml; charset="utf-8"`)
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.Header().Set("Content-Length", fmtInt(len(full)))
 	w.WriteHeader(status)
 	_, _ = w.Write(full)
