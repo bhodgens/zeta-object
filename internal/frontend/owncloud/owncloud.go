@@ -53,8 +53,9 @@ func (a webdavAdapter) Capabilities() frontend.ProtocolCaps { return a.inner.Cap
 // Frontend implements frontend.Frontend with Name() == "owncloud"
 // (master Contract 3). Construct with New; the zero value is not usable.
 type Frontend struct {
-	wrapped webdavFrontend
-	authnr  auth.Authenticator
+	wrapped    webdavFrontend
+	authnr     auth.Authenticator
+	pathPrefix string // non-empty: stripped from request paths before delegation
 }
 
 // Compile-time assertion: *Frontend satisfies the frozen frontend seam.
@@ -65,7 +66,20 @@ var _ frontend.Frontend = (*Frontend)(nil)
 // carries the Backend and the authenticator, and the OCS surface itself
 // never touches storage — the capabilities document is derived from the
 // frontend's true state (contract 1), not from a second Backend handle.
+// No /remote.php/webdav path rewriting (paths delegate as-is).
 func New(wd *webdav.Frontend) (*Frontend, error) {
+	return NewWithPathPrefix(wd, "")
+}
+
+// NewWithPathPrefix constructs the ownCloud frontend and additionally
+// strips pathPrefix (e.g. "/remote.php/webdav/<bucket>") from every
+// non-OCS request path before delegation. The classic ownCloud client
+// speaks /remote.php/webdav/<bucket>/<path>; the wrapped webdav frontend
+// has no idea that prefix exists — without the strip, a mode-B MKCOL of
+// "<prefix>/dir" saw a non-empty parent prefix and 409'd (surfaced when
+// e2e case 24's asserts ran for the first time; they had been passing on
+// the harness's stale tally). An empty prefix delegates every path as-is.
+func NewWithPathPrefix(wd *webdav.Frontend, pathPrefix string) (*Frontend, error) {
 	if wd == nil {
 		return nil, errors.New("owncloud: wrapped webdav frontend is required")
 	}
@@ -73,7 +87,7 @@ func New(wd *webdav.Frontend) (*Frontend, error) {
 	if adapted.Authenticator() == nil {
 		return nil, errors.New("owncloud: wrapped webdav frontend has no authenticator (use webdav.WithAuthenticator)")
 	}
-	return &Frontend{wrapped: adapted, authnr: adapted.Authenticator()}, nil
+	return &Frontend{wrapped: adapted, authnr: adapted.Authenticator(), pathPrefix: pathPrefix}, nil
 }
 
 // Name returns the frontend's registry name (config "type" value).
@@ -101,6 +115,15 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if v, ok := ocsVersionOf(r.URL.Path); ok {
 		f.routeOCS(w, r, v)
 		return
+	}
+	if f.pathPrefix != "" && strings.HasPrefix(r.URL.Path, f.pathPrefix) {
+		stripped := strings.TrimPrefix(r.URL.Path, f.pathPrefix)
+		if stripped == "" {
+			stripped = "/"
+		}
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = stripped
+		r = r2
 	}
 	f.wrapped.Handler().ServeHTTP(w, r)
 }

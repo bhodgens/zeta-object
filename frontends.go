@@ -58,7 +58,15 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 		if err != nil {
 			return nil, err
 		}
-		oc, err := owncloud.New(wd)
+		// Mode B: the classic client speaks /remote.php/webdav/<bucket>/<path>
+		// and the wrapped webdav re-roots at the configured bucket, so the
+		// "/remote.php/webdav/<bucket>" prefix must be stripped before
+		// delegation (MKCOL of "<prefix>/dir" 409'd on the phantom parent).
+		ocPrefix := "/remote.php/webdav"
+		if cfg.Bucket != "" {
+			ocPrefix += "/" + cfg.Bucket
+		}
+		oc, err := owncloud.NewWithPathPrefix(wd, ocPrefix)
 		if err != nil {
 			return nil, err
 		}
