@@ -38,6 +38,15 @@ case plus the metadata round-trip (`?events`, `?events&versions`), and
 confirm the output matches `zfs events -j` ground truth. Destroy the scratch
 dataset afterwards.
 
+**Tooling:** `scripts/zfs-validate/run-zfs-validation.sh` automates all of the
+above — run `scripts/zfs-validate/run-zfs-validation.sh` after building (it
+builds the linux/amd64 binary itself, deploys it plus a fresh cert to
+`zfs-meta:~/zeta-validate/`, recreates `testpool/zval` fresh, runs the S3 +
+`?events`/`?events&versions` checks against `zfs events -j` ground truth,
+prints a PASS/FAIL table, exits non-zero on failure, and destroys the dataset
+and stops the server). Add change-specific probes by extending the embedded
+`checks.py`; `--keep-server` leaves the stack up for manual poking.
+
 ## E2E coverage rule (hard requirement)
 
 Every new user-facing feature MUST ship with e2e or wire-level test coverage in

@@ -67,12 +67,36 @@ FOUND + FIXED THIS SESSION:
 - F-oc-1b: content-type charset="utf-8" (quoted) - ownCloud client rejects;
   unquoted now
 
-FOUND + FILED AS ISSUE #5 (blocker):
+FOUND + FILED AS ISSUE #5 — **RESOLVED (2026-09-30)**:
 - F-oc-2: the client's file-discovery requires oc: namespace properties
-  (oc:fileid, oc:permissions, oc:size) that we do not emit; sync aborts with
-  "The server file discovery reply is missing data."
+  (oc:fileid, oc:permissions, oc:size) that we did not emit; sync aborted
+  with "The server file discovery reply is missing data."
+
+  **Fix pin:** every PROPFIND 207 reply (allprop and named-prop, discovery +
+  children, trailing-slash AND slash-less forms) now declares
+  `xmlns:oc="http://owncloud.org/ns"` on the multistatus root and carries:
+  - `oc:fileid` on every resource — DERIVED at request time (FNV-1a hash of
+    bucket + "\x00" + key, masked to uint63). Same bucket+key ⇒ same id
+    across requests and restarts; NEVER persisted (no sidecar, no database —
+    project charter). Collisions are accepted; the id is a discovery hint.
+  - `oc:permissions` — SIMPLIFIED grammar (the server's grant model has only
+    read/write, so the richer real-grammar letters are not representable):
+    | grant | file | collection |
+    |---|---|---|
+    | readwrite | `RW` | `RDNVCK` |
+    | readonly | `R` | `RG` |
+    (R = read; W = write file; N = mkdir/move/rename dir; D = delete file;
+    C = create file in dir; K = delete dir; G = read versions — G appears
+    only in the readonly-collection string to keep the four pinned values
+    minimal and stable, matching the documented subset.)
+  - `oc:size` on collections — aggregate contentLength of every key under
+    the collection prefix, computed via a fully-paginated List at PROPFIND
+    time (derived, never cached). Files report size via getcontentlength
+    and carry NO oc:size.
 
 CONCLUSION: the ownCloud frontend passes OCS negotiation and auth with the
-real client but file sync is BLOCKED pending #5. The README's ownCloud
+real client; the last discovery blocker (#5, oc: properties) is RESOLVED
+above and file sync proceeds to wire-level verification (e2e case 25 pins
+the oc: properties). The README's ownCloud
 section already frames real-client compatibility as unverified - that was
 accurate; #5 is the concrete gap.

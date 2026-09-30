@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/bhodgens/zeta-object/internal/auth"
+	"github.com/bhodgens/zeta-object/internal/backend"
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
@@ -20,13 +22,23 @@ import (
 // recursive DELETE share the guard) so a misbehaving backend can never hang
 // a request: 10000 pages × a generous page size is far beyond any real
 // tree; hitting the bound is a 500, never a hang.
+// maxListPages bounds pagination AND each page now carries an explicit
+// MaxKeys (W4): the fs backend treats MaxKeys<=0 as unbounded, so a Depth:1
+// PROPFIND of a huge collection built one giant 207 in memory. Bounded
+// pages make the 10000-page cap real.
 const maxListPages = 10000
+
+// propfindPageKeys is the per-Page entry bound (objects + common prefixes).
+const propfindPageKeys = 1000
 
 // multistatus is the 207 document root. Every element carries
 // xml.Name{Space: "DAV:"} so the marshaller emits xmlns="DAV:" scoping —
-// RFC 4918 clients accept the unprefixed default-namespace form.
+// RFC 4918 clients accept the unprefixed default-namespace form. The
+// ownCloud namespace is declared once on the root (xmlns:oc) and referenced
+// by the oc: property elements (issue #5).
 type multistatus struct {
 	XMLName   xml.Name `xml:"DAV: multistatus"`
+	XmlnsOc   string   `xml:"xmlns:oc,attr"`
 	Responses []response
 }
 
@@ -118,13 +130,18 @@ func (f *Frontend) handlePROPFIND(w http.ResponseWriter, r *http.Request, res re
 		return
 	}
 
-	entries, err := f.propfindEntries(r, res, depth == "1")
+	// The identity's write grant on the effective bucket decides the
+	// pinned oc:permissions string (readwrite vs readonly variants).
+	id := identityOf(r)
+	write := f.writeGranted(id, res)
+
+	entries, err := f.propfindEntries(r, res, depth == "1", write)
 	if err != nil {
 		writeDavErrorFrom(w, err)
 		return
 	}
 
-	ms := multistatus{}
+	ms := multistatus{XmlnsOc: OCNamespace}
 	for _, e := range entries {
 		ms.Responses = append(ms.Responses, buildResponse(e, pf))
 	}
@@ -134,18 +151,22 @@ func (f *Frontend) handlePROPFIND(w http.ResponseWriter, r *http.Request, res re
 // propfindEntry is one resource row of the 207 body.
 type propfindEntry struct {
 	href   string
+	bucket string // effective bucket (oc:fileid derivation coordinate)
 	obj    objectmodel.Object
 	isColl bool
-	found  bool // false ⇒ 404 propstat
+	found  bool  // false ⇒ 404 propstat
+	write  bool  // identity's write grant on the bucket ⇒ oc:permissions
+	ocSize int64 // collection aggregate size (oc:size); 0 for files
 }
 
 // propfindEntries resolves the requested resource (+children at Depth 1)
 // into propfindEntry rows. A missing top-level resource ⇒ 404 via
-// davStatus (objectmodel.ErrNoSuchKey shape).
-func (f *Frontend) propfindEntries(r *http.Request, res resource, depth1 bool) ([]propfindEntry, error) {
+// davStatus (objectmodel.ErrNoSuchKey shape). write is the authenticated
+// identity's write grant for the effective bucket (oc:permissions).
+func (f *Frontend) propfindEntries(r *http.Request, res resource, depth1, write bool) ([]propfindEntry, error) {
 	ctx := r.Context()
 	if res.isRoot {
-		return f.rootEntries(ctx, depth1)
+		return f.rootEntries(ctx, depth1, write)
 	}
 	obj, kind, err := f.resolveKind(ctx, res)
 	if err != nil {
@@ -169,9 +190,9 @@ func (f *Frontend) propfindEntries(r *http.Request, res resource, depth1 bool) (
 	if kind == kindMissing {
 		return nil, objectmodel.ErrNoSuchKey(f.davPath(res))
 	}
-	out := []propfindEntry{f.entryFor(res, obj, kind == kindCollection)}
+	out := []propfindEntry{f.entryFor(ctx, res, obj, kind == kindCollection, write)}
 	if depth1 {
-		children, err := f.childEntries(ctx, res)
+		children, err := f.childEntries(ctx, res, write)
 		if err != nil {
 			return nil, err
 		}
@@ -180,19 +201,33 @@ func (f *Frontend) propfindEntries(r *http.Request, res resource, depth1 bool) (
 	return out, nil
 }
 
-// rootEntries serves PROPFIND /: mode A lists buckets (via Buckets()),
-// mode B lists the configured bucket's top level.
-func (f *Frontend) rootEntries(ctx context.Context, depth1 bool) ([]propfindEntry, error) {
+// writeGranted reports the identity's write grant for the resource's
+// effective bucket (mode B root: the configured bucket). OPTIONS-style
+// special cases do not apply — PROPFIND is always authorized before this
+// runs, so the identity is present.
+func (f *Frontend) writeGranted(id auth.Identity, res resource) bool {
+	if res.isRoot && f.bucket != "" {
+		return id.CanWrite(f.bucket)
+	}
+	return id.CanWrite(res.bucket)
+}
+
+// rootEntries serves PROPFIND /: mode A lists buckets (via Buckets()), mode
+// B lists the configured bucket's top level. write is the identity's write
+// grant for the effective bucket (oc:permissions on every row).
+func (f *Frontend) rootEntries(ctx context.Context, depth1, write bool) ([]propfindEntry, error) {
 	if f.bucket != "" {
 		// Mode B: root IS the configured bucket; list its top level.
 		res := resource{bucket: f.bucket, isCollection: true, isRoot: true}
 		out := []propfindEntry{{
 			href:   "/",
+			bucket: f.bucket,
 			isColl: true,
 			found:  true,
+			write:  write,
 		}}
 		if depth1 {
-			children, err := f.childEntries(ctx, res)
+			children, err := f.childEntries(ctx, res, write)
 			if err != nil {
 				return nil, err
 			}
@@ -201,7 +236,7 @@ func (f *Frontend) rootEntries(ctx context.Context, depth1 bool) ([]propfindEntr
 		return out, nil
 	}
 	// Mode A: synthetic root; Depth 1 children are buckets.
-	out := []propfindEntry{{href: "/", isColl: true, found: true}}
+	out := []propfindEntry{{href: "/", isColl: true, found: true, write: write}}
 	if !depth1 {
 		return out, nil
 	}
@@ -211,34 +246,67 @@ func (f *Frontend) rootEntries(ctx context.Context, depth1 bool) ([]propfindEntr
 	}
 	for _, b := range buckets {
 		child := resource{bucket: b.Name}
-		out = append(out, propfindEntry{href: f.davPath(child), isColl: true, found: true})
+		// The bucket row's oc:permissions reflect THIS identity's grant
+		// on that bucket (the identity passed authorization for the
+		// listing, but may hold read-only on individual buckets).
+		id, _ := ctx.Value(identityKey{}).(auth.Identity)
+		out = append(out, propfindEntry{
+			href: f.davPath(child), bucket: b.Name, isColl: true, found: true,
+			write: id.CanWrite(b.Name),
+		})
 	}
 	return out, nil
 }
 
-// entryFor builds one row for a resolved resource.
-func (f *Frontend) entryFor(res resource, obj objectmodel.Object, isColl bool) propfindEntry {
-	return propfindEntry{
+// entryFor builds one row for a resolved resource. Collections get their
+// oc:size aggregate computed via a full List under the prefix (derived at
+// request time — nothing is cached or persisted).
+func (f *Frontend) entryFor(ctx context.Context, res resource, obj objectmodel.Object, isColl, write bool) propfindEntry {
+	e := propfindEntry{
 		href:   f.davPath(res),
+		bucket: res.bucket,
 		obj:    obj,
 		isColl: isColl,
 		found:  true,
+		write:  write,
 	}
+	if isColl {
+		// oc:size = aggregate contentLength of everything under the
+		// collection prefix (full pagination — discovery is not hot).
+		// A size probe error degrades to oc:size 0 rather than failing
+		// the whole PROPFIND — the DAV properties remain correct.
+		if size, err := collectionSize(ctx, f.be, res.bucket, res.collectionPrefix()); err == nil {
+			e.ocSize = size
+		}
+	}
+	return e
 }
 
 // childEntries lists the immediate children of a collection: files from
 // ListPage.Objects and one-entry collections from ListPage.CommonPrefixes.
 // Mode A bucket-level collections (key == "") list with Prefix "".
-func (f *Frontend) childEntries(ctx context.Context, res resource) ([]propfindEntry, error) {
+// write is the identity's write grant for the bucket (oc:permissions).
+// Collection children get their oc:size aggregate via a nested full List.
+func (f *Frontend) childEntries(ctx context.Context, res resource, write bool) ([]propfindEntry, error) {
 	prefix := res.collectionPrefix()
 	var out []propfindEntry
 	err := f.eachChild(ctx, res.bucket, prefix, func(obj objectmodel.Object) error {
 		child := resource{bucket: res.bucket, key: obj.Key}
-		out = append(out, propfindEntry{href: f.davPath(child), obj: obj, found: true})
+		out = append(out, propfindEntry{
+			href: f.davPath(child), bucket: res.bucket, obj: obj, found: true, write: write,
+		})
 		return nil
 	}, func(cp string) error {
 		child := resource{bucket: res.bucket, key: strings.TrimSuffix(cp, "/"), isCollection: true}
-		out = append(out, propfindEntry{href: f.davPath(child), isColl: true, found: true})
+		e := propfindEntry{
+			href: f.davPath(child), bucket: res.bucket, isColl: true, found: true, write: write,
+		}
+		// oc:size for the child collection: full List under its prefix.
+		// An error degrades to 0 (same policy as entryFor).
+		if size, err := collectionSize(ctx, f.be, res.bucket, child.collectionPrefix()); err == nil {
+			e.ocSize = size
+		}
+		out = append(out, e)
 		return nil
 	})
 	if err != nil {
@@ -250,12 +318,44 @@ func (f *Frontend) childEntries(ctx context.Context, res resource) ([]propfindEn
 		if err != nil {
 			return nil, err
 		}
+		id, _ := ctx.Value(identityKey{}).(auth.Identity)
 		for _, b := range buckets {
 			child := resource{bucket: b.Name}
-			out = append(out, propfindEntry{href: f.davPath(child), isColl: true, found: true})
+			out = append(out, propfindEntry{
+				href: f.davPath(child), bucket: b.Name, isColl: true, found: true,
+				write: id.CanWrite(b.Name),
+			})
 		}
 	}
 	return out, nil
+}
+
+// collectionSize sums the contentLength of every key under the prefix —
+// oc:size for collections, derived at PROPFIND time via a fully-paginated
+// List (discovery is not a hot path). Nothing is cached or persisted
+// (charter: derived, not stored).
+func collectionSize(ctx context.Context, be backend.Backend, bucket, prefix string) (int64, error) {
+	var total int64
+	token := ""
+	for page := 0; ; page++ {
+		if page >= maxListPages {
+			return 0, objectmodel.ErrInternalError("listing exceeded the page bound")
+		}
+		p, err := be.List(ctx, bucket, objectmodel.ListParams{
+			Prefix:            prefix,
+			ContinuationToken: token,
+		})
+		if err != nil {
+			return 0, err
+		}
+		for _, obj := range p.Objects {
+			total += obj.Size
+		}
+		if !p.IsTruncated || p.NextToken == "" || p.NextToken == token {
+			return total, nil
+		}
+		token = p.NextToken
+	}
 }
 
 // eachChild pages List(prefix, delimiter) until exhausted (IsTruncated
@@ -270,6 +370,7 @@ func (f *Frontend) eachChild(ctx context.Context, bucket, prefix string, onObjec
 		p, err := f.be.List(ctx, bucket, objectmodel.ListParams{
 			Prefix:            prefix,
 			Delimiter:         "/",
+			MaxKeys:           propfindPageKeys,
 			ContinuationToken: token,
 		})
 		if err != nil {
@@ -301,7 +402,7 @@ func buildResponse(e propfindEntry, pf *propfindRequest) response {
 		names := propNames(e)
 		var ps propstat
 		for _, n := range names {
-			ps.Props = append(ps.Props, activeProp{XMLName: xml.Name{Space: Namespace, Local: n}})
+			ps.Props = append(ps.Props, emptyProp(e, n))
 		}
 		ps.Status = statusLine(http.StatusOK)
 		return response{Href: href, Propstats: []propstat{ps}}
@@ -317,16 +418,15 @@ func buildResponse(e propfindEntry, pf *propfindRequest) response {
 		known[p] = true
 	}
 	for _, want := range pf.Named {
-		if want.Space != Namespace && want.Space != "" {
+		if want.Space != Namespace && want.Space != OCNamespace && want.Space != "" {
 			missing.Props = append(missing.Props, activeProp{XMLName: want})
 			continue
 		}
 		if !known[want.Local] {
-			missing.Props = append(missing.Props, activeProp{XMLName: xml.Name{Space: Namespace, Local: want.Local}})
+			missing.Props = append(missing.Props, emptyProp(e, want.Local))
 			continue
 		}
-		entry := liveEntry(e, want.Local)
-		ok.Props = append(ok.Props, entry)
+		ok.Props = append(ok.Props, liveEntry(e, want.Local))
 	}
 	out := response{Href: href}
 	if len(ok.Props) > 0 {
@@ -337,6 +437,20 @@ func buildResponse(e propfindEntry, pf *propfindRequest) response {
 	}
 	return out
 }
+
+// emptyProp renders a bare property-name element (propname mode and 404
+// propstats) in the right namespace: ownCloud for the oc: discovery names,
+// DAV: for everything else.
+func emptyProp(_ propfindEntry, name string) activeProp {
+	ns := Namespace
+	if ocLocalNames[name] {
+		ns = OCNamespace
+	}
+	return activeProp{XMLName: xml.Name{Space: ns, Local: name}}
+}
+
+// ocLocalNames is the set of ownCloud-namespace property local names.
+var ocLocalNames = map[string]bool{"fileid": true, "permissions": true, "size": true}
 
 // livePropstat renders the full live property set with 200.
 func livePropstat(e propfindEntry) propstat {
@@ -352,7 +466,7 @@ func propNames(e propfindEntry) []string {
 	if !e.found {
 		return nil
 	}
-	props := ObjectProps(e.obj, e.isColl)
+	props := ObjectProps(e.obj, e.isColl, e.bucket, e.write, e.ocSize)
 	names := make([]string, 0, len(props))
 	for _, p := range props {
 		names = append(names, p.Name)
@@ -362,19 +476,26 @@ func propNames(e propfindEntry) []string {
 
 // liveEntry renders one named live property for the entry.
 func liveEntry(e propfindEntry, name string) activeProp {
-	for _, p := range ObjectProps(e.obj, e.isColl) {
+	for _, p := range ObjectProps(e.obj, e.isColl, ocBucket(e), e.write, e.ocSize) {
 		if p.Name != name {
 			continue
 		}
+		ns := Namespace
+		if p.OC {
+			ns = OCNamespace
+		}
 		switch {
 		case p.Collection:
-			return activeProp{XMLName: xml.Name{Space: Namespace, Local: p.Name}, Inner: collectionInner}
+			return activeProp{XMLName: xml.Name{Space: ns, Local: p.Name}, Inner: collectionInner}
 		default:
-			return activeProp{XMLName: xml.Name{Space: Namespace, Local: p.Name}, Value: p.Chardata}
+			return activeProp{XMLName: xml.Name{Space: ns, Local: p.Name}, Value: p.Chardata}
 		}
 	}
-	return activeProp{XMLName: xml.Name{Space: Namespace, Local: name}}
+	return emptyProp(e, name)
 }
+
+// ocBucket is the bucket coordinate used for oc:fileid derivation.
+func ocBucket(e propfindEntry) string { return e.bucket }
 
 // allPropfind is the parsePropfindBody result for an allprop request (the
 // RFC 4918 default when the body is empty).

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
@@ -43,13 +44,15 @@ func TestPROPFIND_Depth0_File_Golden(t *testing.T) {
 	// compliant — davfs2/Finder accept it (deviation from the leaf's
 	// prefixed-form sketch, noted in the implementation record).
 	for _, want := range []string{
-		`<multistatus xmlns="DAV:">`,
+		`<multistatus xmlns="DAV:" xmlns:oc="http://owncloud.org/ns">`,
 		`<href xmlns="DAV:">/photos/a.txt</href>`,
 		`<getcontentlength xmlns="DAV:">5</getcontentlength>`,
 		`<getcontenttype xmlns="DAV:">text/plain</getcontenttype>`,
 		`<getetag xmlns="DAV:">&#34;abc123&#34;</getetag>`,
 		`<getlastmodified xmlns="DAV:">Tue, 29 Sep 2026 12:00:00 GMT</getlastmodified>`,
 		`<resourcetype xmlns="DAV:"></resourcetype>`,
+		`<fileid xmlns="http://owncloud.org/ns">7919420764097676869</fileid>`,
+		`<permissions xmlns="http://owncloud.org/ns">RW</permissions>`,
 		"HTTP/1.1 200 OK",
 	} {
 		if !strings.Contains(body, want) {
@@ -263,7 +266,7 @@ func TestPROPFIND_FullPagination(t *testing.T) {
 }
 
 func TestObjectProps_ZeroByteRendersLength(t *testing.T) {
-	props := ObjectProps(objectmodel.Object{Key: "z", ETag: "e", LastModified: timeNow()}, false)
+	props := ObjectProps(objectmodel.Object{Key: "z", ETag: "e", LastModified: timeNow()}, false, "b", true, 0)
 	found := false
 	for _, p := range props {
 		if p.Name == "getcontentlength" {
@@ -275,5 +278,151 @@ func TestObjectProps_ZeroByteRendersLength(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("getcontentlength missing")
+	}
+}
+
+// --- issue #5: ownCloud-namespace discovery properties ----------------------
+
+// TestOCProps_FileidStableAndDistinct pins the charter constraint: fileid is
+// DERIVED (FNV-1a of bucket\x00key, uint63) — identical across two requests
+// (and restarts), distinct between a file and its parent collection.
+func TestOCProps_FileidStableAndDistinct(t *testing.T) {
+	f, be := newTestFrontend(Config{Bucket: "photos"})
+	be.seed("photos", "2024/a.txt", []byte("hello"))
+
+	_, body1 := propfind(f, "/2024/", "1", "")
+	_, body2 := propfind(f, "/2024/", "1", "")
+	if body1 != body2 {
+		t.Fatalf("two identical PROPFINDs returned different bodies (fileid not stable)")
+	}
+	dirID := fileIDFromBody(t, body1, "/2024/")
+	fileID := fileIDFromBody(t, body1, "/2024/a.txt")
+	if dirID == "" || fileID == "" {
+		t.Fatalf("fileid missing: dir=%q file=%q", dirID, fileID)
+	}
+	if dirID == fileID {
+		t.Fatalf("file and parent collection share fileid %q", dirID)
+	}
+	// Deterministic derivation: recompute and compare.
+	if got := OCFileID("photos", "2024/a.txt"); got != fileID {
+		t.Fatalf("OCFileID mismatch: got %q, wire %q", got, fileID)
+	}
+	// uint63: non-negative decimal.
+	if fileID[0] == '-' {
+		t.Fatalf("fileid %q is not uint63", fileID)
+	}
+	// Cross-bucket stability: the SAME bucket+key derives the same id.
+	if OCFileID("photos", "2024/a.txt") != OCFileID("photos", "2024/a.txt") {
+		t.Fatal("OCFileID not deterministic")
+	}
+	if OCFileID("other", "2024/a.txt") == OCFileID("photos", "2024/a.txt") {
+		t.Fatal("different buckets must not collide on the same key (expected for stable derivation)")
+	}
+}
+
+// fileIDFromBody extracts the oc:fileid chardata from the response block
+// whose href is wantHref.
+func fileIDFromBody(t *testing.T, body, wantHref string) string {
+	t.Helper()
+	for _, block := range strings.Split(body, "<response ") {
+		if !strings.Contains(block, ">"+wantHref+"</href>") && !strings.Contains(block, wantHref+"</href>") {
+			continue
+		}
+		start := strings.Index(block, `<fileid xmlns="http://owncloud.org/ns">`)
+		if start < 0 {
+			t.Fatalf("response block for %s has no oc:fileid:\n%s", wantHref, block)
+		}
+		rest := block[start+len(`<fileid xmlns="http://owncloud.org/ns">`):]
+		end := strings.Index(rest, "</fileid>")
+		return rest[:end]
+	}
+	t.Fatalf("no response block for %s in:\n%s", wantHref, body)
+	return ""
+}
+
+// TestOCProps_PermissionsAndSize pins the simplified permission grammar and
+// the oc:size aggregate on discovery replies (trailing-slash and slash-less).
+func TestOCProps_PermissionsAndSize(t *testing.T) {
+	f, be := newTestFrontend(Config{Bucket: "photos"})
+	be.seed("photos", "2024/a.txt", []byte("hello"))    // 5
+	be.seed("photos", "2024/deep/b.txt", []byte("xy"))  // 2
+	be.seed("photos", "2024/deep/c.txt", []byte("zzz")) // 3
+
+	// Slash-less discovery (the owncloudcmd form — F-oc-1 relaxation keeps
+	// working): oc: props must appear on those responses too.
+	code, body := propfind(f, "/2024", "1", "")
+	if code != 207 {
+		t.Fatalf("slash-less PROPFIND status = %d, want 207", code)
+	}
+	assertOCDiscovery(t, body, "photos", true)
+
+	// Trailing-slash form: same guarantees.
+	code, body = propfind(f, "/2024/", "1", "")
+	if code != 207 {
+		t.Fatalf("trailing-slash PROPFIND status = %d, want 207", code)
+	}
+	assertOCDiscovery(t, body, "photos", true)
+
+	// oc:size aggregates the whole subtree (5 + 2 + 3 = 10) on the parent.
+	if !strings.Contains(body, `<size xmlns="http://owncloud.org/ns">10</size>`) {
+		t.Fatalf("oc:size not the subtree aggregate (want 10):\n%s", body)
+	}
+	// deep/ sums to 5.
+	if !strings.Contains(body, `<size xmlns="http://owncloud.org/ns">5</size>`) {
+		t.Fatalf("oc:size for deep/ not 5:\n%s", body)
+	}
+	// Files carry permissions RW (readwrite) but NO oc:size (that is a
+	// collection aggregate; files have getcontentlength).
+	if strings.Count(body, `<permissions xmlns="http://owncloud.org/ns">RW</permissions>`) < 1 {
+		t.Fatalf("readwrite file oc:permissions missing:\n%s", body)
+	}
+	for _, block := range strings.Split(body, "<response ") {
+		if strings.Contains(block, "a.txt</href>") && strings.Contains(block, `<size xmlns=`) {
+			t.Fatalf("file carries oc:size:\n%s", block)
+		}
+	}
+}
+
+// TestOCProps_PermissionsReadonly pins the readonly variants of the pinned
+// grammar through an identity with a read-only grant.
+func TestOCProps_PermissionsReadonly(t *testing.T) {
+	be := newStubBackend()
+	be.seed("photos", "2024/a.txt", []byte("x"))
+	id := auth.Identity{AccessKeyID: "ro", BucketGrants: map[string]auth.Grant{"photos": {Read: true}}}
+	f2, err := New(be, Config{Bucket: "photos"}, WithAuthenticator(&stubAuthenticator{identity: id}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, body := propfind(f2, "/2024/", "0", "")
+	if code != 207 {
+		t.Fatalf("status = %d, want 207; body=%.300s", code, body)
+	}
+	if !strings.Contains(body, `<permissions xmlns="http://owncloud.org/ns">RG</permissions>`) {
+		t.Fatalf("readonly collection must advertise RG:\n%s", body)
+	}
+}
+
+// assertOCDiscovery checks the issue-#5 requirements on a discovery reply:
+// xmlns:oc on the root, fileid+permissions on every response block.
+func assertOCDiscovery(t *testing.T, body, bucket string, _ bool) {
+	t.Helper()
+	if !strings.Contains(body, `xmlns:oc="http://owncloud.org/ns"`) {
+		t.Fatalf("xmlns:oc missing on multistatus root:\n%s", body)
+	}
+	blocks := 0
+	for _, block := range strings.Split(body, "<response ") {
+		if !strings.Contains(block, "</response>") {
+			continue
+		}
+		blocks++
+		if !strings.Contains(block, `<fileid xmlns="http://owncloud.org/ns">`) {
+			t.Fatalf("response block missing oc:fileid:\n%s", block)
+		}
+		if !strings.Contains(block, `<permissions xmlns="http://owncloud.org/ns">`) {
+			t.Fatalf("response block missing oc:permissions:\n%s", block)
+		}
+	}
+	if blocks == 0 {
+		t.Fatalf("no response blocks:\n%s", body)
 	}
 }

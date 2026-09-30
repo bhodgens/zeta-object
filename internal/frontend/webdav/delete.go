@@ -69,6 +69,7 @@ func (f *Frontend) deleteCollection(ctx context.Context, bucket, prefix string) 
 			p, err := f.be.List(ctx, bucket, objectmodel.ListParams{
 				Prefix:            prefix,
 				Delimiter:         "/",
+				MaxKeys:           propfindPageKeys,
 				ContinuationToken: token,
 			})
 			if err != nil {
