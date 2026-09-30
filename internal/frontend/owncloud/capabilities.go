@@ -38,14 +38,16 @@ type ocVersionBlock struct {
 	Edition string   `xml:"edition,omitempty"`
 }
 
-// ocFilesCaps is the classic <files> capability block. Only flags that
-// are TRUE for the data plane are emitted; flags zeta-object cannot
-// honor (bigfilechunking, undelete, versioning) are OMITTED entirely —
-// never emitted false, because a false flag still tells clients the
-// feature exists at the negotiated version boundary (master Contract 1:
+// ocFilesCaps is the classic <files> capability block. bigfilechunking is
+// emitted explicitly as false: the ownCloud desktop client treats a MISSING
+// flag as chunking-ENABLED (removing the flag does not disable chunking v1 —
+// owncloud/client#7862), so `false` is the only wire value that disables
+// chunking and keeps clients on plain PUTs. Undelete/versioning, which have
+// no such off-switch semantics, remain OMITTED entirely (master Contract 1:
 // "everything else is omitted, not emitted as false").
 type ocFilesCaps struct {
-	XMLName xml.Name `xml:"files"`
+	XMLName         xml.Name `xml:"files"`
+	BigFileChunking bool     `xml:"bigfilechunking"` // no omitempty: false is the point
 }
 
 // ocCapabilitiesBlock is the classic <capabilities> wrapper. The

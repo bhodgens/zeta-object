@@ -1,7 +1,9 @@
 # 23-owncloud-ocs.sh — ownCloud OCS negotiation surface (owncloud-2026-09
 # tree / GH issue #3, leaf 05 Task 2):
 #   23a. v1+v2 capabilities/config endpoints: HTTP 200, <status>ok</status>,
-#        version block present, NO versioning capability (provider-less
+#        version block present, bigfilechunking explicitly false (the
+#        desktop client treats a missing flag as chunking-enabled —
+#        owncloud/client#7862), NO versioning capability (provider-less
 #        baseline — the honest contract).
 #   23b. cloud/user: id == the authenticated access key.
 #   23c. auth gate: unauthenticated v2 → HTTP 401 with OCS 997 envelope.
@@ -100,6 +102,11 @@ for OC23_EP in '/ocs/v1.php/config' '/ocs/v2.php/config' \
 	assert_eq "GET $OC23_EP" 200 "$OC23_STATUS"
 	assert_contains "  envelope status ok" "$OC23_BODY" '<status>ok</status>'
 	assert_contains "  server version block" "$OC23_BODY" '<version><major>10</major><minor>11</minor>'
+	# bigfilechunking must be present and explicitly false: the desktop client
+	# treats a MISSING flag as chunking-enabled (owncloud/client#7862), so a
+	# bare <files> element would silently enable chunked uploads the server
+	# never assembles.
+	assert_contains "  bigfilechunking explicitly false" "$OC23_BODY" '<bigfilechunking>false</bigfilechunking>'
 	# Provider-less baseline: NO versioning capability may appear.
 	if printf '%s' "$OC23_BODY" | grep -q 'versioning'; then
 		assert_eq '  no versioning advertised (provider-less)' 'advertised' 'absent'

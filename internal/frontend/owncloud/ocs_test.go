@@ -143,7 +143,7 @@ func TestRouterGolden(t *testing.T) {
 	const userDoc = `<?xml version="1.0" encoding="UTF-8"?>
 <ocs><meta><status>ok</status><statuscode>200</statuscode><message>OK</message></meta><data><id>oc-user</id></data></ocs>`
 	const capsDoc = `<?xml version="1.0" encoding="UTF-8"?>
-<ocs><meta><status>ok</status><statuscode>200</statuscode><message>OK</message></meta><data><version><major>10</major><minor>11</minor><micro>0</micro><string>10.11.0</string></version><capabilities><files></files></capabilities></data></ocs>`
+<ocs><meta><status>ok</status><statuscode>200</statuscode><message>OK</message></meta><data><version><major>10</major><minor>11</minor><micro>0</micro><string>10.11.0</string></version><capabilities><files><bigfilechunking>false</bigfilechunking></files></capabilities></data></ocs>`
 	const errDoc = `<?xml version="1.0" encoding="UTF-8"?>
 <ocs><meta><status>failure</status><statuscode>404</statuscode><message>endpoint not implemented: this server serves the WebDAV+OCS minimal subset only (capabilities, cloud/user); see docs/owncloud-compatibility.md</message></meta><data></data></ocs>`
 
