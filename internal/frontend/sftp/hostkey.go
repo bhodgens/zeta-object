@@ -73,10 +73,11 @@ func loadOrGenerateHostKey(hostKeyPath string) (signer ssh.Signer, generated boo
 		return parsed, false, fingerprintOf(parsed), nil
 	}
 	if _, writeErr = wf.Write(pemBytes); writeErr != nil {
-		if closeErr := wf.Close(); closeErr != nil {
+		closeErr := wf.Close()
+		if closeErr != nil {
 			// Write already failed; the close error is secondary. Both
 			// are reported so neither is silently dropped.
-			return nil, false, "", fmt.Errorf("sftp: writing host key %s: %w (close: %v)", hostKeyPath, writeErr, closeErr)
+			return nil, false, "", fmt.Errorf("sftp: writing host key %s: %w (close: %w)", hostKeyPath, writeErr, closeErr)
 		}
 		return nil, false, "", fmt.Errorf("sftp: writing host key %s: %w", hostKeyPath, writeErr)
 	}
