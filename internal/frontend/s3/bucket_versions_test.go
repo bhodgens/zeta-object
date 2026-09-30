@@ -266,7 +266,7 @@ func TestVersionsMarkerRoundTripEncodableKeys(t *testing.T) {
 	// that must be valid query syntax).
 	var gotKeys []string
 	marker := ""
-	for page := 0; page < len(wantKeys)+2; page++ {
+	for page := range len(wantKeys) + 2 {
 		target := "/vmrt-bkt?versions&encoding-type=url&max-keys=1"
 		if marker != "" {
 			target += "&key-marker=" + strings.ReplaceAll(marker, "%", "%25")

@@ -246,6 +246,83 @@ func plausibleWallClockTime(ns uint64) time.Time {
 //     reuse and in-window directory renames therefore relabel only going
 //     forward; pre-event records keep their historical (pre-rename /
 //     pre-reuse) paths.
+//
+// res carries per-record path-resolution verdicts for reconstructPaths.
+type res struct {
+	key, oldKey  string
+	keyOK, oldOK bool
+}
+
+// resolveRecordAt resolves record i's own names against the mapping state
+// as of its position (pre-update state: a CREATE of dir X must not resolve
+// through X itself, and a RENAME's new name must not shortcut through a
+// mapping this same record creates), storing the verdicts in resolved.
+func resolveRecordAt(raws []rawEvent, i int, fullMap map[uint64]objEntry, resolved []res) {
+	r := raws[i]
+	if r.Name == nil || r.Object == 0 {
+		return
+	}
+	op := strings.ToLower(r.Op)
+	byID := mapAt(raws, i, fullMap)
+	// print_event emits `parent` alongside `old_parent` for RENAME
+	// (same dir), but tolerate its absence.
+	parent := r.Parent
+	if parent == 0 && op == "rename" {
+		parent = r.OldParent
+	}
+	root, haveRoot := detectRoot(raws, fullMap)
+	if full, ok := resolvePath(byID, root, haveRoot, *r.Name, parent); ok {
+		resolved[i].key, resolved[i].keyOK = full, true
+	}
+	if r.OldName != nil {
+		oldParent := r.OldParent
+		if oldParent == 0 {
+			oldParent = r.Parent
+		}
+		if full, ok := resolvePath(byID, root, haveRoot, *r.OldName, oldParent); ok {
+			resolved[i].oldKey, resolved[i].oldOK = full, true
+		}
+	}
+}
+
+// mapAt returns the mapping state as of record i (records [0, i) applied).
+// O(n^2) worst case only in the reuse window; windows are bounded by
+// MaxEvents*3.
+func mapAt(raws []rawEvent, i int, fullMap map[uint64]objEntry) map[uint64]objEntry {
+	anyReuse := anyObjIDMappedTwice(raws)
+	if !anyReuse {
+		return fullMap
+	}
+	m := make(map[uint64]objEntry, i)
+	for _, r := range raws[:i] {
+		if r.Name == nil || r.Object == 0 {
+			continue
+		}
+		parent := r.Parent
+		if parent == 0 && strings.ToLower(r.Op) == "rename" {
+			parent = r.OldParent
+		}
+		m[r.Object] = objEntry{name: *r.Name, parent: parent}
+	}
+	return m
+}
+
+// anyObjIDMappedTwice reports whether any object id appears in two records
+// (rename relabel of a known dir, or id reuse).
+func anyObjIDMappedTwice(raws []rawEvent) bool {
+	seen := make(map[uint64]bool, len(raws))
+	for _, r := range raws {
+		if r.Name == nil || r.Object == 0 {
+			continue
+		}
+		if seen[r.Object] {
+			return true
+		}
+		seen[r.Object] = true
+	}
+	return false
+}
+
 func reconstructPaths(raws []rawEvent) *eventSet {
 	set := &eventSet{
 		events:      make([]ObjectEvent, 0, len(raws)),
@@ -276,72 +353,18 @@ func reconstructPaths(raws []rawEvent) *eventSet {
 	// rename, no reuse), every position sees the same map — the final map
 	// directly, no copies. A doubled id (rename relabel / reuse) triggers
 	// per-record prefix replay for correct pre/post-image resolution.
-	type res struct {
-		key, oldKey  string
-		keyOK, oldOK bool
-	}
 	resolved := make([]res, len(raws))
 	fullMap := make(map[uint64]objEntry, len(raws))
-	anyReuse := false
 	for _, r := range raws {
 		if r.Name == nil || r.Object == 0 {
 			continue
 		}
-		if _, dup := fullMap[r.Object]; dup {
-			anyReuse = true // rename relabel of a known dir, or id reuse
-		} else {
+		if _, dup := fullMap[r.Object]; !dup {
 			fullMap[r.Object] = objEntry{name: *r.Name, parent: r.Parent}
 		}
 	}
-	// mapAt returns the mapping state as of record i (records [0, i)
-	// applied). O(n^2) worst case only in the reuse window; windows are
-	// bounded by MaxEvents*3.
-	mapAt := func(i int) map[uint64]objEntry {
-		if !anyReuse {
-			return fullMap
-		}
-		m := make(map[uint64]objEntry, i)
-		for _, r := range raws[:i] {
-			if r.Name == nil || r.Object == 0 {
-				continue
-			}
-			parent := r.Parent
-			if parent == 0 && strings.ToLower(r.Op) == "rename" {
-				parent = r.OldParent
-			}
-			m[r.Object] = objEntry{name: *r.Name, parent: parent}
-		}
-		return m
-	}
-	for i, r := range raws {
-		if r.Name == nil || r.Object == 0 {
-			continue
-		}
-		op := strings.ToLower(r.Op)
-		byID := mapAt(i)
-		// Resolve the record's own names against the map AS OF this
-		// record's position (pre-update state): a CREATE of dir X must
-		// not resolve through X itself, and a RENAME's new name must not
-		// shortcut through a mapping this same record creates.
-		parent := r.Parent
-		if parent == 0 && op == "rename" {
-			// print_event emits `parent` alongside `old_parent`
-			// for RENAME (same dir), but tolerate its absence.
-			parent = r.OldParent
-		}
-		root, haveRoot := detectRoot(raws, fullMap)
-		if full, ok := resolvePath(byID, root, haveRoot, *r.Name, parent); ok {
-			resolved[i].key, resolved[i].keyOK = full, true
-		}
-		if r.OldName != nil {
-			oldParent := r.OldParent
-			if oldParent == 0 {
-				oldParent = r.Parent
-			}
-			if full, ok := resolvePath(byID, root, haveRoot, *r.OldName, oldParent); ok {
-				resolved[i].oldKey, resolved[i].oldOK = full, true
-			}
-		}
+	for i := range raws {
+		resolveRecordAt(raws, i, fullMap, resolved)
 	}
 	// Pass 2: materialize events with the pass-1 resolution verdicts.
 	for i, r := range raws {

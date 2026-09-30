@@ -191,39 +191,37 @@ func TestZfsExecSemaphoreBoundsConcurrency(t *testing.T) {
 	const capSemi = 4
 	const total = capSemi + 3
 	release := make(chan struct{})
-	var inFlight int32
-	var maxInFlight int32
+	var inFlight atomic.Int32
+	var maxInFlight atomic.Int32
 	zfsRunner = func(ctx context.Context, args ...string) ([]byte, string, error) {
-		cur := atomic.AddInt32(&inFlight, 1)
+		cur := inFlight.Add(1)
 		for {
-			old := atomic.LoadInt32(&maxInFlight)
-			if cur <= old || atomic.CompareAndSwapInt32(&maxInFlight, old, cur) {
+			old := maxInFlight.Load()
+			if cur <= old || maxInFlight.CompareAndSwap(old, cur) {
 				break
 			}
 		}
 		<-release // hold until the test releases everyone
-		atomic.AddInt32(&inFlight, -1)
+		inFlight.Add(-1)
 		return []byte("[]"), "", nil
 	}
 	var wg sync.WaitGroup
 	for range total {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_, _, _ = runZFS(context.Background(), "events", "-j", "tank/data")
-		}()
+		})
 	}
 	// Give the goroutines a moment to pile up against the semaphore.
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if atomic.LoadInt32(&inFlight) == capSemi {
+		if inFlight.Load() == capSemi {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	close(release)
 	wg.Wait()
-	if got := atomic.LoadInt32(&maxInFlight); got != capSemi {
+	if got := maxInFlight.Load(); got != capSemi {
 		t.Fatalf("max concurrent zfs calls = %d, want exactly %d (semaphore cap)", got, capSemi)
 	}
 }
