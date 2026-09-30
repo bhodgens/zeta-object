@@ -28,6 +28,13 @@ import (
 // dirMarkerSuffix terminates directory marker keys (fs-layout convention).
 const dirMarkerSuffix = "/"
 
+// maxUploadBufferBytes bounds the in-memory upload buffer (T7): the fs
+// backend caps a Put at 5 GiB, but that check runs at Close — the whole
+// body is buffered HERE first, so without this cap an authenticated
+// client can OOM the process before the backend ever sees the bytes.
+// Matches the backend default (maxPutBytesDefault).
+const maxUploadBufferBytes = 5 << 30
+
 // mainDriver implements ftpserver.MainDriver.
 type mainDriver struct {
 	f *Frontend
@@ -237,20 +244,35 @@ func (d *clientDriver) Rename(oldname, newname string) error {
 		return mapBackendError(err)
 	}
 	ctx := context.Background()
+	var data []byte
 	srcKey := oldK
-	if strings.HasSuffix(oldK, dirMarkerSuffix) {
-		srcKey = oldK // already marker form via RMD-style paths
+	// F2: ftpserverlib hands Rename a path.Clean()ed name, so a directory
+	// source NEVER carries the trailing "/" here (the suffix branch below
+	// was dead). Detect directory-ness from STORAGE, not the path: probe
+	// the dir-marker key directly. Renaming dir "d" must move the "d/"
+	// marker — a Get of the bare "d" key finds either nothing or an
+	// unrelated file that merely collides with the name.
+	isDir := false
+	if _, err := d.f.be.Stat(ctx, oldB, oldK+dirMarkerSuffix); err == nil {
+		isDir = true
+		srcKey = oldK + dirMarkerSuffix
 	}
 	rc, _, err := d.f.be.Get(ctx, oldB, srcKey, objectmodel.GetOptions{})
 	if err != nil {
-		return mapBackendError(err)
+		if !isDir {
+			return mapBackendError(err)
+		}
+		// Marker-only directory (no bare-key collision): the "file" body
+		// is empty — the move is a marker rename.
+		data = nil
+	} else {
+		defer rc.Close() //nolint:errcheck // read-side close.
+		data, err = io.ReadAll(rc)
+		if err != nil {
+			return mapBackendError(err)
+		}
 	}
-	defer rc.Close()
-	data, err := io.ReadAll(rc)
-	if err != nil {
-		return mapBackendError(err)
-	}
-	if _, err := d.f.be.Put(ctx, newB, newK+dirMarkerSuffixIfDir(oldK), bytes.NewReader(data), int64(len(data)), objectmodel.PutOptions{}); err != nil {
+	if _, err := d.f.be.Put(ctx, newB, newK+dirMarkerSuffixIfDir(srcKey), bytes.NewReader(data), int64(len(data)), objectmodel.PutOptions{}); err != nil {
 		return mapBackendError(err)
 	}
 	if err := d.f.be.Delete(ctx, oldB, srcKey); err != nil {
@@ -259,8 +281,8 @@ func (d *clientDriver) Rename(oldname, newname string) error {
 	return nil
 }
 
-// dirMarkerSuffixIfDir appends the marker suffix when the source key was a
-// directory marker (RNTO of a directory renames the marker).
+// dirMarkerSuffixIfDir appends the marker suffix when the SOURCE KEY was a
+// directory marker (renaming a directory renames its marker).
 func dirMarkerSuffixIfDir(key string) string {
 	if strings.HasSuffix(key, dirMarkerSuffix) {
 		return dirMarkerSuffix
@@ -472,10 +494,11 @@ type writeFile struct {
 	transferErr error // first TransferError cause (nil → generic 451)
 }
 
-// Write accumulates upload bytes.
+// Write accumulates upload bytes (T7: the buffer is capped; growth past
+// the cap fails the transfer loudly instead of OOMing the process).
 func (f *writeFile) Write(p []byte) (int, error) {
 	if !f.append {
-		return f.buf.Write(p)
+		return f.writeCapped(p)
 	}
 	if !f.filled {
 		// APPE: prepend the existing object (Get + re-Put whole object).
@@ -483,6 +506,16 @@ func (f *writeFile) Write(p []byte) (int, error) {
 		if err := f.prefetch(); err != nil {
 			return 0, err
 		}
+	}
+	return f.writeCapped(p)
+}
+
+// writeCapped appends p to the buffer unless that would pass
+// maxUploadBufferBytes.
+func (f *writeFile) writeCapped(p []byte) (int, error) {
+	if int64(f.buf.Len())+int64(len(p)) > maxUploadBufferBytes {
+		return 0, &ftpError{code: 552, message: "Exceeded storage allocation: upload exceeds the " +
+			"server's maximum object size"}
 	}
 	return f.buf.Write(p)
 }

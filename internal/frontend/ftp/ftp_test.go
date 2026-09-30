@@ -640,3 +640,37 @@ func pasvAddr(reply string) (string, error) {
 	}
 	return fmt.Sprintf("%d.%d.%d.%d:%d", n[0], n[1], n[2], n[3], n[4]<<8|n[5]), nil
 }
+
+// F2: RNFR/RNTO of a DIRECTORY must move the "dir/" marker, not the bare
+// key. ftpserverlib hands Rename a Clean()ed path (no trailing slash), so
+// directory-ness is detected from storage. The old code Get()ed the bare
+// key: marker-only directories failed NoSuchKey, and a colliding FILE
+// named "dir" was what actually moved.
+func TestRenameDirectoryMovesMarker(t *testing.T) {
+	be := newRecordingBackend()
+	be.objects["bkt/olddir/"] = nil // MKD-style zero-byte dir marker
+	_, port := startTestServer(t, be, Config{})
+	ctrl := dialRaw(t, port)
+	defer ctrl.Close()
+	send := func(cmd string) string {
+		t.Helper()
+		return ctrl.cmd(cmd)
+	}
+	if got := ctrl.readLine(); got[0] != '2' {
+		t.Fatalf("banner = %q", got)
+	}
+	send("USER user")
+	send("PASS pass")
+	if got := send("RNFR bkt/olddir"); got[0] != '3' {
+		t.Fatalf("RNFR reply = %q (want 3xx)", got)
+	}
+	if got := send("RNTO bkt/newdir"); got[0] != '2' {
+		t.Fatalf("RNTO reply = %q (want 2xx)", got)
+	}
+	if _, ok := be.objects["bkt/olddir/"]; ok {
+		t.Fatalf("old marker bkt/olddir/ still present after rename; objects=%v", be.objects)
+	}
+	if _, ok := be.objects["bkt/newdir/"]; !ok {
+		t.Fatalf("new marker bkt/newdir/ missing after rename; objects=%v", be.objects)
+	}
+}
