@@ -32,11 +32,11 @@ echo ""
 # 1. gitleaks secret scan (graceful skip)
 if command -v gitleaks >/dev/null 2>&1; then
   echo -e "${BLUE}[1/5]${NC} Scanning staged content for secrets (gitleaks)..."
-  if gitleaks protect --staged --config "$(git rev-parse --show-toplevel)/scripts/.gitleaks.toml" --redact; then
+  if gitleaks protect --staged --config "$(git rev-parse --show-toplevel)/.gitleaks.toml" --redact; then
     echo -e "${GREEN}✅ No secrets staged${NC}"
   else
     echo -e "${RED}❌ gitleaks detected a secret in staged changes.${NC}"
-    echo "   Remove it or add a targeted allowlist entry in scripts/.gitleaks.toml."
+    echo "   Remove it or add a targeted allowlist entry in .gitleaks.toml."
     exit 1
   fi
 else
