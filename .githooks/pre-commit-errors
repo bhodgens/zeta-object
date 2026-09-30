@@ -9,6 +9,17 @@
 # - panic(err) in non-test code
 # - fmt.Errorf without %w for wrapping (informational, not blocking)
 #
+# Diff parsing: each staged file's -U0 diff is parsed with awk, which skips
+# the `---`/`+++ b/...` file headers, tracks the new-file line number from
+# each `@@ -a,b +c,d @@` hunk header, and emits one "lineno<TAB>line" record
+# per genuinely added line. Every added line is then checked individually
+# against its own line number — headers and hunk markers are never scanned,
+# and unchanged context lines can never match. (The previous implementation
+# grepped `^\+` — which swallowed the `+++ b/<file>` header as an added
+# "line" — and re-found each pattern with a whole-file `grep -nF`, so
+# pre-existing lines were double-counted and header text leaked into
+# scanned patterns.)
+#
 # Ported from meept/.githooks/pre-commit-errors.
 
 set -e
@@ -52,8 +63,22 @@ for file in $STAGED_GO_FILES; do
     continue
   fi
 
-  # Extract added lines from the staged diff for THIS file (-U0: added only).
-  ADDED_LINES=$(git diff --cached -U0 -- "$file" 2>/dev/null | grep -E '^\+' | sed 's/^+//')
+  # Extract genuine added lines with their new-file line numbers from the
+  # staged diff for THIS file (-U0: context suppressed). See the header
+  # comment for why this is awk-parsed rather than grepped.
+  ADDED_LINES=$(git diff --cached -U0 -- "$file" 2>/dev/null | awk '
+    /^--- /   { next }
+    /^\+\+\+ /{ next }
+    /^@@ /    {
+      split($3, hunk, ",")
+      cur = substr(hunk[1], 2) + 0
+      next
+    }
+    /^-/      { next }
+    /^ /      { cur++; next }
+    /^\+/     { printf "%d\t%s\n", cur, substr($0, 2); cur++; next }
+    { next }
+  ')
 
   if [ -z "$ADDED_LINES" ]; then
     continue
@@ -62,68 +87,80 @@ for file in $STAGED_GO_FILES; do
   FILE_ISSUES=""
   BLOCKING_ISSUES=""
 
-  # Check 1: Ignored errors with _ =
-  while IFS= read -r pattern; do
-    [ -z "$pattern" ] && continue
-    # Skip known safe patterns
-    echo "$pattern" | grep -qE "WithoutCancel|WithoutTimeout|WithoutDeadline" && continue
-    # Skip comment lines
-    echo "$pattern" | grep -qE "^\s*//" && continue
-    # Skip lines where every "_ = " occurrence sits inside a quoted string
-    if ! echo "$pattern" | sed 's/"[^"]*"//g' | grep -qF "_ = "; then
-      continue
-    fi
-    # Skip comma-ok type assertions: ", _ :=" / ", _ =" paired with ".("
-    echo "$pattern" | grep -qE ',\s*_\s*(:=|=)[^=]*\.\(' && continue
-    # Skip HTTP response-writer writes: after WriteHeader the response is
-    # committed and a write error cannot be surfaced; `_, _ = w.Write(...)`
-    # is the documented idiom (quality-gates convention).
-    echo "$pattern" | grep -qE '^\s*_,\s*_\s*=\s*(w|writer|rw|resp\.)\.Write' && continue
-    LINE_NUMS=$(grep -nF "$pattern" "$file" 2>/dev/null | cut -d: -f1)
-    for ln in $LINE_NUMS; do
-      BLOCKING_ISSUES="${BLOCKING_ISSUES}  ❌ Ignored error (_ =):\n    $file:$ln: $pattern\n"
-      BLOCK_COUNT=$((BLOCK_COUNT + 1))
-    done
-  done <<< "$(echo "$ADDED_LINES" | grep -F "_ = " || true)"
+  while IFS=$'\t' read -r ln pattern; do
+    [ -n "$pattern" ] || continue
 
-  # Check 2: panic(err) usage
-  while IFS= read -r pattern; do
-    [ -z "$pattern" ] && continue
-    LINE_NUMS=$(grep -nF "$pattern" "$file" 2>/dev/null | cut -d: -f1)
-    for ln in $LINE_NUMS; do
-      FILE_ISSUES="${FILE_ISSUES}  ⚠️  panic(err) found:\n    $file:$ln: $pattern\n"
+    is_comment=0
+    if printf '%s' "$pattern" | grep -qE '^[[:space:]]*//'; then
+      is_comment=1
+    fi
+
+    # ---- Check 1: Ignored errors with `_ = ` (blocking) ----
+    if printf '%s' "$pattern" | grep -qF "_ = "; then
+      skip=0
+      # Skip known safe patterns
+      case "$pattern" in
+        *WithoutCancel*|*WithoutTimeout*|*WithoutDeadline*) skip=1 ;;
+      esac
+      # Skip comment lines
+      if [ "$skip" -eq 0 ] && [ "$is_comment" -eq 1 ]; then
+        skip=1
+      fi
+      # Skip lines where every "_ = " occurrence sits inside a quoted string
+      if [ "$skip" -eq 0 ]; then
+        stripped=$(printf '%s' "$pattern" | sed 's/"[^"]*"//g')
+        case "$stripped" in
+          *"_ = "*) ;;
+          *) skip=1 ;;
+        esac
+      fi
+      # Skip comma-ok type assertions: ", _ :=" / ", _ =" paired with ".("
+      if [ "$skip" -eq 0 ] && printf '%s' "$pattern" | grep -qE ',\s*_\s*(:=|=)[^=]*\.\('; then
+        skip=1
+      fi
+      # Skip HTTP response-writer writes: after WriteHeader the response is
+      # committed and a write error cannot be surfaced; `_, _ = w.Write(...)`
+      # is the documented idiom (quality-gates convention).
+      if [ "$skip" -eq 0 ] && printf '%s' "$pattern" | grep -qE '^\s*_,\s*_\s*=\s*(w|writer|rw|resp\.)\.Write'; then
+        skip=1
+      fi
+      if [ "$skip" -eq 0 ]; then
+        BLOCKING_ISSUES="${BLOCKING_ISSUES}  ❌ Ignored error (_ =):\n    $file:$ln: $pattern\n"
+        BLOCK_COUNT=$((BLOCK_COUNT + 1))
+      fi
+    fi
+
+    # ---- Check 2: panic(err) (blocking) ----
+    if [ "$is_comment" -eq 0 ] && printf '%s' "$pattern" | grep -qF "panic(err)"; then
       BLOCKING_ISSUES="${BLOCKING_ISSUES}  ❌ panic(err):\n    $file:$ln: $pattern\n"
       BLOCK_COUNT=$((BLOCK_COUNT + 1))
-    done
-  done <<< "$(echo "$ADDED_LINES" | grep -F "panic(err)" | grep -vE '^\s*//' || true)"
+    fi
 
-  # Check 3: fmt.Errorf without %w (informational only — not blocking)
-  while IFS= read -r pattern; do
-    [ -z "$pattern" ] && continue
-    echo "$pattern" | grep -q '%w' && continue
-    LINE_NUMS=$(grep -nF "$pattern" "$file" 2>/dev/null | cut -d: -f1)
-    for ln in $LINE_NUMS; do
+    # ---- Check 3: fmt.Errorf without %w (informational only — not blocking) ----
+    if [ "$is_comment" -eq 0 ] && printf '%s' "$pattern" | grep -qF 'fmt.Errorf(' && ! printf '%s' "$pattern" | grep -q '%w'; then
       FILE_ISSUES="${FILE_ISSUES}  ℹ️  fmt.Errorf without %w (consider wrapping):\n    $file:$ln: $pattern\n"
-    done
-  done <<< "$(echo "$ADDED_LINES" | grep -F 'fmt.Errorf(' | grep -vE '^\s*//' || true)"
+    fi
+  done <<< "$ADDED_LINES"
 
   if [ -n "$FILE_ISSUES" ]; then
     echo -e "${YELLOW}⚠️  $file:${NC}"
     echo -e "$FILE_ISSUES"
     ISSUE_COUNT=$((ISSUE_COUNT + 1))
   fi
-done
 
-if [ -n "$BLOCKING_ISSUES" ]; then
-  echo ""
-  echo -e "${RED}━━━ BLOCKING issues (commit will fail) ━━━${NC}"
-  echo -e "$BLOCKING_ISSUES"
-fi
+  if [ -n "$BLOCKING_ISSUES" ]; then
+    echo -e "${RED}━━━ BLOCKING issues (commit will fail) ━━━${NC}"
+    echo -e "$BLOCKING_ISSUES"
+  fi
+done
 
 # Blocking findings must always fail the hook — even when no informational
 # issues exist (ISSUE_COUNT 0). Previously the exit-1 path sat inside the
 # ISSUE_COUNT branch, so a commit with only blocking findings passed.
 if [ "$BLOCK_COUNT" -gt 0 ]; then
+  echo ""
+  echo -e "${RED}❌ Commit blocked: $BLOCK_COUNT newly-added ignored-error / panic(err) site(s)${NC}"
+  echo ""
   exit 1
 fi
 
@@ -143,13 +180,6 @@ if [ "$ISSUE_COUNT" -gt 0 ]; then
   echo "      return err"
   echo "  }"
   echo ""
-
-  if [ "$BLOCK_COUNT" -gt 0 ]; then
-    echo -e "${RED}❌ Commit blocked: $BLOCK_COUNT newly-added ignored-error / panic(err) site(s)${NC}"
-    echo ""
-    exit 1
-  fi
-
   echo -e "${YELLOW}⚠️  Remaining items are informational (fmt.Errorf style). Review encouraged but not required.${NC}"
   echo ""
 else

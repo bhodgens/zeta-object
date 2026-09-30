@@ -129,7 +129,9 @@ func testPutOverwrite(t *testing.T, factory func(*testing.T) backend.Backend) {
 		t.Fatalf("Get after overwrite: %v", err)
 	}
 	data, _ := io.ReadAll(rc)
-	_ = rc.Close()
+	if err := rc.Close(); err != nil {
+		t.Fatalf("close after overwrite read: %v", err)
+	}
 	if string(data) != v2 {
 		t.Fatalf("content after overwrite = %q, want %q", data, v2)
 	}
@@ -509,15 +511,45 @@ func testBucketsVisible(t *testing.T, factory func(*testing.T) backend.Backend) 
 
 func testCapabilitiesZeroSafe(t *testing.T, factory func(*testing.T) backend.Backend) {
 	// Advisory only: zero-value-safe return required, no flag assertions
-	// (capability semantics are backend-owned).
-	_ = factory(t).Capabilities()
+	// (capability semantics are backend-owned). A plain call — the suite
+	// only requires that the zero-value Backend does not panic here.
+	factory(t).Capabilities()
 }
 
-// Concurrent Put+Get+Delete on the SAME key. Meaningful under -race; runs
-// always. The bucket is materialized first: this subtest pins same-key
-// contention, not bucket-creation races. Get may legitimately observe
-// NoSuchKey while a concurrent Delete wins the race — only unexpected error
-// kinds fail.
+// concurrentOp runs one worker iteration's operation of the same-key
+// contention test: Concurrent Put+Get+Delete on the SAME key. Meaningful
+// under -race; runs always. The bucket is materialized first: this subtest
+// pins same-key contention, not bucket-creation races. Get may legitimately
+// observe NoSuchKey while a concurrent Delete wins the race — only
+// unexpected error kinds fail. Split out of testConcurrentSameKey to keep
+// its cognitive complexity under the ceiling.
+func concurrentOp(ctx context.Context, b backend.Backend, w, i int, errs chan<- error) {
+	switch (w + i) % 3 {
+	case 0:
+		if _, err := b.Put(ctx, bucket, "hot", strings.NewReader("payload"), 7, objectmodel.PutOptions{}); err != nil {
+			errs <- err
+		}
+	case 1:
+		rc, _, err := b.Get(ctx, bucket, "hot", objectmodel.GetOptions{})
+		if err != nil {
+			if !isCode(err, objectmodel.CodeNoSuchKey) {
+				errs <- err
+			}
+			return
+		}
+		if _, err := io.Copy(io.Discard, rc); err != nil {
+			errs <- err
+		}
+		closeAndReport(rc, errs)
+	case 2:
+		if err := b.Delete(ctx, bucket, "hot"); err != nil && !isCode(err, objectmodel.CodeNoSuchKey) {
+			errs <- err
+		}
+	}
+}
+
+// Concurrent Put+Get+Delete on the SAME key; per-iteration work is in
+// concurrentOp (same doc block). Meaningful under -race; runs always.
 func testConcurrentSameKey(t *testing.T, factory func(*testing.T) backend.Backend) {
 	b := factory(t)
 	materializeBucket(t, b, bucket)
@@ -530,28 +562,7 @@ func testConcurrentSameKey(t *testing.T, factory func(*testing.T) backend.Backen
 		go func(w int) {
 			defer wg.Done()
 			for i := range iters {
-				switch (w + i) % 3 {
-				case 0:
-					if _, err := b.Put(ctx, bucket, "hot", strings.NewReader("payload"), 7, objectmodel.PutOptions{}); err != nil {
-						errs <- err
-					}
-				case 1:
-					rc, _, err := b.Get(ctx, bucket, "hot", objectmodel.GetOptions{})
-					if err != nil {
-						if !isCode(err, objectmodel.CodeNoSuchKey) {
-							errs <- err
-						}
-						continue
-					}
-					if _, err := io.Copy(io.Discard, rc); err != nil {
-						errs <- err
-					}
-					_ = rc.Close()
-				case 2:
-					if err := b.Delete(ctx, bucket, "hot"); err != nil && !isCode(err, objectmodel.CodeNoSuchKey) {
-						errs <- err
-					}
-				}
+				concurrentOp(ctx, b, w, i, errs)
 			}
 		}(w)
 	}
@@ -622,6 +633,15 @@ func isCode(err error, code string) bool {
 		return false
 	}
 	return omErr.Code == code
+}
+
+// closeAndReport closes rc, reporting a close failure to errs the same way
+// the concurrent worker reports I/O failures (Close errors on a Get reader
+// are real: the backend may surface them only at close time).
+func closeAndReport(rc io.ReadCloser, errs chan<- error) {
+	if err := rc.Close(); err != nil {
+		errs <- err
+	}
 }
 
 // assertObjectBasics checks the fields a Put MUST populate from the request.

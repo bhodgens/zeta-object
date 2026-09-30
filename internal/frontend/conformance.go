@@ -53,7 +53,9 @@ func conformanceChecks(f Frontend) []func(t *testing.T) {
 				t.Fatalf("GET /: %v", err)
 			}
 			defer resp.Body.Close()
-			_, _ = io.Copy(io.Discard, resp.Body)
+			if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+				t.Fatalf("drain body: %v", err)
+			}
 		})
 	}
 	if caps.ConditionalReads {
@@ -73,7 +75,9 @@ func conformanceChecks(f Frontend) []func(t *testing.T) {
 				t.Fatalf("conditional GET: %v", err)
 			}
 			defer resp.Body.Close()
-			_, _ = io.Copy(io.Discard, resp.Body)
+			if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+				t.Fatalf("drain body: %v", err)
+			}
 			if IsCapabilityError(nil) {
 				t.Fatal("unreachable guard; keeps frontend import used")
 			}

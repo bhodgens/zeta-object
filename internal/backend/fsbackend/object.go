@@ -163,8 +163,7 @@ func (f *FS) Put(ctx context.Context, bucket, key string, data io.Reader, size i
 // stays protocol-side in v1 (the pre-seam handlers evaluate them after
 // stat; GetOptions exists for future frontends that push them below the
 // seam).
-func (f *FS) Get(ctx context.Context, bucket, key string, opts objectmodel.GetOptions) (io.ReadCloser, objectmodel.Object, error) {
-	_ = opts
+func (f *FS) Get(ctx context.Context, bucket, key string, opts objectmodel.GetOptions) (io.ReadCloser, objectmodel.Object, error) { //nolint:revive // unused-parameter: opts is seam-reserved, see above
 	if err := ctx.Err(); err != nil {
 		return nil, objectmodel.Object{}, err
 	}
@@ -305,7 +304,12 @@ func (f *FS) Delete(ctx context.Context, bucket, key string) error {
 	// never be steered outside the bucket by crafted sidecar contents.
 	var meta legacyMeta
 	if metaJSON, err := os.ReadFile(metaPath); err == nil { //nolint:gosec // G703: key validated.
-		_ = json.Unmarshal(metaJSON, &meta) // parse failure → empty meta → canonical path
+		// A malformed sidecar degrades to the canonical path (pre-seam
+		// behavior); a non-syntax failure is surfaced, never swallowed.
+		var syntax *json.SyntaxError
+		if err := json.Unmarshal(metaJSON, &meta); err != nil && !errors.As(err, &syntax) {
+			fmt.Fprintf(os.Stderr, "fsbackend: delete %s/%s: reading sidecar %s: %v\n", bucketPath, key, metaPath, err)
+		}
 	}
 	actualDataPath := resolveDataPath(bucketPath, key, &meta)
 
@@ -318,12 +322,13 @@ func (f *FS) Delete(ctx context.Context, bucket, key string) error {
 	// Sidecar removal never fails the delete: data is already gone
 	// (pre-seam deleteObjectCore behavior). Best-effort empty-parent prune
 	// (pre-seam cleanupEmptyDirs).
-	_ = os.Remove(metaPath)
+	if err := os.Remove(metaPath); err != nil && !os.IsNotExist(err) {
+		// Unexpected sidecar-removal failure: the data file is already
+		// gone, so the delete still succeeds, but the stale sidecar must
+		// not vanish silently — surface it on stderr for operators.
+		fmt.Fprintf(os.Stderr, "fsbackend: delete %s/%s: removing sidecar %s: %v\n", bucketPath, key, metaPath, err)
+	}
 	cleanupEmptyDirs(filepath.Dir(actualDataPath), bucketPath)
 	cleanupEmptyDirs(filepath.Dir(metaPath), filepath.Join(bucketPath, metadataDirName))
 	return nil
 }
-
-// errors guard: keep errors imported for the reserved errors.Is extension
-// point (mapping chained causes is expected during review).
-var _ = errors.Is

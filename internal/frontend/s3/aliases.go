@@ -3,12 +3,8 @@ package s3
 import (
 	"crypto/hmac"
 	"encoding/hex"
-	"fmt"
-	"io"
-	"log"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -40,8 +36,3 @@ func strconvQuote(s string) string { return strconv.Quote(s) }
 func hexEncode(b []byte) string { return hex.EncodeToString(b) }
 
 func hmacEqual(a, b []byte) bool { return hmac.Equal(a, b) }
-
-var _ = fmt.Sprintf
-var _ = io.Discard
-var _ = strings.Join
-var _ = log.Println

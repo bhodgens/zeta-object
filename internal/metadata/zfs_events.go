@@ -672,8 +672,7 @@ func (p *zfsEventsProvider) History(ctx context.Context, bucketPath, key string,
 // this path on hosts without statfs ZFS detection. Every failure mode
 // degrades to Available=false + Reason with a nil error — "not available"
 // is a status, not a hard failure.
-func (p *zfsEventsProvider) probeCore(ctx context.Context, bucketPath, dataset string) (ProbeResult, error) {
-	_ = bucketPath
+func (p *zfsEventsProvider) probeCore(ctx context.Context, _ string, dataset string) (ProbeResult, error) {
 	out, stderr, err := runZFS(ctx, "get", "-H", "-o", "value", "events", dataset)
 	if err != nil {
 		return ProbeResult{Available: false, Reason: "feature check: " + err.Error() + ": " + stderr}, nil //nolint:nilerr // unavailable is a ProbeResult status, not a failure (contract comment above)

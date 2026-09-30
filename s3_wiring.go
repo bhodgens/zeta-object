@@ -21,10 +21,7 @@ package main
 
 import (
 	"context"
-	"log"
-	"os"
 	"path/filepath"
-	"strconv"
 	"sync"
 	"time"
 
@@ -112,10 +109,13 @@ func installS3Seams() {
 	// return nil → contracted 503).
 	metadata.Register(metadata.NewZFSEventsProvider())
 	s3.InstallMetadataProvider(func(bucketPath string) metadata.MetadataProvider {
-		p := metadata.Lookup("zfs-events")
-		if p == nil {
-			return nil
-		}
+		// A FRESH provider instance per bucket (bughunt M1): the
+		// registry singleton is shared across buckets, and its
+		// per-instance LastDetail would cross-attribute dataset/
+		// recordsLost between concurrent ?events on different buckets.
+		// Construction is cheap (zero fields); Probe keeps the
+		// per-request availability semantics.
+		p := metadata.NewZFSEventsProvider()
 		res, err := p.Probe(context.Background(), bucketPath)
 		if err != nil || !res.Available {
 			return nil
@@ -152,13 +152,6 @@ func getBucketPath(bucketName string) string {
 	}
 	return filepath.Join(serverConfig.DataDir, bucketName)
 }
-
-// sweepExpiredUploads is the frontend's above-seam sweep entry (it lives
-// with the multipart staging code); package main keeps the ticker.
-var _ = log.Println
-var _ = os.Stat
-var _ = strconv.Quote
-var _ = auth.Identity{}
 
 // multipartSweepEntry is installed by the s3 frontend (installS3Seams
 // below); nil = no staging sweep installed (unit tests). Guarded by
