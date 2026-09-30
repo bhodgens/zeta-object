@@ -54,6 +54,10 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           args: ./...
+          # Pin the version so the action's binary is built for a Go version
+          # >= go.mod's (unpinned, the action shipped a go1.24-built binary
+          # that refused a go 1.25.6 module: "can't load config").
+          version: v2.1
 
   test:
     needs: packages
