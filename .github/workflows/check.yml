@@ -115,6 +115,11 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Point the action at the project allowlist (scripts/.gitleaks.toml).
+        # Without this the action runs with defaults and flags the documented
+        # placeholder credentials in README/config example/e2e fixtures.
+        with:
+          args: --config scripts/.gitleaks.toml
 
   e2e:
     runs-on: ubuntu-latest
