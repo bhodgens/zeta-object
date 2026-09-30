@@ -1,14 +1,21 @@
 package ftp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"io"
 	"net"
+	"os"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	ftpserver "github.com/fclairamb/ftpserverlib"
 	ftpclient "github.com/jlaffaye/ftp"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
@@ -422,4 +429,214 @@ func TestConformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	frontend.RunConformanceSuite(t, f, frontend.ConformanceOptions{})
+}
+
+// TestAbortedWriteFileDoesNotOverwrite — F1: a writeFile that saw
+// TransferError must NOT Put the partial buffer on Close. The previously
+// stored object keeps its bytes, Close surfaces the failure as an
+// *ftpError (4xx/5xx class), and the writer satisfies
+// ftpserver.FileTransferError (the hook ftpserverlib calls before Close).
+func TestAbortedWriteFileDoesNotOverwrite(t *testing.T) {
+	be := newRecordingBackend()
+	prev := []byte("good-previous-object-bytes")
+	be.objects["bkt/keep.txt"] = prev
+
+	id := auth.Identity{AccessKeyID: "user", BucketGrants: map[string]auth.Grant{"*": {Read: true, Write: true}}}
+	d := &clientDriver{f: &Frontend{be: be}, id: id}
+	wf, err := d.OpenFile("/bkt/keep.txt", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, ok := wf.(*writeFile)
+	if !ok {
+		t.Fatalf("OpenFile(write) returned %T, want *writeFile", wf)
+	}
+	// Compile-time + runtime proof the hook ftpserverlib type-asserts exists.
+	var _ ftpserver.FileTransferError = w
+
+	if _, err := w.Write([]byte("truncat")); err != nil {
+		t.Fatal(err)
+	}
+	// ftpserverlib contract (v0.32.4 handle_files.go:103/:162): TransferError
+	// is invoked BEFORE Close on the failed-transfer paths.
+	w.TransferError(errors.New("connection reset by peer"))
+	if err := w.Close(); err == nil {
+		t.Fatal("Close after TransferError must fail")
+	} else {
+		var fe *ftpError
+		if !errors.As(err, &fe) {
+			t.Fatalf("Close error = %T (%v), want *ftpError", err, err)
+		}
+		if fe.code < 400 || fe.code >= 600 {
+			t.Fatalf("ftpError.code = %d, want 4xx/5xx", fe.code)
+		}
+	}
+	if len(be.puts) != 0 {
+		t.Fatalf("aborted Close issued %d Put(s), want 0 (previous object must survive)", len(be.puts))
+	}
+	if !bytes.Equal(be.objects["bkt/keep.txt"], prev) {
+		t.Fatalf("previous object = %q, want %q", be.objects["bkt/keep.txt"], prev)
+	}
+
+	// New-file case: an aborted upload of a nonexistent key must NOT create it.
+	wf2, err := d.OpenFile("/bkt/new.txt", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2 := wf2.(*writeFile)
+	_, _ = w2.Write([]byte("partial"))
+	w2.TransferError(errors.New("ABOR"))
+	if err := w2.Close(); err == nil {
+		t.Fatal("aborted Close of a new file must fail")
+	}
+	if _, exists := be.objects["bkt/new.txt"]; exists {
+		t.Fatal("aborted upload created the object; want no object")
+	}
+	if len(be.puts) != 0 {
+		t.Fatalf("aborted closes issued %d total Put(s), want 0", len(be.puts))
+	}
+}
+
+// TestCleanCloseStillCommits — the fix must not regress the happy path: a
+// writeFile that never saw TransferError Put()s the full buffer on Close.
+func TestCleanCloseStillCommits(t *testing.T) {
+	be := newRecordingBackend()
+	d := &clientDriver{f: &Frontend{be: be}, id: auth.Identity{AccessKeyID: "user", BucketGrants: map[string]auth.Grant{"*": {Read: true, Write: true}}}}
+	payload := []byte("clean-close-commit-payload")
+	wf, err := d.OpenFile("/bkt/fine.txt", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := wf.(*writeFile)
+	if _, err := w.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("clean Close: %v", err)
+	}
+	if len(be.puts) != 1 {
+		t.Fatalf("puts = %d, want 1", len(be.puts))
+	}
+	if got := be.objects["bkt/fine.txt"]; !bytes.Equal(got, payload) {
+		t.Fatalf("stored = %q, want %q", got, payload)
+	}
+}
+
+// TestAbortedStorKeepsPreviousObject — wire-level: STOR opens, partial bytes
+// flow, then the client sends ABOR mid-transfer (the jlaffaye client has no
+// raw-connection API in v0.2.4, so the control/data protocol is driven
+// directly). After the abort settles, the previous object must keep its
+// original bytes — not the partial body, not an empty body.
+func TestAbortedStorKeepsPreviousObject(t *testing.T) {
+	be := newRecordingBackend()
+	prev := []byte("previous-good-object-via-wire")
+	be.objects["bkt/abort.txt"] = prev
+	_, port := startTestServer(t, be, Config{})
+	ctrl := dialRaw(t, port)
+	defer ctrl.Close()
+	send := func(cmd string) string {
+		t.Helper()
+		return ctrl.cmd(cmd)
+	}
+	if got := ctrl.readLine(); got[0] != '2' {
+		t.Fatalf("banner = %q", got)
+	}
+	if got := send("USER user"); got[0] != '3' {
+		t.Fatalf("USER reply = %q", got)
+	}
+	if got := send("PASS pass"); got[0] != '2' {
+		t.Fatalf("PASS reply = %q", got)
+	}
+	pasv := send("PASV")
+	if pasv[0] != '2' {
+		t.Fatalf("PASV reply = %q", pasv)
+	}
+	dcAddr, err := pasvAddr(pasv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Dial the data connection BEFORE STOR: ftpserverlib accepts exactly one
+	// connection on the passive listener when the transfer opens.
+	dc, err := net.DialTimeout("tcp", dcAddr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dc.Close()
+	if got := send("STOR bkt/abort.txt"); got[0] != '1' {
+		t.Fatalf("STOR reply = %q (want 1xx preliminary)", got)
+	}
+	if _, err := dc.Write([]byte("only-parti")); err != nil {
+		t.Fatal(err)
+	}
+	// ABOR mid-transfer → expect 426 (aborted) then 226 (closing data conn).
+	abor := send("ABOR")
+	if abor[:3] != "426" {
+		t.Logf("ABOR first reply = %q (want 426)", abor)
+	}
+	if second := ctrl.readLine(); second[:3] != "226" {
+		t.Logf("ABOR second reply = %q (want 226)", second)
+	}
+	// NOOP serializes behind the transfer goroutine (transferWg.Wait in
+	// ftpserverlib), so a 200 guarantees TransferError/Close already ran.
+	if got := send("NOOP"); got[:3] != "200" {
+		t.Fatalf("NOOP after abort = %q (want 200)", got)
+	}
+	if len(be.puts) != 0 {
+		t.Fatalf("aborted STOR issued %d Put(s), want 0", len(be.puts))
+	}
+	if got := be.objects["bkt/abort.txt"]; !bytes.Equal(got, prev) {
+		t.Fatalf("object after aborted STOR = %q, want %q", got, prev)
+	}
+}
+
+// rawCtrl is a minimal FTP control connection (net text commands/replies).
+type rawCtrl struct {
+	conn net.Conn
+	br   *bufio.Reader
+}
+
+func dialRaw(t *testing.T, port int) *rawCtrl {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:"+itoa(port), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &rawCtrl{conn: conn, br: bufio.NewReader(conn)}
+}
+
+func (r *rawCtrl) Close() error { return r.conn.Close() }
+
+func (r *rawCtrl) cmd(line string) string {
+	fmt.Fprintf(r.conn, "%s\r\n", line)
+	return r.readLine()
+}
+
+func (r *rawCtrl) readLine() string {
+	line, err := r.br.ReadString('\n')
+	if err != nil && line == "" {
+		return "000 unreadable"
+	}
+	return strings.TrimRight(line, "\r\n")
+}
+
+// pasvAddr extracts "h1,h2,h3,h4,p1,p2" from a 227 reply into host:port.
+func pasvAddr(reply string) (string, error) {
+	i := strings.Index(reply, "(")
+	j := strings.Index(reply, ")")
+	if i < 0 || j < 0 || j < i {
+		return "", fmt.Errorf("no PASV tuple in %q", reply)
+	}
+	parts := strings.Split(reply[i+1:j], ",")
+	if len(parts) != 6 {
+		return "", fmt.Errorf("bad PASV tuple in %q", reply)
+	}
+	n := make([]int, 6)
+	for k, s := range parts {
+		v, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil {
+			return "", err
+		}
+		n[k] = v
+	}
+	return fmt.Sprintf("%d.%d.%d.%d:%d", n[0], n[1], n[2], n[3], n[4]<<8|n[5]), nil
 }
