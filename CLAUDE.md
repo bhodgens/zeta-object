@@ -117,7 +117,7 @@ the single entry point that:
 ### Configuration
 
 The server loads configuration from `config.json` (or the path specified by the
-`MINIS3_CONFIG` env var). See `config.json.example` for a commented sample.
+`ZETAOBJECT_CONFIG` env var). See `config.json.example` for a commented sample.
 
 ```json
 {
@@ -156,10 +156,14 @@ The server loads configuration from `config.json` (or the path specified by the
 
 One global credential pair, set via environment variables or defaulting to
 `minioadmin`/`minioadmin`:
-- `MINIS3_ACCESS_KEY` - Access Key ID
-- `MINIS3_SECRET_KEY` - Secret Access Key
-- `MINIS3_CONFIG` - Path to config file (default: `config.json`)
-- `MINIS3_LISTEN_ADDR` - Overrides `listenAddr` (env beats config file)
+- `ZETAOBJECT_ACCESS_KEY` - Access Key ID
+- `ZETAOBJECT_SECRET_KEY` - Secret Access Key
+- `ZETAOBJECT_CONFIG` - Path to config file (default: `config.json`)
+- `ZETAOBJECT_LISTEN_ADDR` - Overrides `listenAddr` (env beats config file)
+
+The deprecated `MINIS3_*` prefix still works as a fallback and logs a note;
+`ZETAOBJECT_*` wins when both are set. Remove the fallback two minor
+releases after the rename.
 
 Setting either credential variable to an empty string logs a warning and falls
 back to the default; it does not disable default credentials.
@@ -167,7 +171,7 @@ back to the default; it does not disable default credentials.
 ### Testing with AWS CLI
 
 ```bash
-aws s3 ls --profile minis3 --endpoint-url https://localhost:8443 --no-verify-ssl
+aws s3 ls --profile zetaobject --endpoint-url https://localhost:8443 --no-verify-ssl
 ```
 
 Configure profile with credentials `minioadmin`/`minioadmin` and region `us-east-1`.
