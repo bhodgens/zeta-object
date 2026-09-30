@@ -2,6 +2,42 @@
 
 Guidance for AI agents and humans working in this repository.
 
+## Project charter: dumb gateway/proxy
+
+zeta-object is a **dumb gateway/proxy in front of block storage**, as much as
+possible. The backing filesystem is the source of truth; the server adds
+protocol translation, not a storage layer of its own.
+
+**No persistent server-owned state with identity association.** The server must
+not store anything persistent that associates data with zeta-object itself -
+no database, no server-owned index, no sidecar that outlives the objects it
+describes - except:
+
+- the per-directory `.metadata/` sidecars, and ONLY when the backing storage
+  is not ZFS (ZFS-backed buckets get their history from the dataset event log
+  instead - never duplicate that into sidecars);
+- transient upload staging under the bucket's own `.metadata/.uploads/`,
+  cleaned by the expiry sweeper.
+
+Any feature that wants persistent per-object or per-bucket bookkeeping must
+either (a) derive it from the backing filesystem (the MetadataProvider seam),
+(b) store it in the object's own sidecar file, or (c) not persist it. If a
+design needs a server-owned store, stop and bring the design back for a
+decision instead of implementing the store.
+
+## ZFS validation rule (hard requirement)
+
+The project's differentiating capability is ZFS-event metadata. Every change
+that touches the data plane, metadata surface, or backends MUST be validated
+against real ZFS on the `zfs-meta` host (ssh access configured) before it is
+considered done - unit tests and fixtures alone do not close a change. The
+host runs OpenZFS with the extended-metadata branch (`events` +
+`events_size` dataset properties). Deploy the freshly built linux/amd64
+binary, create a scratch dataset with `events=on`, run the change's own e2e
+case plus the metadata round-trip (`?events`, `?events&versions`), and
+confirm the output matches `zfs events -j` ground truth. Destroy the scratch
+dataset afterwards.
+
 ## E2E coverage rule (hard requirement)
 
 Every new user-facing feature MUST ship with e2e or wire-level test coverage in
@@ -34,8 +70,8 @@ harness builds the server, generates temp certs and a temp dataDir, starts on a
 free port, and runs every `scripts/e2e/cases/*.sh` in lexical order. To add a
 case: copy an existing numbered case, keep the `BKT=` bucket convention and the
 create/cleanup pairing, and use the assert helpers from `scripts/e2e/lib.sh`.
-Cases also exist for interop clients (`boto3`, `mc`) - extend those when the
-feature is client-visible there too.
+Cases also exist for interop clients (`boto3`, `mc`, `rclone`, `owncloudcmd`) -
+extend those when the feature is client-visible there too.
 
 ## Plan trees
 
