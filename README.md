@@ -1,8 +1,8 @@
-# mini-s3
+# zeta-object
 
 **A single-binary S3 server with filesystem superpowers.**
 
-mini-s3 speaks the S3 protocol and stores your data where you can see it: plain files, in your directories, on your filesystems. Where every other object server buries your data in its own opaque store, mini-s3 treats your filesystem as the source of truth - and adds capabilities no cloud S3 can offer, because only a filesystem co-located with your data can offer them.
+zeta-object speaks the S3 protocol and stores your data where you can see it: plain files, in your directories, on your filesystems. Where every other object server buries your data in its own opaque store, zeta-object treats your filesystem as the source of truth - and adds capabilities no cloud S3 can offer, because only a filesystem co-located with your data can offer them.
 
 - **One static binary.** No database, no etcd, no external services. `make build`, run it, done.
 - **Zero-format storage.** Objects are plain files; metadata is a JSON sidecar. Your data is readable with `cat` and `ls` with the server stopped. Point a bucket at `/var/log`, a ZFS dataset, an NFS mount, or a directory of symlinks and it is an S3 bucket *now*.
@@ -10,13 +10,13 @@ mini-s3 speaks the S3 protocol and stores your data where you can see it: plain 
 - **Protocol-flexible by design.** A pluggable frontend/backend architecture (S3 today; WebDAV, FTP/SFTP, ownCloud tracked) over a neutral object model - one implementation per protocol and per storage, not one per combination.
 - **Extensible metadata.** A probe-based MetadataProvider seam attaches enrichment capabilities to buckets when - and only when - the underlying filesystem supports them. The first provider reads ZFS per-dataset file-event logs, giving per-object history and version-style listings that hosted S3 cannot give you.
 
-## The pitch: what proves mini-s3 different
+## The pitch: what proves zeta-object different
 
-Most "S3-compatible" servers are the same idea restated: a service that owns a black-box store and translates S3 verbs against it. mini-s3 takes the opposite bet, and these five properties follow from it:
+Most "S3-compatible" servers are the same idea restated: a service that owns a black-box store and translates S3 verbs against it. zeta-object takes the opposite bet, and these five properties follow from it:
 
 1. **Your data is never held hostage.** Every object is a file you own, at a path you chose. Back up with rsync, replicate with ZFS send, grep it, migrate away by copying a directory. There is no export step because there is nothing to export.
 2. **Existing directories become S3 buckets with zero migration.** Bucket `logs` at `/var/log` means the decade of log files already on disk is immediately listable, downloadable, and presign-able over S3 - byte-for-byte, no import, no copy. Symlinks are followed, so a bucket can live anywhere.
-3. **Filesystem capabilities become S3 capabilities.** When a bucket sits on a ZFS dataset with the `org.openzfs:events` feature (per-dataset file-op history), mini-s3 detects it at startup and serves `GET /<bucket>?events` and `GET /<bucket>?versions` derived from the kernel's own record of what happened to each file - create, rename, truncate, delete - with loss indicators. No hosted S3 offers object history; no opaque object server can borrow it from the filesystem. When the filesystem does not support it, the capability is simply absent (a clean 503), never faked.
+3. **Filesystem capabilities become S3 capabilities.** When a bucket sits on a ZFS dataset with the `org.openzfs:events` feature (per-dataset file-op history), zeta-object detects it at startup and serves `GET /<bucket>?events` and `GET /<bucket>?versions` derived from the kernel's own record of what happened to each file - create, rename, truncate, delete - with loss indicators. No hosted S3 offers object history; no opaque object server can borrow it from the filesystem. When the filesystem does not support it, the capability is simply absent (a clean 503), never faked.
 4. **Pluggable on both axes, honest about semantics.** Frontends (client protocols) and backends (storage) plug into one neutral object model, and the seams reject what a protocol cannot express instead of silently emulating it. A parity gate proves an enabled metadata provider changes nothing about core S3 responses.
 5. **Small enough to read, hardened enough to trust.** One Go binary, stdlib-only dependencies, and a gate wall: 200+ unit tests, 213-assert e2e suite, race detector, fuzzing, ceph/s3-tests conformance ratchet, staticcheck/gosec, and a pre-commit chain that enforces all of it. The codebase is small enough that an afternoon of reading covers every line that touches your data.
 
@@ -45,7 +45,7 @@ Most "S3-compatible" servers are the same idea restated: a service that owns a b
 
 ```bash
 make hooks        # one-time: install git hooks (pre-commit quality gates)
-make build        # compile ./mini-s3-server
+make build        # compile ./zeta-object-server
 make certs        # generate self-signed certs/ (SAN: localhost, 127.0.0.1) if missing
 make run          # start the server (HTTPS on :8443)
 ```
@@ -75,32 +75,32 @@ The server has a **single global credential pair** - there are no per-user crede
 
 | Environment Variable | Default Value | Description |
 |---------------------|---------------|-------------|
-| `MINIS3_ACCESS_KEY` | `minioadmin`  | Access Key ID |
-| `MINIS3_SECRET_KEY` | `minioadmin`  | Secret Access Key |
+| `ZETAOBJECT_ACCESS_KEY` | `minioadmin`  | Access Key ID |
+| `ZETAOBJECT_SECRET_KEY` | `minioadmin`  | Secret Access Key |
 
 Setting either variable to an empty string logs a warning and falls back to the default - it does not disable default credentials.
 
 ```bash
-export MINIS3_ACCESS_KEY="myaccesskey"
-export MINIS3_SECRET_KEY="mysecretkey"
-./mini-s3-server
+export ZETAOBJECT_ACCESS_KEY="myaccesskey"
+export ZETAOBJECT_SECRET_KEY="mysecretkey"
+./zeta-object-server
 ```
 
 ### Client-Side Configuration (AWS CLI)
 
 ```bash
-aws configure --profile minis3
+aws configure --profile zetaobject
 ```
 
 Enter `minioadmin`/`minioadmin` (or your custom pair). The region **must** be `us-east-1`: the server is pinned to that region and rejects other regions with `AuthorizationHeaderMalformed`.
 
 ```bash
-aws s3 ls --profile minis3 --endpoint-url https://localhost:8443 --no-verify-ssl
+aws s3 ls --profile zetaobject --endpoint-url https://localhost:8443 --no-verify-ssl
 ```
 
 ## Configuration
 
-mini-s3 uses a JSON configuration file (see `config.json.example` for a commented sample). Default path: `config.json` in the current directory; override with `MINIS3_CONFIG`. Unknown keys and malformed values fail startup loudly - a typo can never silently disable a setting.
+zeta-object uses a JSON configuration file (see `config.json.example` for a commented sample). Default path: `config.json` in the current directory; override with `ZETAOBJECT_CONFIG`. Unknown keys and malformed values fail startup loudly - a typo can never silently disable a setting.
 
 ### config.json keys
 
@@ -120,10 +120,10 @@ Credentials are **not** set in the config file - environment variables only.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `MINIS3_CONFIG` | Path to configuration file | `config.json` |
-| `MINIS3_LISTEN_ADDR` | Overrides `listenAddr` for the default frontend (env beats config file) | - |
-| `MINIS3_ACCESS_KEY` | Access Key ID for authentication | `minioadmin` |
-| `MINIS3_SECRET_KEY` | Secret Access Key for authentication | `minioadmin` |
+| `ZETAOBJECT_CONFIG` | Path to configuration file | `config.json` |
+| `ZETAOBJECT_LISTEN_ADDR` | Overrides `listenAddr` for the default frontend (env beats config file) | - |
+| `ZETAOBJECT_ACCESS_KEY` | Access Key ID for authentication | `minioadmin` |
+| `ZETAOBJECT_SECRET_KEY` | Secret Access Key for authentication | `minioadmin` |
 
 ### Bucket discovery and custom buckets
 
@@ -144,8 +144,8 @@ Example - expose `/var/log` as bucket `logs` and `/home/user/documents` as `docs
 ```
 
 ```bash
-aws s3 ls s3://logs/ --profile minis3 --endpoint-url https://localhost:8443 --no-verify-ssl
-aws s3 cp s3://docs/report.pdf ./report.pdf --profile minis3 --endpoint-url https://localhost:8443 --no-verify-ssl
+aws s3 ls s3://logs/ --profile zetaobject --endpoint-url https://localhost:8443 --no-verify-ssl
+aws s3 cp s3://docs/report.pdf ./report.pdf --profile zetaobject --endpoint-url https://localhost:8443 --no-verify-ssl
 ```
 
 ### On-disk layout
@@ -169,17 +169,17 @@ Data files are plain bytes. The `.metadata/` sidecars carry content type, ETag, 
 *   **SSL**: the bundled self-signed cert covers `localhost`/`127.0.0.1`; otherwise `--no-verify-ssl`.
 
 ```bash
-aws s3 mb s3://mytestbucket --profile minis3 --endpoint-url https://localhost:8443 --no-verify-ssl
-aws s3 cp test.txt s3://mytestbucket/test.txt --profile minis3 --endpoint-url https://localhost:8443 --no-verify-ssl
-aws s3 ls s3://mytestbucket --profile minis3 --endpoint-url https://localhost:8443 --no-verify-ssl
-aws s3 cp s3://mytestbucket/test.txt downloaded_test.txt --profile minis3 --endpoint-url https://localhost:8443 --no-verify-ssl
+aws s3 mb s3://mytestbucket --profile zetaobject --endpoint-url https://localhost:8443 --no-verify-ssl
+aws s3 cp test.txt s3://mytestbucket/test.txt --profile zetaobject --endpoint-url https://localhost:8443 --no-verify-ssl
+aws s3 ls s3://mytestbucket --profile zetaobject --endpoint-url https://localhost:8443 --no-verify-ssl
+aws s3 cp s3://mytestbucket/test.txt downloaded_test.txt --profile zetaobject --endpoint-url https://localhost:8443 --no-verify-ssl
 ```
 
 Presigned URLs and `mc`/`rclone` work the same way - see the interop e2e cases (`scripts/e2e/cases/12-interop-boto3.sh`, `13-interop-mc.sh`) for working examples.
 
 ## Metadata Capability Endpoints (ZFS events)
 
-If a bucket's backing dataset is ZFS with the `org.openzfs:events` pool feature enabled (file-level operation history per dataset), mini-s3 detects it and exposes the log over S3-style subresources:
+If a bucket's backing dataset is ZFS with the `org.openzfs:events` pool feature enabled (file-level operation history per dataset), zeta-object detects it and exposes the log over S3-style subresources:
 
 - `GET /<bucket>/<key>?events` - the key's event history as JSON (op, txg, old/new name for renames, sizes for truncates)
 - `GET /<bucket>?events` - bucket-level recent history
@@ -221,7 +221,7 @@ Inspect configured actions with `./scripts/show-bucket-actions.sh data/`.
 
 ## Protocol Conformance
 
-mini-s3 is baselined against the industry-standard [ceph/s3-tests](https://github.com/ceph/s3-tests) suite. `make conformance` builds the server, launches it on a free HTTPS port, runs the in-scope pytest subset (277 tests - buckets, objects, listing, multipart, copy, conditional, range, presigned), and exits non-zero only when a previously-passing test regresses against the committed ratchet `scripts/conformance/baseline.txt`. The full matrix with per-failure triage: [docs/conformance/2026-09-28-matrix.md](docs/conformance/2026-09-28-matrix.md).
+zeta-object is baselined against the industry-standard [ceph/s3-tests](https://github.com/ceph/s3-tests) suite. `make conformance` builds the server, launches it on a free HTTPS port, runs the in-scope pytest subset (277 tests - buckets, objects, listing, multipart, copy, conditional, range, presigned), and exits non-zero only when a previously-passing test regresses against the committed ratchet `scripts/conformance/baseline.txt`. The full matrix with per-failure triage: [docs/conformance/2026-09-28-matrix.md](docs/conformance/2026-09-28-matrix.md).
 
 The e2e suite (`make e2e`, 213 asserts / 17 cases) additionally covers every user-facing surface - including custom buckets, backend/frontend configuration, the metadata endpoints, and live boto3/mc interop - per the repo rule in [AGENTS.md](AGENTS.md).
 
@@ -255,7 +255,7 @@ internal/
 ## Building and Running
 
 ```bash
-make build    # compile ./mini-s3-server
+make build    # compile ./zeta-object-server
 make run      # build + start (HTTPS on :8443)
 make clean    # remove build artifacts
 ```

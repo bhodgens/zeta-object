@@ -3,7 +3,7 @@
   "dataDir": "./data/",
 
   // Address the HTTPS server binds to (default: ":8443").
-  // Override at runtime with the MINIS3_LISTEN_ADDR environment variable
+  // Override at runtime with the ZETAOBJECT_LISTEN_ADDR environment variable
   // (env beats config file).
   "listenAddr": ":8443",
 
@@ -45,8 +45,8 @@
 }
 
 // Credentials are NOT set in this file. They come from the environment:
-//   MINIS3_ACCESS_KEY  (default: "minioadmin")
-//   MINIS3_SECRET_KEY  (default: "minioadmin")
+//   ZETAOBJECT_ACCESS_KEY  (default: "minioadmin")
+//   ZETAOBJECT_SECRET_KEY  (default: "minioadmin")
 // NOTE: setting either variable to an EMPTY string logs a warning and falls
 // back to the default — it does not disable the default credentials.
-//   MINIS3_CONFIG      - path to this config file (default: "config.json")
+//   ZETAOBJECT_CONFIG      - path to this config file (default: "config.json")

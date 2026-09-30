@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 make hooks        # Install git hooks (core.hooksPath -> .githooks); run once per clone
-make build        # Compile the Go server to ./mini-s3-server
+make build        # Compile the Go server to ./zeta-object-server
 make certs        # Generate self-signed certs in certs/ (SAN: localhost, 127.0.0.1) if missing
 make run          # Build and start the server (HTTPS on :8443; run 'make certs' first)
 make clean        # Remove the compiled binary and coverage artifacts
@@ -20,7 +20,7 @@ make test-race           # tests with the race detector
 make test-cover-enforce  # fail if total coverage drops below the floor (COVER_MIN in the Makefile)
 make lint                # golangci-lint run ./... (NEW_FROM_REV=<rev> limits to new issues only)
 make vet                 # go vet ./...
-make fmt / fmt-check     # gofmt + goimports -local mini-s3 (check = verify only)
+make fmt / fmt-check     # gofmt + goimports -local github.com/bhodgens/zeta-object (check = verify only)
 make precommit           # build + vet + fmt-check + lint + test + test-cover-enforce + parity-test + mod-tidy-check
 make check               # precommit + test-race + vuln + secrets (full local gate)
 make e2e                 # scripts/e2e/run-e2e.sh (AWS-CLI-driven e2e suite)
@@ -34,7 +34,7 @@ coverage in `scripts/e2e/` in the same change - see AGENTS.md).
 
 ## Architecture
 
-This is a single-binary Go S3-compatible server (module `mini-s3`, Go 1.25)
+This is a single-binary Go S3-compatible server (module `github.com/bhodgens/zeta-object`, Go 1.25)
 implementing core S3 operations with AWS Signature Version 4 authentication.
 The S3 protocol layer (sigv4, XML, bucket/object/multipart handlers, request
 dispatch) moved into `internal/frontend/s3/` during the 2026-09

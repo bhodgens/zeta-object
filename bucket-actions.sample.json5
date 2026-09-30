@@ -1,5 +1,5 @@
 {
-  // .bucket-actions - Event-based actions configuration for mini-s3
+  // .bucket-actions - Event-based actions configuration for zeta-object
   // Place this file in any bucket directory or subdirectory.
   // Subdirectories inherit parent actions and can override them.
   //
