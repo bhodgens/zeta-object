@@ -14,8 +14,7 @@ func TestResolveDatasetNoZFSBinary(t *testing.T) {
 		t.Skip("zfs binary present; negative-path test not applicable")
 	}
 	_, err := ResolveDataset(context.Background(), t.TempDir())
-	var missing *ZFSBinaryMissingError
-	if !errors.As(err, &missing) {
+	if _, ok := errors.AsType[*ZFSBinaryMissingError](err); !ok {
 		t.Fatalf("ResolveDataset err = %v, want ZFSBinaryMissingError", err)
 	}
 }

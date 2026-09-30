@@ -91,6 +91,11 @@ linters:
         # inherently user-supplied; traversal is prevented by
         # validateObjectKey.
         - G304
+        # G706 (log injection) — 500-class error logging goes through
+        # logSafe() (errors_to_s3.go), which strips CR/LF and all control
+        # characters before the error text reaches the log; the taint
+        # analyzer does not model strings.Map as a sanitizer.
+        - G706
         # G301/G302/G306 (permission bits) — a local dev S3 server needs
         # writable data dirs; addressed in a focused pass if ever shipped
         # multi-user.

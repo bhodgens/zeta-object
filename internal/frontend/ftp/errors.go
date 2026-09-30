@@ -25,16 +25,15 @@ func mapBackendError(err error) error {
 	if err == nil {
 		return nil
 	}
-	var fe *ftpError
-	if errors.As(err, &fe) {
+	if fe, ok := errors.AsType[*ftpError](err); ok {
 		return fe
 	}
 	// ctx cancellation / deadline mid-operation: transient (4xx family).
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return &ftpError{code: 426, message: "Operation aborted: connection closed (transfer interrupted)"}
 	}
-	var oe *objectmodel.Error
-	if !errors.As(err, &oe) {
+	oe, ok := errors.AsType[*objectmodel.Error](err)
+	if !ok {
 		return &ftpError{code: 550, message: "Action not taken: " + err.Error()}
 	}
 	switch oe.Code {

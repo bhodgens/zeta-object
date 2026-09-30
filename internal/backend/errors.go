@@ -47,8 +47,7 @@ func ToObjectModelError(err error) error {
 	if errors.Is(err, ErrNotSupported) || errors.Is(err, ErrUnknownBackend) {
 		return err
 	}
-	var omErr *objectmodel.Error
-	if errors.As(err, &omErr) {
+	if _, ok := errors.AsType[*objectmodel.Error](err); ok {
 		return err
 	}
 	code, status := objectmodel.CodeInternalError, 500

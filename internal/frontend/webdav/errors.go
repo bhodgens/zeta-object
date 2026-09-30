@@ -19,8 +19,8 @@ import (
 // codes (and non-objectmodel errors) ⇒ 500 — never a silently guessed
 // status.
 func davStatus(err error) int {
-	var oe *objectmodel.Error
-	if !errors.As(err, &oe) {
+	oe, ok := errors.AsType[*objectmodel.Error](err)
+	if !ok {
 		return http.StatusInternalServerError
 	}
 	switch oe.Code {
@@ -58,9 +58,8 @@ func writeDavError(w http.ResponseWriter, status int, precondition string) {
 // writeDavErrorFrom maps err through davStatus and renders it.
 func writeDavErrorFrom(w http.ResponseWriter, err error) int {
 	status := davStatus(err)
-	var oe *objectmodel.Error
 	msg := "internal error"
-	if errors.As(err, &oe) {
+	if oe, ok := errors.AsType[*objectmodel.Error](err); ok {
 		msg = oe.Message
 	}
 	body := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?>

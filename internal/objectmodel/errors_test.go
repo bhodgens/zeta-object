@@ -14,10 +14,9 @@ func TestErrorImplementsError(t *testing.T) {
 	if e.Error() == "" {
 		t.Fatal("Error() must be non-empty")
 	}
-	var target *Error
-	if !errors.As(io.EOF, &target) {
+	if e, _ := errors.AsType[*Error](io.EOF); e != nil {
 		// sanity: non-Error errors don't convert; keeps errors.As usage honest
-		_ = target
+		t.Fatal("io.EOF must not convert to *Error")
 	}
 }
 

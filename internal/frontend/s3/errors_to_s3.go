@@ -9,6 +9,8 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
+	"unicode"
 
 	"github.com/bhodgens/zeta-object/internal/backend"
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
@@ -26,8 +28,7 @@ import (
 // the message is replaced with the legacy fixed text and callers are
 // responsible for logging the detailed error server-side.
 func s3ErrorFrom(err error) (code, message string, status int) {
-	var omErr *objectmodel.Error
-	if errors.As(err, &omErr) {
+	if omErr, ok := errors.AsType[*objectmodel.Error](err); ok {
 		switch omErr.Code {
 		case objectmodel.CodeNoSuchBucket:
 			// Pre-seam message (object_handlers.go NoSuchBucket sites).
@@ -59,7 +60,19 @@ func s3ErrorFrom(err error) (code, message string, status int) {
 func writeS3ErrorFrom(w http.ResponseWriter, err error) {
 	code, message, status := s3ErrorFrom(err)
 	if status >= http.StatusInternalServerError {
-		log.Printf("Internal error (code %s): %v", code, err)
+		log.Printf("Internal error (code %s): %v", code, logSafe(err))
 	}
 	writeS3Error(w, code, message, status)
+}
+
+// logSafe renders err for the server log: it replaces control characters
+// (including CR/LF) with spaces so client-supplied text inside the error
+// cannot forge or splice log lines (gosec G706).
+func logSafe(err error) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, err.Error())
 }
