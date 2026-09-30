@@ -255,3 +255,37 @@ func TestLogSafeKey(t *testing.T) {
 		t.Fatalf("key material leaked into %q", line)
 	}
 }
+
+// A3: a quoted option value containing a keytype-looking token + base64
+// must NOT hijack the parse — the real key after the options is the one
+// bound. (The old strings.Fields split found the inner token first.)
+func TestCanonicalizeQuotedOptionDoesNotHijack(t *testing.T) {
+	goodBlob := fakeBlob("good")
+	evilBlob := fakeBlob("evil")
+	line := `command="echo ssh-ed25519 ` + evilBlob + ` extra",restrict ssh-ed25519 ` + goodBlob + ` comment`
+	canonical, _, err := auth.CanonicalizePublicKey(line)
+	if err != nil {
+		t.Fatalf("CanonicalizePublicKey(%q) error = %v", line, err)
+	}
+	if !strings.Contains(canonical, goodBlob) {
+		t.Fatalf("canonical %q does not bind the REAL key blob", canonical)
+	}
+	if strings.Contains(canonical, evilBlob) {
+		t.Fatalf("canonical %q bound the quoted option's blob", canonical)
+	}
+}
+
+// A3 companion: unquoted multi-option lines (the common real-world shape)
+// still parse, and the keytype is found after the options.
+func TestCanonicalizeUnquotedOptionsStillParse(t *testing.T) {
+	blob := fakeBlob("opts")
+	line := `no-port-forwarding,command="internal-sftp" ssh-ed25519 ` + blob
+	canonical, _, err := auth.CanonicalizePublicKey(line)
+	if err != nil {
+		t.Fatalf("CanonicalizePublicKey(%q) error = %v", line, err)
+	}
+	want := "ssh-ed25519 " + blob
+	if canonical != want {
+		t.Fatalf("canonical = %q, want %q", canonical, want)
+	}
+}

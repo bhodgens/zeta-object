@@ -57,15 +57,18 @@ func (r *MultiRegistry) AuthenticatePublicKey(presentedKey string) (Identity, er
 //	"<lowercased-keytype> <base64-blob>"
 //
 // Comments are stripped, the leading options field(s) of an authorized_keys
-// line are stripped, and whitespace is collapsed. The returned fingerprint
-// is "SHA256:<base64std-nopad>" of the decoded blob bytes (OpenSSH style) —
+// line are stripped, and whitespace is collapsed. Quoted option values
+// (command="...", environment="...") are parsed as ONE field (A3: a plain
+// Fields split would find a keytype-looking token INSIDE a quoted option
+// and bind the wrong blob). The returned fingerprint is
+// "SHA256:<base64std-nopad>" of the decoded blob bytes (OpenSSH style) —
 // log-safe, never the key material itself.
 func CanonicalizePublicKey(presentedKey string) (canonical string, fingerprint string, err error) {
 	line := strings.TrimSpace(presentedKey)
 	if line == "" {
 		return "", "", fmt.Errorf("empty key line")
 	}
-	fields := strings.Fields(line)
+	fields := splitAuthorizedFields(line)
 	if len(fields) < 2 {
 		return "", "", fmt.Errorf("want \"<keytype> <base64-blob> [comment]\", got %d field(s)", len(fields))
 	}
@@ -105,6 +108,46 @@ func CanonicalizePublicKey(presentedKey string) (canonical string, fingerprint s
 	// Canonical form re-encodes the DECODED blob with base64.StdEncoding, so
 	// padding and alphabet variants of the same key collapse to one string.
 	return keytype + " " + base64.StdEncoding.EncodeToString(blob), fp, nil
+}
+
+// splitAuthorizedFields splits an authorized_keys line into fields,
+// respecting double-quoted option values: command="echo ssh-ed25519 evil"
+// stays ONE field (a plain whitespace split would treat tokens inside the
+// quotes as keytype+blob candidates and mis-bind the key). Quotes inside a
+// quoted value ("" per sshd) toggle back out; an unterminated quote
+// consumes to end-of-line, which then fails keytype validation loudly.
+func splitAuthorizedFields(line string) []string {
+	var fields []string
+	var cur strings.Builder
+	inQuote := false
+	inField := false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case c == '"':
+			inQuote = !inQuote
+			inField = true
+			cur.WriteByte(c)
+		case c == '\\' && i+1 < len(line) && inQuote:
+			// Backslash escape inside quotes (sshd rule): keep verbatim.
+			cur.WriteByte(c)
+			i++
+			cur.WriteByte(line[i])
+		case (c == ' ' || c == '	') && !inQuote:
+			if inField {
+				fields = append(fields, cur.String())
+				cur.Reset()
+				inField = false
+			}
+		default:
+			inField = true
+			cur.WriteByte(c)
+		}
+	}
+	if inField {
+		fields = append(fields, cur.String())
+	}
+	return fields
 }
 
 // validKeytype accepts the SSH public key algorithm names a real deployment
