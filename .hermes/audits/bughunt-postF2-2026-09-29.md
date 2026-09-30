@@ -147,3 +147,27 @@ grounded them is committed as a fixture). Order-of-operations note: the
 test fixer's failing TestVersionsMarkerRoundTripEncodableKeys (compared
 decoded got vs encoded want) was corrected by the orchestrator before
 commit; gates all green after.
+
+
+## Final sweep against post-auth-tree HEAD (2026-09-30)
+
+The auth/frontends session landed its full tree (GH #4 auth, #1 WebDAV,
+#2 FTP/SFTP, #3 ownCloud; e2e now 349/349). Disposition updates:
+
+- H3 LISTEN_ADDR/DEBUG_AUTH fallback: FIXED 992af99 (this session; the
+  files freed up when the auth tree landed).
+- M1 singleton detail race: FIXED - landed via the sibling's sweep of
+  s3_wiring.go (verified in HEAD: per-bucket fresh provider instance in
+  the wiring resolver, content identical to this session's fix).
+- C4 warning-name: RESOLVED by the auth session's config refactor
+  (warning names the actually-set variable; set-but-empty does not
+  inherit legacy - honest-empty semantics verified).
+- C5 string-surgery legacy derivation: still present (config.go:414) -
+  INFO-latent, documented footgun, acceptable.
+- gosec G706 in errors_to_s3.go: belongs to the auth session's uncommitted
+  logSafe work (their finding is arguably a false positive - logSafe
+  strips control characters before logging).
+
+Verification at sweep time: build clean, full suite 0 failures, race
+green (metadata/frontend), lint findings confined to the auth session's
+uncommitted files, e2e 349/349.
