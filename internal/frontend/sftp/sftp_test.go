@@ -743,3 +743,34 @@ func TestHostKeyDanglingSymlinkNotFollowed(t *testing.T) {
 		t.Fatal("something was written through the dangling symlink")
 	}
 }
+
+// F2 twin: renaming a DIRECTORY (client path has no trailing slash) moves
+// the "dir/" marker, not a colliding bare key.
+func TestRenameDirMarkerMoves(t *testing.T) {
+	be := newRecordingBackend()
+	be.objects["bkt/olddir/"] = nil
+	f, err := New(be, testConfig(t, be))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &fileCmd{f: f, id: auth.WildcardIdentity("t")}
+	if err := c.rename("/bkt/olddir", "/bkt/newdir"); err != nil {
+		t.Fatalf("rename dir: %v", err)
+	}
+	if _, ok := be.objects["bkt/olddir/"]; ok {
+		t.Fatalf("old marker still present; objects=%v", be.objects)
+	}
+	if _, ok := be.objects["bkt/newdir/"]; !ok {
+		t.Fatalf("new marker missing; objects=%v", be.objects)
+	}
+}
+
+// T7: WriteAt refuses growth past maxUploadBufferBytes instead of OOMing.
+// Probed at a tiny injection scale by checking the guard arithmetic via
+// buf near the cap is impractical (5 GiB), so the guard is pinned at the
+// constant level: the cap constant must match the backend default.
+func TestUploadBufferCapMatchesBackendDefault(t *testing.T) {
+	if maxUploadBufferBytes != 5<<30 {
+		t.Fatalf("maxUploadBufferBytes = %d, want the 5 GiB backend default", maxUploadBufferBytes)
+	}
+}

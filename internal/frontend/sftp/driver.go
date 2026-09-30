@@ -25,6 +25,13 @@ import (
 // dirMarkerSuffix terminates directory marker keys (fs-layout convention).
 const dirMarkerSuffix = "/"
 
+// maxUploadBufferBytes bounds the in-memory upload/download buffers (T7):
+// the fs backend caps a Put at 5 GiB, but that check runs at Close — the
+// whole body is buffered HERE first, so without this cap an authenticated
+// client can OOM the process before the backend ever sees the bytes.
+// Matches the backend default (maxPutBytesDefault).
+const maxUploadBufferBytes = 5 << 30
+
 // handlers builds the sftp.Handlers triple bound to one session identity
 // (leaf 05: grant checks run before every storage touch — zero Backend
 // calls on denied paths).
@@ -67,9 +74,13 @@ func (g *fileGet) Fileread(req *sftp.Request) (io.ReaderAt, error) {
 		return nil, mapBackendError(err)
 	}
 	defer rc.Close()
-	data, err := io.ReadAll(rc)
+	// T7: cap the materialized read (download path mirrors the upload cap).
+	data, err := io.ReadAll(io.LimitReader(rc, maxUploadBufferBytes+1))
 	if err != nil {
 		return nil, mapBackendError(err)
+	}
+	if int64(len(data)) > maxUploadBufferBytes {
+		return nil, sftp.ErrSSHFxFailure
 	}
 	return bytes.NewReader(data), nil
 }
@@ -121,6 +132,12 @@ type putWriter struct {
 func (w *putWriter) WriteAt(p []byte, off int64) (int, error) {
 	if off != int64(w.buf.Len()) {
 		return 0, sftp.ErrSSHFxOpUnsupported // random-access writes are not representable
+	}
+	if int64(w.buf.Len())+int64(len(p)) > maxUploadBufferBytes {
+		// T7: refuse the growth instead of OOMing the process; the close
+		// then commits nothing for a fresh handle (writes flag is set only
+		// on success) — an existing object keeps its bytes.
+		return 0, sftp.ErrSSHFxFailure
 	}
 	n, err := w.buf.Write(p)
 	if err == nil {
@@ -241,14 +258,22 @@ func (c *fileCmd) rename(oldPath, newPath string) error {
 	if err := authorize(c.id, newB, true); err != nil {
 		return errPermission
 	}
+	// F2 twin: a directory source's marker key ("d/") is what must move.
+	// The client's path never carries the trailing slash (SFTP normalizes
+	// before this handler sees it), so detect directory-ness from STORAGE
+	// like the FTP driver does. A marker-only directory renames as an
+	// empty body plus the marker suffix on the destination.
 	srcKey := oldK
-	dstKey := newK + dirMarkerSuffixIfDir(oldK)
+	ctx := context.Background()
+	if _, err := c.f.be.Stat(ctx, oldB, oldK+dirMarkerSuffix); err == nil {
+		srcKey = oldK + dirMarkerSuffix
+	}
+	dstKey := newK + dirMarkerSuffixIfDir(srcKey)
 	if oldB == newB && srcKey == dstKey {
 		// Same bucket+key: a no-op. Must precede the destination Stat so
 		// the source's own existence does not read as "clobber attempt".
 		return nil
 	}
-	ctx := context.Background()
 	if _, err := c.f.be.Stat(ctx, newB, dstKey); err == nil {
 		// Destination exists: refuse without touching anything (no
 		// overwrite — SFTP v3 rename must not clobber).
@@ -256,16 +281,22 @@ func (c *fileCmd) rename(oldPath, newPath string) error {
 	} else if !isNoSuchKey(err) {
 		return mapBackendError(err)
 	}
+	var data []byte
 	rc, _, err := c.f.be.Get(ctx, oldB, srcKey, objectmodel.GetOptions{})
 	if err != nil {
-		return mapBackendError(err)
-	}
-	data, err := io.ReadAll(rc)
-	if cerr := rc.Close(); cerr != nil {
-		return mapBackendError(cerr)
-	}
-	if err != nil {
-		return mapBackendError(err)
+		if !strings.HasSuffix(srcKey, dirMarkerSuffix) {
+			return mapBackendError(err)
+		}
+		// Marker-only directory: empty body, marker rename.
+		data = nil
+	} else {
+		data, err = io.ReadAll(rc)
+		if cerr := rc.Close(); cerr != nil {
+			return mapBackendError(cerr)
+		}
+		if err != nil {
+			return mapBackendError(err)
+		}
 	}
 	if _, err := c.f.be.Put(ctx, newB, dstKey, bytes.NewReader(data), int64(len(data)), objectmodel.PutOptions{}); err != nil {
 		return mapBackendError(err)

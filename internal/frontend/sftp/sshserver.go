@@ -6,6 +6,7 @@ package sftp
 import (
 	"log"
 	"net"
+	"sort"
 
 	"golang.org/x/crypto/ssh"
 
@@ -101,12 +102,18 @@ func identityPermissions(id auth.Identity) *ssh.Permissions {
 }
 
 // renderGrants renders the grant map deterministically ("bucket=value,..."
-// sorted) so the session handler can reconstruct the identity. Read=false
-// must stay false: the value encodes exactly what the identity holds
-// ("-" = nothing, "r", "rw").
+// sorted by bucket) so the session handler can reconstruct the identity and
+// the round-trip is stable. Read=false must stay false: the value encodes
+// exactly what the identity holds ("-" = nothing, "r", "rw").
 func renderGrants(id auth.Identity) string {
+	buckets := make([]string, 0, len(id.BucketGrants))
+	for bucket := range id.BucketGrants {
+		buckets = append(buckets, bucket)
+	}
+	sort.Strings(buckets)
 	out := ""
-	for bucket, g := range id.BucketGrants {
+	for _, bucket := range buckets {
+		g := id.BucketGrants[bucket]
 		value := "-"
 		switch {
 		case g.Read && g.Write:
