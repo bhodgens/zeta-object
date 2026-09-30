@@ -114,3 +114,36 @@ actions_coverage_test.go ~80% (one vacuous core, M7).
 - One live-host capture (dir rename + heavy activity incl. root-dir
   records + an objid-reuse instance) would confirm/kill H5, H6, M8 - the
   three graph-assumption findings. Host zfs-meta remains deployable.
+
+
+---
+
+## Fix-wave round 2 disposition (2026-09-29, commits 8710e20 / 69e2d2f / 14310d4)
+
+| Finding | Disposition |
+|---|---|
+| H1 '.' bricking | FIXED 8710e20 (reverted exemption; pins incl. bucket-not-bricked) |
+| H2 CI floors dead | FIXED by rename session 39cdf9b (labels -> zeta-object) |
+| H3 LISTEN_ADDR/DEBUG_AUTH fallback | DEFERRED: fix lives in frontends.go/sigv4.go - owned by the in-flight auth-tree session; queue behind its landing |
+| H4 root mis-election | FIXED 8710e20 (chain-terminus unanimity) |
+| H5 root-dir record | FIXED 8710e20 (nameless records never map/vote; parent==root resolves) |
+| H6 objid reuse rewrite | FIXED 8710e20 (txg-scoped mappings; live capture shows fresh-objid allocation per mount session - reuse is a long-lived-dataset hazard) |
+| M1 singleton detail race | DEFERRED: fix is in s3_wiring.go (auth session's file); queue |
+| M2 hrtime wall-clock | FIXED 8710e20 (plausibility gate, zero = unknown) |
+| M3 events traversal | FIXED 69e2d2f (validBucket in resolveEventsContext) |
+| M4 marker decode | FIXED 69e2d2f (+round-trip walk test; orchestrator fixed the test's decode-vs-encoded comparison the fixer left red) |
+| M5/M6 suffix bleed + rename half-reconstruction | ADDRESSED by H4/H6: exact-vs-partial now anchored to chain-terminus unanimity + txg-scoped mappings; residual partial-match breadth documented as contract |
+| M7 vacuous ResetOn test | FIXED 14310d4 (timer-pointer identity; mutation-verified) |
+| M8 ordering assumption | FIXED 8710e20 (oldest-first proven by live capture e6de259) |
+| M9 example docs | FIXED by rename session |
+| D4 prefix | FIXED 69e2d2f (+documented delimiter/encoding-type limitation) |
+| D5 exec amplification | FIXED 8710e20 (semaphore cap 4) |
+| D6 topology on wire | WONTFIX-by-design: dataset name in envelope is a documented contract; noted for shared-credential tenants |
+| B2/B3/B4/B5/B6, C4, C5, A6, A7, A8 | LOW/INFO: accepted or deferred with the owner files; recorded in the report |
+
+Live re-validation of the reconstruction fixes on zfs-meta: pending the
+auth-tree session's landing (the fix commits are in; the host capture that
+grounded them is committed as a fixture). Order-of-operations note: the
+test fixer's failing TestVersionsMarkerRoundTripEncodableKeys (compared
+decoded got vs encoded want) was corrected by the orchestrator before
+commit; gates all green after.
