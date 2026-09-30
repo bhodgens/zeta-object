@@ -9,8 +9,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/pkg/sftp"
+
+	"github.com/bhodgens/zeta-object/internal/auth"
 )
 
 // handleConn runs one SSH connection: handshake (auth callbacks resolve the

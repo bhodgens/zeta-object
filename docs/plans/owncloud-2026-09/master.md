@@ -304,14 +304,72 @@ The orchestrator verifies each child in-session:
 
 | Child | Status | Iterations | Review Notes |
 |-------|--------|------------|-------------|
-| 01-decision-and-client-subset-discovery | PENDING | | |
-| 02-ocs-capabilities-endpoint | PENDING | | |
-| 03-versions-endpoint | PENDING (conditional) | | skip evidence: |
-| 04-app-password-auth | PENDING (conditional) | | skip evidence: |
-| 05-conformance-and-e2e | PENDING | | |
-| 06-docs | PENDING | | |
+| 01-decision-and-client-subset-discovery | SKIPPED (adapted) | 1 | Real desktop client cannot run in this environment. Adapted scope executed: `decision.md` written targeting the documented WebDAV+OCS minimal subset; compatibility matrix rows that a capture would ground are marked UNVERIFIED and routed to the documented manual real-client procedure (decision.md §6–7, log table PENDING). Capture artifact `capture/request-log.md` intentionally NOT created (would be fabricated evidence). |
+| 02-ocs-capabilities-endpoint | COMPLETE | 1 | `internal/frontend/owncloud`: Frontend Name()=="owncloud" wrapping the landed webdav frontend (Composition per master Contract 3: OCS paths → router, everything else → webdav Handler unchanged). OCS XML envelope byte-pinned by golden tests (v1 always HTTP 200; v2 mirrors statuscode; 997 for anonymous). Capabilities document derived from true state — empty `files` block, version shim 10.11.0, NO aspirational flags (tested). `/cloud/user` returns `<id>` only (auth seam has no displayname/email — omitted, not invented). Unimplemented endpoints → documented OCS 404 envelope. Conformance smoke passes. Deviation: wrapped webdav single-bucket/multi-bucket `bucket` key accepted like webdav (config.go rule extended). |
+| 03-versions-endpoint | SKIPPED (conditional) | | skip evidence: no capture possible (leaf 01 adapted) AND no MetadataProvider attached in any supported config — both leaf triggers absent. GO/NO-GO criteria recorded in decision.md §5. |
+| 04-app-password-auth | SKIPPED (conditional) | | skip evidence: no capture shows the client demanding app passwords; classic flow is Basic. GO/NO-GO criteria recorded in decision.md §5. |
+| 05-conformance-and-e2e | COMPLETE | 1 | Conformance suite instantiated (`TestConformanceSmoke`). E2E cases 23 (`23-owncloud-ocs.sh`: v1+v2 config/capabilities, cloud/user, 401/997 gate, v1-vs-v2 mapping, degradation 404s, 405) and 24 (`24-owncloud-sync-roundtrip.sh`: OCS probe → MKCOL/PUT → PROPFIND → byte-compare GET → overwrite → DELETE → REPORT 405 → cleanup 404) — next free numbers after 22. Case 16's known-types assertion updated (`owncloud` added). Coverage floor NOT moved: aggregate coverage 82.5% vs floor 47 (no package moved; floor holds with headroom). Real-client pass documented as MANUAL (case comments + decision.md §6). |
+| 06-docs | COMPLETE | 1 | README ownCloud section (position statement incl. honest-value framing, config example, auth, quickstart, decision-doc link); `docs/owncloud-compatibility.md` (Supported/Degraded/Unsupported, untested-versions caveat, dated "never — pending manual pass"); config keys in `config.json.example`; `docs/frontends.md` registry list updated. |
 
 Status values: PENDING | IN_PROGRESS | IMPLEMENTED | REVIEWED | COMPLETE | BLOCKED | SKIPPED
+
+## Implementation Record (2026-09-30, adapted-scope execution)
+
+**Executor:** implementation agent (single agent, not multi-leaf dispatch —
+the orchestrator's dispatch protocol was collapsed because leaf 01's real
+client could not run; the binding scope adaptation is recorded at the top
+of decision.md and in the tracking table above).
+
+**Files created:**
+- `internal/frontend/owncloud/owncloud.go` — Frontend composition + OCS router + auth (997) + degradation 404s
+- `internal/frontend/owncloud/xml.go` — OCS envelope writer (v1/v2 HTTP mapping, `text/xml; charset=UTF-8`)
+- `internal/frontend/owncloud/capabilities.go` — capabilities document, version shim 10.11.0, true-state-only flags
+- `internal/frontend/owncloud/user.go` — `/cloud/user` (`<id>` = access key; no invented fields)
+- `internal/frontend/owncloud/owncloud_test.go`, `ocs_test.go`, `capabilities_test.go`, `stubs_test.go` — composition/golden/never-lie/purity tests
+- `scripts/e2e/cases/23-owncloud-ocs.sh`, `scripts/e2e/cases/24-owncloud-sync-roundtrip.sh`
+- `docs/plans/owncloud-2026-09/decision.md`, `docs/owncloud-compatibility.md`
+
+**Files modified:**
+- `frontends.go` — `"owncloud"` factory (wraps webdav.New with the Basic authenticator over the identity registry)
+- `config.go` — `bucket` key accepted for `owncloud` (error text: "webdav/owncloud only")
+- `frontends_test.go`, `root_coverage_wiring_test.go`, `scripts/e2e/cases/16-frontends-config.sh` — known-types list now `[ftp owncloud s3 sftp webdav]`
+- `README.md` — ownCloud section + roadmap/feature lines
+- `config.json.example`, `docs/frontends.md` — config surface + registry docs
+- this file (tracking table + record)
+
+**Gate results (all green):** `make fmt` ✓, `make lint` (golangci-lint 0
+issues) ✓, `make vet` ✓, `make fmt-check` ✓, `make test` (all packages,
+aggregate 82.5%) ✓, `make build` ✓, `make test-cover-enforce` (82.5% ≥ 47
+floor) ✓, `make e2e` — 24 cases, **349 passed / 0 failed**, including
+`23-owncloud-ocs` 19/19 and `24-owncloud-sync-roundtrip` 19/19; all
+pre-existing cases unchanged and green.
+
+**Deviations from the plan documents:**
+1. Leaf 01 adapted per the binding scope instruction (no real client;
+   decision.md documents instead of observes; manual procedure recorded).
+2. `capture/request-log.md` deliberately NOT created — an inventory without
+   a capture would be fabricated evidence; decision.md §3 labels subset
+   rows as documented-contract evidence instead of log lines.
+3. Master Contract 2's "v2 MAY get JSON" option resolved to XML-only for
+   both versions (the documented default; no capture to justify JSON).
+4. Capabilities `version` block present (10.11.0 shim) — leaf 02 allowed
+   omitting it; kept because the classic-mode client identity depends on a
+   classic-line version, and the constant is documented as a shim in
+   capabilities.go + the matrix.
+5. `bucket` config key accepted for owncloud (master Contract 5 sketched
+   webdav's shape; owncloud wraps webdav so the same key flows through).
+6. Envelope emitted with an always-present `<data>` element (empty on
+   errors) and no trailing newline — byte-pinned by golden tests.
+7. OCS responses set an `OCS-Version` header ("1.7"/"2.0"); UNVERIFIED
+   against a real client, flagged in xml.go.
+
+**Manual real-client verification (NOT executed — the acceptance gate
+that remains open):** procedure in decision.md §6; covers account setup
+probes (status.php?, v1-vs-v2 usage, Basic acceptance), sync up, sync
+down, delete, idle polling, capture reduction into a request inventory,
+and re-ruling the conditional leaves. Until a human runs it and fills
+decision.md §7, the "official client can connect, sync up, sync down,
+delete" criterion is NOT certified — the wire protocol is.
 
 ## Integration Test Plan
 

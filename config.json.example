@@ -38,9 +38,20 @@
   // (default "true"; "false" = public-key only). Identities authenticate by
   // password (accessKey/secretKey) or by "sshPublicKeys" association.
   //
+  // ownCloud: the OCS negotiation surface (OCS v1+v2 capabilities,
+  // cloud/user) layered over the WebDAV data plane, for the official
+  // ownCloud desktop client in classic server account mode. "bucket"
+  // behaves exactly like the webdav entry's (single-bucket vs
+  // multi-bucket mode). HTTP Basic credentials; unimplemented OCS
+  // endpoints (shares, provisioning) answer with a documented 404
+  // envelope. Real-client compatibility is unverified until the manual
+  // pass in docs/plans/owncloud-2026-09/decision.md §6 is run — see
+  // docs/owncloud-compatibility.md.
+  //
   // "frontends": [
   //   { "type": "s3" },
   //   { "type": "webdav", "listenAddr": ":8444", "bucket": "photos" },
+  //   { "type": "owncloud", "listenAddr": ":8446" },
   //   { "type": "ftp", "listenAddr": ":2121",
   //     "options": { "passivePortMin": "50000", "passivePortMax": "50100" } },
   //   { "type": "sftp", "listenAddr": ":2022",

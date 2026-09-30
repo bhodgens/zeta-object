@@ -16,11 +16,12 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/pkg/sftp"
+
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/backend"
 	"github.com/bhodgens/zeta-object/internal/frontend"
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
-	"github.com/pkg/sftp"
 )
 
 // recordingBackend mirrors the ftp package's in-memory Backend fake

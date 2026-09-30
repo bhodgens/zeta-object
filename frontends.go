@@ -22,6 +22,7 @@ import (
 	"github.com/bhodgens/zeta-object/internal/backend"
 	"github.com/bhodgens/zeta-object/internal/frontend"
 	ftp "github.com/bhodgens/zeta-object/internal/frontend/ftp"
+	"github.com/bhodgens/zeta-object/internal/frontend/owncloud"
 	s3 "github.com/bhodgens/zeta-object/internal/frontend/s3"
 	sftp "github.com/bhodgens/zeta-object/internal/frontend/sftp"
 	"github.com/bhodgens/zeta-object/internal/frontend/webdav"
@@ -47,6 +48,24 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 		}
 		authnr := auth.NewBasicAuthenticator(identityRegistry)
 		return webdav.New(b, webdav.Config{Bucket: cfg.Bucket}, webdav.WithAuthenticator(authnr))
+	},
+	"owncloud": func(cfg FrontendConfig, b backend.Backend, creds auth.CredentialSource) (frontend.Frontend, error) {
+		if identityRegistry == nil {
+			return nil, fmt.Errorf("owncloud frontend requires an identity registry (auth configuration failed earlier?)")
+		}
+		authnr := auth.NewBasicAuthenticator(identityRegistry)
+		wd, err := webdav.New(b, webdav.Config{Bucket: cfg.Bucket}, webdav.WithAuthenticator(authnr))
+		if err != nil {
+			return nil, err
+		}
+		oc, err := owncloud.New(wd)
+		if err != nil {
+			return nil, err
+		}
+		// The owncloud frontend implements the frontend seam directly;
+		// the wrapped webdav frontend stays unregistered (one wire
+		// identity per listener: "owncloud").
+		return oc, nil
 	},
 	"ftp": func(cfg FrontendConfig, b backend.Backend, creds auth.CredentialSource) (frontend.Frontend, error) {
 		if identityRegistry == nil {

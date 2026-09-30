@@ -7,7 +7,7 @@ zeta-object speaks the S3 protocol and stores your data where you can see it: pl
 - **One static binary.** No database, no etcd, no external services. `make build`, run it, done.
 - **Zero-format storage.** Objects are plain files; metadata is a JSON sidecar. Your data is readable with `cat` and `ls` with the server stopped. Point a bucket at `/var/log`, a ZFS dataset, an NFS mount, or a directory of symlinks and it is an S3 bucket *now*.
 - **Standard, verified wire compatibility.** AWS CLI, boto3, and mc work against it - proven by an interop e2e suite and a ceph/s3-tests ratchet, not by marketing.
-- **Protocol-flexible by design.** A pluggable frontend/backend architecture (S3 + WebDAV shipped; FTP/SFTP, ownCloud tracked) over a neutral object model - one implementation per protocol and per storage, not one per combination.
+- **Protocol-flexible by design.** A pluggable frontend/backend architecture (S3 + WebDAV + ownCloud shipped; FTP/SFTP shipped) over a neutral object model - one implementation per protocol and per storage, not one per combination.
 - **Extensible metadata.** A probe-based MetadataProvider seam attaches enrichment capabilities to buckets when - and only when - the underlying filesystem supports them. The first provider reads ZFS per-dataset file-event logs, giving per-object history and version-style listings that hosted S3 cannot give you.
 
 ## The pitch: what proves zeta-object different
@@ -275,6 +275,27 @@ zeta-object speaks WebDAV (RFC 4918, class 1 subset) so macOS Finder, Linux davf
 
 No locking (davfs2 needs `use_locks 0`), no versioning, no quotas, no dead properties, no collection COPY/MOVE, no Depth-infinity PROPFIND. Wire-level coverage lives in e2e case `scripts/e2e/cases/19-webdav.sh`; the mount-level checks above are manual by design (they need a kernel filesystem and interactive cert trust).
 
+## ownCloud frontend
+
+zeta-object speaks the ownCloud protocol — the OCS negotiation surface layered over the WebDAV data plane — so the official ownCloud desktop sync client (classic server account mode) can connect, sync up, sync down, and delete. **Honest framing:** this is a WebDAV superset for concrete ownCloud client deployments, NOT a full ownCloud server — no shares, no provisioning, no versioning, no app passwords. What works, what degrades, and what is rejected is listed in [`docs/owncloud-compatibility.md`](docs/owncloud-compatibility.md); real-client compatibility is unverified until the manual pass documented in [`docs/plans/owncloud-2026-09/decision.md`](docs/plans/owncloud-2026-09/decision.md) §6–7 has been run.
+
+### Enabling
+
+```jsonc
+"frontends": [
+  { "type": "s3" },
+  // multi-bucket mode: top-level collections are the server's buckets
+  { "type": "owncloud", "listenAddr": ":8446" },
+  // single-bucket mode: "/" IS the photos bucket (same rule as webdav)
+  { "type": "owncloud", "listenAddr": ":8447", "bucket": "photos" }
+]
+```
+
+*   `type` (required): `owncloud`. `listenAddr` (optional): give the frontend its own TLS port, or omit to share the default listener. `bucket` (optional): pins the frontend to one bucket, exactly like the webdav frontend's key. Unknown keys inside an entry abort startup.
+*   **What it serves:** OCS v1+v2 (`/ocs/v1.php`, `/ocs/v2.php`) `config`, `cloud/capabilities`, and `cloud/user` (XML, `text/xml; charset=UTF-8`); every other path — including `/remote.php/webdav/**` — is the full WebDAV class-1 subset. Every request requires HTTP Basic credentials (username = identity `accessKey`, password = `secretKey`). Unimplemented OCS endpoints answer with a documented 404 OCS envelope, never a silent success.
+*   **Client quickstart:** point the ownCloud desktop client at `https://localhost:8446` (classic/"ownCloud server" account mode), accept the self-signed cert, enter the access key/secret key. Wire-level coverage lives in e2e cases `scripts/e2e/cases/23-owncloud-ocs.sh` and `24-owncloud-sync-roundtrip.sh`; the real-client connect→sync→delete pass is a documented MANUAL gate (decision.md §6) — it has not been run yet.
+*   **Limitations:** see the compatibility matrix — no shares, no provisioning, no versioning, no app-password login, no oCIS endpoints; the capabilities document advertises only what is served (an empty `files` block and a `10.11.0` compatibility version shim).
+
 ## FTP / FTPS frontend
 
 zeta-object speaks FTP with explicit FTPS (AUTH TLS) so lftp, curl, WinSCP, and cron scripts can move files without an S3 client. Every storage touch goes through the same neutral object model the S3 frontend uses — an object uploaded over FTP is byte-identical to the S3 view of the same key.
@@ -476,7 +497,7 @@ Every pull goes through the pre-commit chain (secrets scan, vet, error-pattern c
 
 ## Roadmap
 
-*   **Frontend protocols**: WebDAV (#1) SHIPPED (`internal/frontend/webdav`, e2e case 19); FTP/FTPS + SFTP (#2), ownCloud (#3) tracked - the pluggable seam and conformance suite are in place.
+*   **Frontend protocols**: S3, WebDAV (#1, e2e case 19), FTP/FTPS + SFTP (#2, e2e cases 20/21), ownCloud (#3, e2e cases 23/24 — wire-verified; real-client pass is a documented manual gate) — all SHIPPED; the pluggable seam and conformance suite are in place.
 *   **Pluggable authentication**: multi-identity keys with per-bucket grants across all frontends (#4) — S3 core is DONE (registry + grants + dev mode); Basic-auth/SFTP frontends land with their protocol issues.
 *   **More backends**: crush-lite distributed ZFS ring ([plan](docs/plan-distributed-zfs-backing.md)), S3-compatible upstreams.
 *   **More metadata providers**: NTFS USN journal, NILFS2 - the seam probes rather than assumes.

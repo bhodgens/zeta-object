@@ -12,8 +12,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/bhodgens/zeta-object/internal/objectmodel"
 	"github.com/pkg/sftp"
+
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // errUnsupported is the capability-degradation error (SSH_FX_OP_UNSUPPORTED).

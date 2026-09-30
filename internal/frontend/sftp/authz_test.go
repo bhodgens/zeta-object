@@ -10,8 +10,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/pkg/sftp"
+
+	"github.com/bhodgens/zeta-object/internal/auth"
 )
 
 // readOnlyVerifier: Read-only on "b", no grant on "c" (leaf 05 matrix).

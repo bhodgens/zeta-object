@@ -101,8 +101,8 @@ func (c *FrontendConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	cfg := FrontendConfig(p)
-	if cfg.Type != "" && cfg.Type != "webdav" && cfg.Bucket != "" {
-		return fmt.Errorf("frontend type %q does not accept the \"bucket\" key (webdav only)", cfg.Type)
+	if cfg.Type != "" && cfg.Type != "webdav" && cfg.Type != "owncloud" && cfg.Bucket != "" {
+		return fmt.Errorf("frontend type %q does not accept the \"bucket\" key (webdav/owncloud only)", cfg.Type)
 	}
 	*c = cfg
 	return nil

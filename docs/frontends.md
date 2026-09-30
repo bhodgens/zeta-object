@@ -3,8 +3,7 @@
 zeta-object speaks multiple wire protocols through a single pluggable seam. A
 **frontend** decodes a wire protocol into the neutral object model
 (`internal/backend.Backend`) and encodes protocol-appropriate responses.
-Today only `s3` is registered; WebDAV, (S)FTP, and ownCloud frontends are
-planned (see their GH issues).
+Today `s3`, `webdav`, `ftp`, `sftp`, and `owncloud` are registered.
 
 ## The `frontend.Frontend` contract
 
