@@ -1015,7 +1015,7 @@ func BenchmarkPutObject(b *testing.B) {
 	body := strings.Repeat("x", 1024) // 1KB
 
 	b.ResetTimer()
-	for range b.N {
+	for b.Loop() {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest("PUT", "/bench-bucket/bench.txt", strings.NewReader(body))
 		putObjectHandler(w, req, "bench-bucket", "bench.txt")
@@ -1029,7 +1029,7 @@ func BenchmarkGetObject(b *testing.B) {
 	env.writeTestObject(&testing.T{}, "bench-bucket", "bench.txt", content)
 
 	b.ResetTimer()
-	for range b.N {
+	for b.Loop() {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/bench-bucket/bench.txt", nil)
 		getObjectHandler(w, req, "bench-bucket", "bench.txt")

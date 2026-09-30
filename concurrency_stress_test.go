@@ -628,7 +628,7 @@ func TestConcurrentListDuringWrite(t *testing.T) {
 	writer.Go(func() {
 		for i := range total {
 			key := fmt.Sprintf("stream/obj-%03d", i)
-			code, body := stressDo(http.MethodPut, "/"+bkt+"/"+key, []byte(fmt.Sprintf("data-%03d", i)))
+			code, body := stressDo(http.MethodPut, "/"+bkt+"/"+key, fmt.Appendf(nil, "data-%03d", i))
 			if code != http.StatusOK {
 				col.errorf("writer PUT %s: status = %d: %s", key, code, body)
 			}

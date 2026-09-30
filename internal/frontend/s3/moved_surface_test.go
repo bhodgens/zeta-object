@@ -1970,8 +1970,8 @@ func TestSurface_BranchClosers(t *testing.T) {
 		data := "hello chunks"
 		sig1 := chunkSig(seed, data)
 		sig2 := chunkSig(sig1, "")
-		body := []byte(fmt.Sprintf("%x;chunk-signature=%s\r\n%s\r\n0;chunk-signature=%s\r\n\r\n",
-			len(data), sig1, data, sig2))
+		body := fmt.Appendf(nil, "%x;chunk-signature=%s\r\n%s\r\n0;chunk-signature=%s\r\n\r\n",
+			len(data), sig1, data, sig2)
 		decoded, err := DecodeAndVerifyChunked(body, seed, key, stamp, scope)
 		if err != nil {
 			t.Fatalf("DecodeAndVerifyChunked: %v", err)
