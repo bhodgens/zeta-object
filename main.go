@@ -64,6 +64,16 @@ func main() {
 	// Explicitly load credentials from environment (warn on empty values)
 	loadCredentials()
 
+	// Multi-identity registry (pluggable-authentication tree leaf 01):
+	// env pair + config identities, validated fail-loud. Duplicate access
+	// keys or any invalid identity abort startup — never a silent fallback
+	// (same semantic as unknown-backend).
+	reg, err := buildIdentityRegistry()
+	if err != nil {
+		log.Fatalf("Authentication configuration failed: %v", err)
+	}
+	identityRegistry = reg
+
 	// Environment override for the listen address (beats config file)
 	applyListenAddrOverride(&serverConfig)
 

@@ -394,5 +394,61 @@ Floors, Notes. All present.
 - **Riskiest leaf is 02.** It touches `sigv4Authenticator`, the hottest and
   most security-sensitive code in the repo (hardening-2026-09 fixed 9 issues
   there). The regression gate is the existing SigV4 test suite
-  (`internal/frontend/s3/sigv4_test.go`, `auth_adapter_test.go`) plus e2e cases
-  01–13 — if any of those move, leaf 02 is wrong, full stop.
+  (`internal/frontend/s3/sigv4_test.go`, `auth_adapter_test.go`) plus e2e
+  cases 01–13 — if any of those move, leaf 02 is wrong, full stop.
+
+## Implementation Record (completion audit, 2026-09-29)
+
+A prior implementation run landed leaves 01–05 plus most of 06 before dying
+mid-run. This audit completed the tree. Findings and work:
+
+**Audit of out-of-tree diffs.** `internal/metadata/zfs_events.go` adds only a
+compile-time interface assertion (`var _ MetadataProvider =
+(*zfsEventsProvider)(nil)`); same pattern in
+`internal/backend/fsbackend/fsbackend.go` (`var _ backend.Backend = (*FS)`).
+Not auth code, but harmless seam-drift guards consistent with the tree's
+frozen-contract posture — kept. `zeta-object-server` (binary) was rebuilt by
+the harness. `fuzz_test.go` + `testdata/fuzz/` changes belong to a concurrent
+sibling agent, not this tree.
+
+**Verified landed (leaves 01–05):** `internal/auth/{registry,basic,devmode,
+env,grants,publickey}.go` with tests; `internal/frontend/authz.go` (shared
+`AuthorizeRequest`); `internal/frontend/s3/{seam,auth_adapter,dispatch}.go`
+wiring `InstallIdentityRegistry` / `InstallDevAuthenticator`; `config.go`
+`buildIdentityRegistry` (fail-loud duplicates, unknown auth.mode, env-pair
+merge via `auth.EnvPair`); `main.go` log.Fatalf on validation error;
+`s3_wiring.go` registry install + dev banner; grant enforcement in
+`serviceLevelDispatch` (403 AccessDenied) + ListBuckets filtering. All
+contracts 1–6 match the master. `go test ./internal/auth/...
+./internal/frontend/... -count=1` green; no missing leaf deliverables found —
+no new product code needed.
+
+**Completed in this audit (leaf 06 remainder + leaf 07):**
+
+- `scripts/e2e/cases/18-auth-identities.sh` — all six legs: 18a env-pair
+  back-compat round-trip, 18b multi-identity (env + ak-rw + ak-ro), 18c
+  readonly denial (403 AccessDenied) over the wire, 18d unknown key →
+  InvalidAccessKeyId, 18e dev-mode loud banner + per-request WARNING +
+  unsigned requests accepted, 18f duplicate accessKey aborts startup.
+  Private-server pattern per cases 14–16; 19 asserts, green.
+- `config.json.example` — commented `identities` + `auth` blocks.
+- `README.md` — auth section rewritten (multi-identity, grants, dev mode),
+  config-key table rows, Known Limitations / Roadmap updated.
+
+**Gate results:** `make fmt`, `make lint`, `make test`, `make build`,
+`make e2e` (all 18 cases, 243 asserts) — all green. Tree left UNCOMMITTED.
+
+**Deviations from leaf contracts:**
+
+1. Leaf 06's Task 1 unit locks (env-only registry shape, golden S3 error
+   bytes) were already covered by the landed `config_identities_test.go`,
+   `config_devmode_test.go`, and `internal/frontend/s3/migration_test.go` —
+   per the leaf's own "reference, don't duplicate" rule, nothing added.
+2. Leaf 06's Task 3 (coverage-floor re-measure) NOT done: floors move with
+   code only when code moves packages; this audit added no product code, and
+   floor measurement should happen once at tree commit time alongside the
+   concurrent sibling work to avoid two agents racing the Makefile.
+3. Leg 18e asserts the exact dev-mode WARNING prefix from
+   `internal/auth/devmode.go` rather than a looser "WARNING" grep, so the
+   e2e pins the loudness contract itself, not just any warning text.
+

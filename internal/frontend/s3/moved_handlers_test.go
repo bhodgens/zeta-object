@@ -688,7 +688,7 @@ func TestListBucketsHandler_Success(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/", nil)
-	listBucketsHandler(w, req)
+	listBucketsHandler(w, req, nil)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -1435,7 +1435,7 @@ func TestListBuckets_XMLHeaderAndXMLNS(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/", nil)
-	listBucketsHandler(w, req)
+	listBucketsHandler(w, req, nil)
 
 	body := w.Body.String()
 	if !strings.HasPrefix(body, xml.Header) {

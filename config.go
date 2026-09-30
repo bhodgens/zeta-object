@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 	"strings"
+
+	"github.com/bhodgens/zeta-object/internal/auth"
 )
 
 // config.go — server configuration, credentials, and shared constants
@@ -19,6 +21,11 @@ const (
 	defaultKeyFile    = "certs/key.pem"
 	defaultAccessKey  = "minioadmin"
 )
+
+// authModeNone is the opt-in zero-auth dev mode value for auth.mode
+// (pluggable-authentication tree leaf 05). The behavior (DevAuthenticator)
+// lives in internal/auth; this constant pins the config vocabulary.
+const authModeNone = "none"
 
 // ServerConfig holds the server configuration loaded from JSON
 type ServerConfig struct {
@@ -41,9 +48,27 @@ type ServerConfig struct {
 	// object form of the buckets value). Absent/empty ⇒ default backend.
 	BucketBackends map[string]string `json:"-"`
 
+	// Identities is the multi-identity auth config (pluggable-
+	// authentication tree leaf 01). Absent ⇒ only the env-pair identity
+	// exists (exact pre-tree behavior).
+	Identities []auth.IdentityConfig `json:"identities,omitempty"`
+
+	// Auth carries the auth-mode switch ("": required auth — the default;
+	// "none": zero-auth dev mode, loudly logged — leaf 05). Tag is a plain
+	// "auth" (not omitempty): AuthConfig is a struct, so omitempty would
+	// never fire and modernize flags it; "" mode remains the default.
+	Auth AuthConfig `json:"auth"`
+
 	// bucketsErr carries a buckets-map decode failure (null/empty bucket
 	// value) out of the custom UnmarshalJSON path; it is not a JSON key.
 	bucketsErr error
+}
+
+// AuthConfig is the config.json "auth" block (pluggable-authentication tree
+// leaf 01). Mode "" (absent) = normal auth; "none" = zero-auth dev mode
+// (opt-in, loudly logged). Any other value aborts startup.
+type AuthConfig struct {
+	Mode string `json:"mode,omitempty"`
 }
 
 // FrontendConfig is one entry of the "frontends" config array (leaf 03).
@@ -254,6 +279,8 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 		Frontends  []FrontendConfig      `json:"frontends"`
 		Backends   map[string]BackendCfg `json:"backends"`
 		Buckets    bucketsRaw            `json:"buckets"`
+		Identities []auth.IdentityConfig `json:"identities"`
+		Auth       AuthConfig            `json:"auth"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
@@ -267,9 +294,41 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	c.KeyFile = a.KeyFile
 	c.Frontends = a.Frontends
 	c.Backends = a.Backends
+	c.Identities = a.Identities
+	c.Auth = a.Auth
 	a.Buckets.apply(c)
 	return c.bucketsErr
 }
+
+// buildIdentityRegistry merges the legacy env pair (always present — the
+// migration contract) with the configured identities and validates the
+// whole set. Fail-loud: any invalid identity, duplicate access key
+// (config-vs-config or config-vs-env), or unknown auth.mode value returns
+// an error naming the offender — never a silent fallback. Called from
+// main() after loadCredentials; with no `identities` key the result is a
+// single wildcard env identity (byte-identical to the pre-tree behavior).
+func buildIdentityRegistry() (*auth.MultiRegistry, error) {
+	switch serverConfig.Auth.Mode {
+	case "", authModeNone:
+	default:
+		return nil, fmt.Errorf("invalid auth.mode %q (want \"\" or %q)", serverConfig.Auth.Mode, authModeNone)
+	}
+	identities := make([]auth.IdentityConfig, 0, 1+len(serverConfig.Identities))
+	identities = append(identities, auth.EnvPair(serverCredentials.AccessKeyID, serverCredentials.SecretAccessKey))
+	identities = append(identities, serverConfig.Identities...)
+	reg, err := auth.NewMultiRegistry(identities)
+	if err != nil {
+		return nil, fmt.Errorf("invalid auth configuration: %w", err)
+	}
+	return reg, nil
+}
+
+// identityRegistry is the process-wide credential→identity registry built
+// by buildIdentityRegistry() after loadCredentials() resolves the env pair
+// (pluggable-authentication tree leaf 01). main() aborts on a build error,
+// so installS3Seams only ever sees a valid (or nil-for-legacy-fallback)
+// registry.
+var identityRegistry *auth.MultiRegistry
 
 // Credentials store. Package-level var remains the storage, but the values
 // are populated explicitly by loadCredentials() (called from main) so tests

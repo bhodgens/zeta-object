@@ -15,6 +15,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/bhodgens/zeta-object/internal/auth"
+	"github.com/bhodgens/zeta-object/internal/frontend"
 )
 
 // Handlers call getBucketPath for the above-seam multipart staging paths;
@@ -46,16 +49,43 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Authenticate request: presigned query auth when X-Amz-* params present
 	// and no Authorization header; header auth wins otherwise (leaf 3.2).
-	if isPresignedRequest(r) {
-		if !f.authenticatePresigned(w, r) {
-			// authenticatePresigned writes the error response on failure.
+	// Zero-auth dev mode (auth.mode "none", pluggable-auth tree leaf 05)
+	// short-circuits both wire forms through the loud DevAuthenticator.
+	var identity auth.Identity
+	if dev := devAuthenticatorFor(); dev != nil {
+		id, err := dev.Authenticate(r)
+		if err != nil {
+			log.Printf("Authentication Error: dev authenticator rejected request: %v", err)
+			writeAuthFailure(w, authFailureError{"AccessDenied", "Access Denied", httpStatusForbidden})
 			return
 		}
-	} else if _, failure, ok := f.authenticateRequest(r); !ok {
+		identity = id
+	} else if isPresignedRequest(r) {
+		id, failure, ok := f.authenticatePresignedRequest(r)
+		if !ok {
+			// authenticatePresignedRequest does not write; render here.
+			if failure != nil {
+				writeAuthFailure(w, *failure)
+			}
+			return
+		}
+		identity = id
+	} else if id, failure, ok := f.authenticateRequest(r); !ok {
 		// authenticateRequest failed; render the identical S3 error bytes.
 		if failure != nil {
 			writeAuthFailure(w, *failure)
 		}
+		return
+	} else {
+		identity = id
+	}
+
+	// Authorization (pluggable-authentication tree leaf 02): enforce the
+	// identity's bucket grants AFTER authentication, BEFORE the ACL stub
+	// and any handler. The grant decision itself lives in internal/auth
+	// (Identity.CanRead/CanWrite) via the shared frontend.AuthorizeRequest
+	// helper; this site only renders the S3 wire error.
+	if !authorizeS3Request(w, identity, bucketName, r) {
 		return
 	}
 
@@ -67,7 +97,7 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case bucketName == "":
-		f.serviceLevelDispatch(w, r)
+		f.serviceLevelDispatch(w, r, identity)
 	case objectName == "":
 		f.bucketLevelDispatch(w, r, bucketName)
 	default:
@@ -75,14 +105,69 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// authorizeS3Request enforces identity grants for bucket/object requests.
+// Returns true when the request may proceed; false when an AccessDenied S3
+// error was written. Service-level requests (bucket == "") are not denied
+// here — ListBuckets filters to granted buckets in serviceLevelDispatch
+// (a scoped identity sees its buckets, never a 403 that would leak nothing
+// anyway but break legitimate clients).
+func authorizeS3Request(w http.ResponseWriter, id auth.Identity, bucket string, r *http.Request) bool {
+	if bucket == "" {
+		return true
+	}
+	write := requestWritesBucket(r)
+	if err := frontend.AuthorizeRequest(id, bucket, write); err != nil {
+		log.Printf("Authorization Denied: identity %s, bucket %s, write=%v", strconv.Quote(id.AccessKeyID), strconv.Quote(bucket), write)
+		writeAuthFailure(w, authFailureError{"AccessDenied", "Access Denied", httpStatusForbidden})
+		return false
+	}
+	return true
+}
+
+// requestWritesBucket classifies a bucket-level or object-level request as
+// a write (PUT/POST/DELETE) vs a read (GET/HEAD/OPTIONS). One function, one
+// place — the classification the grant check consumes (leaf 02: create/
+// delete bucket, versioning, actions, put, copy, multipart
+// initiate/upload/complete/abort, delete batch are all writes; GET/HEAD
+// are reads).
+func requestWritesBucket(r *http.Request) bool {
+	switch r.Method {
+	case "PUT", "POST", "DELETE":
+		return true
+	default:
+		return false
+	}
+}
+
 // serviceLevelDispatch routes service-level (no bucket) requests.
-func (f *Frontend) serviceLevelDispatch(w http.ResponseWriter, r *http.Request) {
+// ListBuckets filters to the identity's granted buckets when the identity
+// is not wildcard — a scoped identity sees only what it may read.
+func (f *Frontend) serviceLevelDispatch(w http.ResponseWriter, r *http.Request, id auth.Identity) {
 	switch r.Method {
 	case "GET":
-		listBucketsHandler(w, r)
+		listBucketsHandler(w, r, grantedBucketFilter(id))
 	default:
 		http.Error(w, "Method Not Allowed at service level", http.StatusMethodNotAllowed)
 	}
+}
+
+// grantedBucketFilter returns nil when the identity holds the "*" wildcard
+// (no filtering — today's byte-identical behavior); otherwise the set of
+// buckets the identity may read.
+func grantedBucketFilter(id auth.Identity) map[string]bool {
+	if id.BucketGrants == nil {
+		return nil
+	}
+	if g, ok := id.BucketGrants["*"]; ok && g.Read {
+		return nil
+	}
+	filter := make(map[string]bool, len(id.BucketGrants))
+	for bucket, g := range id.BucketGrants {
+		if bucket != "*" && g.Read {
+			filter[bucket] = true
+		}
+	}
+	return filter
 }
 
 // bucketLevelDispatch routes bucket-level requests (bucket set, no object),

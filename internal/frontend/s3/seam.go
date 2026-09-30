@@ -226,6 +226,50 @@ func InstallDefaultCredentialSource(cs auth.CredentialSource) {
 	installDefaultCredentialSource(cs)
 }
 
+// identityRegistryHook is the multi-identity registry (pluggable-
+// authentication tree leaf 02): the credential source of record when
+// installed. Guarded by hookMu.
+var identityRegistryHook auth.IdentityRegistry
+
+// InstallIdentityRegistry installs the multi-identity registry. When set,
+// SigV4 access key IDs resolve through LookupByAccessKey and successful
+// authentication returns the FULL identity (BucketGrants populated) so
+// dispatch can enforce per-bucket grants. The legacy CredentialSource stays
+// installed as the fallback (transitional, per leaf 02).
+func InstallIdentityRegistry(reg auth.IdentityRegistry) {
+	hookMu.Lock()
+	defer hookMu.Unlock()
+	identityRegistryHook = reg
+}
+
+// identityRegistryFor returns the installed registry under a read lock.
+func identityRegistryFor() auth.IdentityRegistry {
+	hookMu.RLock()
+	defer hookMu.RUnlock()
+	return identityRegistryHook
+}
+
+// devAuthenticatorHook is the zero-auth dev-mode authenticator (leaf 05):
+// when installed, dispatch authenticates every request through it (loudly)
+// instead of the SigV4 adapter. Guarded by hookMu.
+var devAuthenticatorHook auth.Authenticator
+
+// InstallDevAuthenticator installs the dev-mode authenticator (exported
+// wiring entry). package main calls this only when auth.mode == "none".
+func InstallDevAuthenticator(a auth.Authenticator) {
+	hookMu.Lock()
+	defer hookMu.Unlock()
+	devAuthenticatorHook = a
+}
+
+// devAuthenticatorFor returns the installed dev authenticator, if any,
+// under a read lock.
+func devAuthenticatorFor() auth.Authenticator {
+	hookMu.RLock()
+	defer hookMu.RUnlock()
+	return devAuthenticatorHook
+}
+
 // InstallActionTrigger installs the bucket-actions trigger (exported
 // wiring entry).
 func InstallActionTrigger(fn func(eventType string, ctx ActionContext)) {

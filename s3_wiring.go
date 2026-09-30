@@ -70,6 +70,24 @@ func installS3Seams() {
 	// Credentials.
 	s3.InstallDefaultCredentialSource(mainCredentialSource{})
 
+	// Multi-identity registry (pluggable-authentication tree leaves 01/02):
+	// built from the env pair + config identities (validated fail-loud in
+	// main(); a nil here means validation already aborted startup — the
+	// frontend falls back to the legacy single-pair source above).
+	if identityRegistry != nil {
+		s3.InstallIdentityRegistry(identityRegistry)
+	}
+
+	// Zero-auth dev mode (leaf 05): auth.mode "none" installs the
+	// DevAuthenticator as the process authenticator source — every request
+	// authenticates as the loud anonymous wildcard identity. Opt-in only;
+	// config validation errors abort startup before this line.
+	if serverConfig.Auth.Mode == authModeNone {
+		dev := auth.NewDevAuthenticator(nil)
+		dev.Banner()
+		s3.InstallDevAuthenticator(dev)
+	}
+
 	// Bucket-actions trigger (adapter converts the identical-shaped
 	// context structs in one place).
 	s3.InstallActionTrigger(func(eventType string, ctx s3.ActionContext) {

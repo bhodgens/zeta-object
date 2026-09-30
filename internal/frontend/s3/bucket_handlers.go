@@ -55,11 +55,13 @@ func bucketExists(bucketName string) bool {
 }
 
 // Placeholder handlers - to be implemented in handlers.go or similar
-func listBucketsHandler(w http.ResponseWriter, r *http.Request) {
+func listBucketsHandler(w http.ResponseWriter, r *http.Request, granted map[string]bool) {
 	// Data-plane flip (leaf 02): bucket discovery goes through the Backend
 	// seam (one FS rooted at dataDir). Custom buckets are discovered by
 	// their per-bucket FS (the default backendFor resolves them), keeping
 	// the "custom takes precedence" dedup and the ModTime creation date.
+	// granted == nil means no filtering (wildcard identity — byte-identical
+	// to the pre-grants behavior); otherwise only granted buckets appear.
 	bucketSet := make(map[string]Bucket)
 	buckets, discoveryErr := backendDiscovery()
 	if discoveryErr != nil {
@@ -68,6 +70,9 @@ func listBucketsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, b := range buckets {
+		if granted != nil && !granted[b.Name] {
+			continue
+		}
 		bucketSet[b.Name] = Bucket{Name: b.Name, CreationDate: b.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z")}
 	}
 

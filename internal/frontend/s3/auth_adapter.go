@@ -139,10 +139,10 @@ func (f *Frontend) authenticateRequest(r *http.Request) (auth.Identity, *authFai
 	signedHeadersFromAuth := strings.Split(matches[4], ";")
 	clientSignature := matches[5]
 
-	secretKey, known := f.credentialSecret(accessKeyID)
+	secretKey, identity, known := f.credentialSecret(accessKeyID)
 	if !known {
 		log.Printf("Authentication Error: Unknown AccessKeyID: %s", strconvQuote(accessKeyID)) //nolint:gosec // G706: strconvQuote-sanitized
-		return auth.Identity{}, &authFailureError{"InvalidAccessKeyId", "The AWS Access Key Id you provided does not exist in our records.", http.StatusForbidden}, false
+		return auth.Identity{}, &authFailureError{"InvalidAccessKeyId", "The AWS Access Key Id you provided does not exist in our records.", httpStatusForbidden}, false
 	}
 
 	// Fix 1 precondition: client signature must be 64 lowercase hex chars.
@@ -253,20 +253,40 @@ func (f *Frontend) authenticateRequest(r *http.Request) (auth.Identity, *authFai
 	}
 
 	log.Println("Authentication Successful: SigV4 signature verified.")
-	return auth.Identity{AccessKeyID: accessKeyID}, nil, true
+	return identity, nil, true
 }
 
-// credentialSecret resolves the signing secret for accessKeyID through the
-// injected CredentialSource (falling back to the process-wide source when
-// the frontend was built without one — never both empty).
-func (f *Frontend) credentialSecret(accessKeyID string) (string, bool) {
+// credentialSecret resolves the signing secret for accessKeyID and returns
+// the FULL identity (pluggable-authentication tree leaf 02). Resolution
+// order: the installed IdentityRegistry (LookupByAccessKey — grants
+// populated) wins; the legacy CredentialSource is the fallback (tests /
+// transitional), synthesizing the wildcard identity so the pre-tree
+// "single omnipotent pair" semantic is unchanged on that path.
+func (f *Frontend) credentialSecret(accessKeyID string) (string, auth.Identity, bool) {
+	if reg := identityRegistryFor(); reg != nil {
+		if id, ok := reg.LookupByAccessKey(accessKeyID); ok {
+			if st, ok2 := registrySecretSource(reg); ok2 {
+				secret, found := st(accessKeyID)
+				return secret, id, found
+			}
+		}
+		return "", auth.Identity{}, false
+	}
 	if f.creds != nil {
-		return f.creds.SecretKey(accessKeyID)
+		secret, ok := f.creds.SecretKey(accessKeyID)
+		if !ok {
+			return "", auth.Identity{}, false
+		}
+		return secret, auth.WildcardIdentity(accessKeyID), true
 	}
 	if src := credentialSourceFor(); src != nil {
-		return src.SecretKey(accessKeyID)
+		secret, ok := src.SecretKey(accessKeyID)
+		if !ok {
+			return "", auth.Identity{}, false
+		}
+		return secret, auth.WildcardIdentity(accessKeyID), true
 	}
-	return "", false
+	return "", auth.Identity{}, false
 }
 
 // authenticatePresigned verifies query-form (presigned) SigV4. Former
@@ -307,7 +327,7 @@ func (f *Frontend) authenticatePresignedRequest(r *http.Request) (auth.Identity,
 	}
 	accessKeyID, dateStampFromCred, regionFromCred := scopeParts[0], scopeParts[1], scopeParts[2]
 
-	secretKey, known := f.credentialSecret(accessKeyID)
+	secretKey, identity, known := f.credentialSecret(accessKeyID)
 	if !known {
 		log.Printf("Presigned Auth Error: unknown AccessKeyID %q", strconvQuote(accessKeyID)) //nolint:gosec // G706: strconv.Quote sanitizes
 		return auth.Identity{}, &authFailureError{"InvalidAccessKeyId",
@@ -406,5 +426,17 @@ func (f *Frontend) authenticatePresignedRequest(r *http.Request) (auth.Identity,
 	}
 
 	log.Println("Authentication Successful: SigV4 presigned URL verified.")
-	return auth.Identity{AccessKeyID: accessKeyID}, nil, true
+	return identity, nil, true
+}
+
+// registrySecretSource adapts a MultiRegistry (which keeps the raw secret
+// for SigV4 signing-key derivation) to a CredentialSource lookup without
+// the s3 package importing internal/auth's concrete type — interface-level
+// only, a no-op for registry implementations that do not expose secrets
+// (option 2/3 backends), in which case lookup misses stay misses.
+func registrySecretSource(reg auth.IdentityRegistry) (func(string) (string, bool), bool) {
+	if src, ok := reg.(auth.CredentialSource); ok {
+		return src.SecretKey, true
+	}
+	return nil, false
 }

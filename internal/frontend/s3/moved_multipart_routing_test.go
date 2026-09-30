@@ -21,6 +21,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/bhodgens/zeta-object/internal/auth"
 )
 
 // ---- multipart helpers (port of the mp* helpers) ----
@@ -1387,7 +1389,7 @@ func TestMovedRouting_ServiceLevel(t *testing.T) {
 
 	t.Run("GET / lists buckets", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		defaultTestFrontend().serviceLevelDispatch(w, httptest.NewRequest("GET", "/", nil))
+		defaultTestFrontend().serviceLevelDispatch(w, httptest.NewRequest("GET", "/", nil), auth.Identity{})
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 		}
@@ -1399,7 +1401,7 @@ func TestMovedRouting_ServiceLevel(t *testing.T) {
 	for _, method := range []string{"PUT", "POST", "DELETE", "HEAD"} {
 		t.Run(method+" / is 405", func(t *testing.T) {
 			w := httptest.NewRecorder()
-			defaultTestFrontend().serviceLevelDispatch(w, httptest.NewRequest(method, "/", nil))
+			defaultTestFrontend().serviceLevelDispatch(w, httptest.NewRequest(method, "/", nil), auth.Identity{})
 			if w.Code != http.StatusMethodNotAllowed {
 				t.Fatalf("status = %d, want 405: %s", w.Code, w.Body.String())
 			}

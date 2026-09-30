@@ -358,7 +358,7 @@ func RootHandlerFn(w httpResponseWriter, r *httpRequest) {
 	defaultTestFrontend().Handler().ServeHTTP(w, r)
 }
 
-func ListBucketsHandlerFn(w httpResponseWriter, r *httpRequest) { listBucketsHandler(w, r) }
+func ListBucketsHandlerFn(w httpResponseWriter, r *httpRequest) { listBucketsHandler(w, r, nil) }
 
 func CreateBucketHandlerFn(w httpResponseWriter, r *httpRequest, bucketName string) {
 	createBucketHandler(w, r, bucketName)

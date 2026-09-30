@@ -1573,11 +1573,11 @@ func TestSurface_FrontendCredentialSecretFallback(t *testing.T) {
 		return "", false
 	})
 	f := &Frontend{}
-	if got, ok := f.credentialSecret("fallback"); !ok || got != "secret" {
+	if got, _, ok := f.credentialSecret("fallback"); !ok || got != "secret" {
 		t.Errorf("credentialSecret fallback = %q %v", got, ok)
 	}
 	// Fail closed: a key no source knows.
-	if _, ok := f.credentialSecret("nobody"); ok {
+	if _, _, ok := f.credentialSecret("nobody"); ok {
 		t.Error("unknown key accepted")
 	}
 }

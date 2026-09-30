@@ -69,7 +69,7 @@ make e2e          # end-to-end suite: 213 asserts over 17 cases (incl. boto3 + m
 
 The server uses **AWS Signature Version 4** for authentication. Configure matching credentials on both the server and client.
 
-The server has a **single global credential pair** - there are no per-user credentials, IAM users, or policies. (Multi-identity auth across all frontend protocols is designed and tracked in the plan trees.)
+The server has a **multi-identity registry**: the environment credential pair always exists as the wildcard-grant `env` identity (backward compatible with older single-pair deployments), and any number of additional identities with per-bucket grants can be declared in `config.json` under `identities`. Clients authenticate with their own access key pair and receive only the grants configured for them.
 
 ### Server-Side Credentials
 
@@ -85,6 +85,43 @@ export ZETAOBJECT_ACCESS_KEY="myaccesskey"
 export ZETAOBJECT_SECRET_KEY="mysecretkey"
 ./zeta-object-server
 ```
+
+### Multiple identities and per-bucket grants
+
+Deployments that need more than one client key declare additional identities in `config.json`:
+
+```jsonc
+{
+  "identities": [
+    {
+      "name": "ci-bot",                    // required, unique, log-safe
+      "accessKey": "AKIDZETACIBOT01",      // required, unique across identities AND the env pair
+      "secretKey": "…",                    // required
+      "grants": {                          // optional; absent ⇒ full read/write everywhere
+        "*": "readwrite",                  // wildcard bucket allowed
+        "photos": "readonly"               // "readonly" | "readwrite" (write implies read)
+      },
+      "sshPublicKeys": []                  // optional; reserved for the future SFTP frontend
+    }
+  ],
+  "auth": { "mode": "" }                   // "" (default, auth required) | "none" (see below)
+}
+```
+
+Semantics:
+
+- The env pair (`ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY`, default `minioadmin`) is **always** present as identity `env` with full read/write access to every bucket — configs without an `identities` key behave exactly as before this feature existed.
+- A `readonly` grant permits GET/HEAD/list operations; a `readwrite` grant (or the wildcard) permits writes too. Denied operations return the standard S3 `AccessDenied` (403) error.
+- An access key that is not in the registry is rejected with `InvalidAccessKeyId`, unchanged.
+- Validation is fail-loud: a duplicate access key (between identities, or against the env pair) or any invalid identity aborts startup — never a silent fallback.
+
+### Zero-auth dev mode (opt-in, loud)
+
+```jsonc
+{ "auth": { "mode": "none" } }
+```
+
+`auth.mode: "none"` disables authentication entirely: every request is accepted as an anonymous principal with full read/write access. It is designed for local development only and is loud by design — the startup banner reads `WARNING: AUTHENTICATION DISABLED …`, and every unauthenticated request logs its own `WARNING` line. It is never the default.
 
 ### Client-Side Configuration (AWS CLI)
 
@@ -113,6 +150,8 @@ zeta-object uses a JSON configuration file (see `config.json.example` for a comm
 | `buckets` | `{}` | Map of bucket names to custom filesystem paths (string form, or `{"path": ..., "backend": ...}` object form). |
 | `backends` | - | Optional backend registry: backend type name to construction config. Unknown types abort startup. |
 | `frontends` | - | Optional frontend list (default: one S3 frontend on `listenAddr`). Each entry may set its own `listenAddr` for a dedicated TLS listener. |
+| `identities` | `[]` | Optional additional auth identities (name, accessKey, secretKey, optional per-bucket `grants`, optional `sshPublicKeys`). See [Multiple identities](#multiple-identities-and-per-bucket-grants). |
+| `auth` | - | Optional auth settings; `auth.mode: "none"` enables the loud zero-auth dev mode. |
 
 Credentials are **not** set in the config file - environment variables only.
 
@@ -278,7 +317,7 @@ Every pull goes through the pre-commit chain (secrets scan, vet, error-pattern c
 
 ## Known Limitations
 
-*   Single credential pair; no per-user auth, ACLs, or bucket policies (pluggable multi-identity auth is designed; see `docs/plans/` and GH issue #4).
+*   No ACLs or bucket policies; authorization is per-identity bucket grants (`identities` config, GH issue #4).
 *   Region pinned to `us-east-1`.
 *   Object keys with `..` or `.metadata` path segments are rejected, and keys must be in canonical form (safety over S3 compatibility; no `a//b` aliasing).
 *   S3 versioning is not implemented; `?versions` lists existing objects, and the ZFS-events-derived version listing is an extension, not S3 versioning.
@@ -287,7 +326,7 @@ Every pull goes through the pre-commit chain (secrets scan, vet, error-pattern c
 ## Roadmap
 
 *   **Frontend protocols**: WebDAV (#1), FTP/FTPS + SFTP (#2), ownCloud (#3) - the pluggable seam and conformance suite are in place.
-*   **Pluggable authentication**: multi-identity keys with per-bucket grants across all frontends (#4).
+*   **Pluggable authentication**: multi-identity keys with per-bucket grants across all frontends (#4) — S3 core is DONE (registry + grants + dev mode); Basic-auth/SFTP frontends land with their protocol issues.
 *   **More backends**: crush-lite distributed ZFS ring ([plan](docs/plan-distributed-zfs-backing.md)), S3-compatible upstreams.
 *   **More metadata providers**: NTFS USN journal, NILFS2 - the seam probes rather than assumes.
 

@@ -21,6 +21,38 @@
   //   { "type": "webdav", "listenAddr": ":8444" }
   // ],
 
+  // Optional multi-identity authentication. Absent = the environment
+  // credential pair alone (identity "env", full read/write everywhere —
+  // byte-identical to pre-multi-identity behavior).
+  //
+  // Each identity: "name" (required, unique, log-safe), "accessKey"
+  // (required, unique across identities AND the env pair), "secretKey"
+  // (required), "grants" (optional; absent = full read/write to every
+  // bucket; per-bucket values "readonly" | "readwrite", "*" allowed as the
+  // wildcard bucket, write implies read), "sshPublicKeys" (optional;
+  // reserved for the future SFTP frontend).
+  //
+  // Denied operations get the standard S3 AccessDenied (403); an unknown
+  // access key gets InvalidAccessKeyId. Validation is fail-loud: any
+  // duplicate access key or invalid identity ABORTS startup.
+  // "identities": [
+  //   {
+  //     "name": "ci-bot",
+  //     "accessKey": "AKIDZETACIBOT01",
+  //     "secretKey": "wJalrXUtnFEMIfake",
+  //     "grants": { "*": "readwrite", "photos": "readonly" },
+  //     "sshPublicKeys": []
+  //   }
+  // ],
+
+  // Optional authentication settings. "mode" "" (absent = default) requires
+  // authentication as usual; "none" enables zero-auth DEV MODE: every
+  // request is accepted as an anonymous principal with full read/write.
+  // Opt-in only and loud by design — the startup banner reads
+  // "WARNING: AUTHENTICATION DISABLED" and every unauthenticated request
+  // logs its own WARNING line. Any other value aborts startup.
+  // "auth": { "mode": "none" },
+
   // Custom bucket name -> filesystem path mappings. These buckets appear in
   // ListBuckets alongside auto-discovered buckets, cannot be created or
   // deleted via the S3 API, and may point to any directory (incl. symlinks).
