@@ -497,3 +497,28 @@ func TestEventsJSONNoOwnerFields(t *testing.T) {
 		}
 	}
 }
+
+// TestInstallMetadataProviderHook pins the exported wiring entry: installing
+// a resolver routes provider lookups through it, and installing nil restores
+// the probe-on-request shim. (Wired from s3_wiring.go at startup; 0%-covered
+// until this test - the CI coverage-floor gap fixed after the rename.)
+func TestInstallMetadataProviderHook(t *testing.T) {
+	called := ""
+	s3.InstallMetadataProvider(func(bucketPath string) metadata.MetadataProvider {
+		called = bucketPath
+		return nil // nil provider is a valid resolution: no provider attached
+	})
+	if got := s3.MetadataProviderFor("/buckets/wired"); got != nil {
+		t.Errorf("MetadataProviderFor = %v, want nil", got)
+	}
+	if called != "/buckets/wired" {
+		t.Errorf("resolver called with %q, want /buckets/wired", called)
+	}
+
+	// nil restores the probe-on-request shim path (no registered provider
+	// under test -> nil either way, but the hook-bypass branch must run).
+	s3.InstallMetadataProvider(nil)
+	if got := s3.MetadataProviderFor("/buckets/shim"); got != nil {
+		t.Errorf("MetadataProviderFor after nil install = %v, want nil", got)
+	}
+}

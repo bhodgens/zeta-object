@@ -12,6 +12,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/bhodgens/zeta-object/internal/metadata"
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
@@ -446,3 +447,9 @@ func defaultTestFrontend() *Frontend {
 }
 
 var testFrontendSingleton *Frontend
+
+// MetadataProviderFor exposes metadataProviderFor for the s3_test package
+// (capability_endpoints_test.go pins the hook wiring).
+func MetadataProviderFor(bucketPath string) metadata.MetadataProvider {
+	return metadataProviderFor(bucketPath)
+}
