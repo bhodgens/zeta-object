@@ -55,10 +55,10 @@ jobs:
         with:
           args: ./...
           # v2 config file requires golangci-lint v2; action v7 supports it.
-          # v2.4.0 adds go1.25 support (v2.1.6 binaries are go1.24-built and
-          # reject a go 1.25.6 module); v2.6.0 adds the 'modernize' linter
-          # the config enables.
-          version: v2.6.0
+          # v2.14.0 binaries are built with go1.27 and accept the go 1.26
+          # module required by golang.org/x/crypto v0.56+ (govulncheck
+          # GO-2026-6355/6354); v2.6.0 is go1.24-built and rejects it.
+          version: v2.14.0
 
   test:
     needs: packages
@@ -113,13 +113,12 @@ jobs:
           git diff --exit-code go.mod $(ls go.sum 2>/dev/null)
       - name: Secrets (gitleaks)
         uses: gitleaks/gitleaks-action@v2
+        # gitleaks-action@v2 does not accept an 'args' input (it warns
+        # "Unexpected input(s) 'args'" and runs its default command). It
+        # auto-detects the project allowlist at the repo root .gitleaks.toml,
+        # where fe26177 moved it from scripts/.gitleaks.toml.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # Point the action at the project allowlist (scripts/.gitleaks.toml).
-        # Without this the action runs with defaults and flags the documented
-        # placeholder credentials in README/config example/e2e fixtures.
-        with:
-          args: --config scripts/.gitleaks.toml
 
   e2e:
     runs-on: ubuntu-latest

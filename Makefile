@@ -47,7 +47,7 @@ help:
 	@echo "  fmt              gofmt + goimports -local github.com/bhodgens/zeta-object"
 	@echo "  fmt-check        Verify formatting without modifying files"
 	@echo "  vuln             govulncheck ./..."
-	@echo "  secrets          gitleaks detect (scripts/.gitleaks.toml)"
+	@echo "  secrets          gitleaks detect (.gitleaks.toml)"
 	@echo "  e2e              Run scripts/e2e/run-e2e.sh (created by leaf 3.6)"
 	@echo "  conformance      Run ceph/s3-tests subset (leaf 5.1); ratchets vs scripts/conformance/baseline.txt"
 	@echo ""
@@ -201,7 +201,7 @@ vuln:
 secrets:
 	@which gitleaks > /dev/null 2>&1 || { echo "gitleaks not installed, skipping. Install: brew install gitleaks"; exit 0; }
 	@echo "Running gitleaks..."
-	@gitleaks detect --source . --config scripts/.gitleaks.toml
+	@gitleaks detect --source . --config .gitleaks.toml
 
 # =============================================================================
 # E2E (suite lands with leaf 3.6 — fail with a clear message until then)
