@@ -175,3 +175,30 @@ func writeFakeZfs(t *testing.T, dir, script string) error {
 	}
 	return nil
 }
+
+// TestTypedErrorStrings pins the Error()/Unwrap() of the metadata package's
+// typed errors (0%-covered on CI where the zfs binary is absent; these
+// constructors are pure, so direct construction covers them without zfs).
+func TestTypedErrorStrings(t *testing.T) {
+	statErr := &PathStatError{Path: "/buckets/a", Err: os.ErrPermission}
+	if got := statErr.Error(); got == "" {
+		t.Error("PathStatError.Error() returned empty string")
+	}
+	if !errors.Is(statErr, os.ErrPermission) {
+		t.Error("PathStatError.Unwrap lost the wrapped error")
+	}
+
+	binErr := &ZFSBinaryMissingError{Err: exec.ErrNotFound}
+	if got := binErr.Error(); got == "" {
+		t.Error("ZFSBinaryMissingError.Error() returned empty string")
+	}
+	if !errors.Is(binErr, exec.ErrNotFound) {
+		t.Error("ZFSBinaryMissingError.Unwrap lost the wrapped error")
+	}
+
+	mmErr := &DatasetMountMismatchError{Path: "/p", Dataset: "tank/ds", Mountpoint: "/mp"}
+	want := "metadata: dataset tank/ds mountpoint /mp does not contain path /p"
+	if got := mmErr.Error(); got != want {
+		t.Errorf("DatasetMountMismatchError.Error() = %q, want %q", got, want)
+	}
+}
