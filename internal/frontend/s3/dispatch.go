@@ -11,6 +11,7 @@
 package s3
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"strconv"
@@ -89,6 +90,12 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Publish the authenticated identity into the request context so
+	// handlers needing a grant check BEYOND the URL-path bucket can reach
+	// it (bughunt S1: CopyObject's source bucket). The dispatch switch does
+	// not thread the identity as a parameter, so the context is the seam.
+	r = r.WithContext(withAuthenticatedIdentity(r.Context(), identity))
+
 	// ACL specific handling (stubbed)
 	if _, aclPresent := r.URL.Query()["acl"]; aclPresent {
 		handleACL(w, r, bucketName, objectName)
@@ -103,6 +110,36 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		f.objectLevelDispatch(w, r, bucketName, objectName)
 	}
+}
+
+// authenticatedIdentityContextKey is the request-context key under which
+// serveHTTP publishes the authenticated identity so handlers reached through
+// the dispatch switch (which does not thread the identity as a parameter)
+// can enforce per-bucket grants beyond the URL-path bucket — CopyObject's
+// source-bucket check (bughunt S1) is the first consumer.
+type authenticatedIdentityContextKey struct{}
+
+// withAuthenticatedIdentity stores id in ctx under
+// authenticatedIdentityContextKey.
+func withAuthenticatedIdentity(ctx context.Context, id auth.Identity) context.Context {
+	return context.WithValue(ctx, authenticatedIdentityContextKey{}, id)
+}
+
+// identityOf returns the authenticated identity carried in the request
+// context (set by serveHTTP after authentication). When no identity was
+// stashed — direct handler invocation in unit tests, or any path that
+// bypassed serveHTTP — the legacy wildcard identity is returned: those
+// callers historically ran with unrestricted access, so synthesizing the
+// wildcard principal keeps their behavior byte-identical (the same
+// synthesis the legacy CredentialSource fallback performs in
+// credentialSecret). The context-carrying path (real dispatch) always
+// holds a scoped identity, so the CopyObject source-grant check (S1) is
+// live on the wire.
+func identityOf(r *http.Request) auth.Identity {
+	if id, ok := r.Context().Value(authenticatedIdentityContextKey{}).(auth.Identity); ok {
+		return id
+	}
+	return auth.WildcardIdentity("unauthenticated")
 }
 
 // authorizeS3Request enforces identity grants for bucket/object requests.

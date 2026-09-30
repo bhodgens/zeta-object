@@ -1299,9 +1299,29 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 		writeS3Error(w, "InvalidArgument", "x-amz-copy-source must be of the form bucket/key.", http.StatusBadRequest)
 		return
 	}
+	// Bughunt S1: the source bucket must pass the same validation as any
+	// URL-path bucket (traversal/naming) before it is used for grants or
+	// the backend Get.
+	if !validBucket(srcBucket) {
+		log.Printf("Invalid source bucket %s for CopyObject", strconv.Quote(srcBucket))
+		writeS3Error(w, "InvalidArgument", "Invalid bucket name.", http.StatusBadRequest)
+		return
+	}
 	if err := validateObjectKey(srcKey); err != nil {
 		log.Printf("Invalid source key %s for CopyObject: %v", strconv.Quote(srcKey), err)
 		writeS3Error(w, "InvalidArgument", err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Bughunt S1: enforce the SOURCE bucket grant before the source Get.
+	// authorizeS3Request only checked the URL-path (destination) bucket;
+	// without this check an identity with write on one bucket and no grant
+	// on another could read the other bucket's bytes via a copy. The
+	// identity arrives in the request context (set by serveHTTP); a missing
+	// identity degrades to the legacy wildcard principal (see identityOf).
+	if srcID := identityOf(r); !srcID.CanRead(srcBucket) {
+		log.Printf("Authorization Denied: identity %s, CopyObject source bucket %s", strconv.Quote(srcID.AccessKeyID), strconv.Quote(srcBucket))
+		writeS3Error(w, "AccessDenied", "Access Denied", http.StatusForbidden)
 		return
 	}
 

@@ -15,6 +15,13 @@
 #        WARNING line.
 #   18f. fail-loud duplicates: a duplicate accessKey across identities aborts
 #        startup naming the offender (launch_expect_fail helper).
+#   18g. per-bucket grant beats wildcard (bughunt A1 semantics over the
+#        wire): wildcard-readwrite + one-bucket-readonly identity → PUT into
+#        the readonly bucket is 403 AccessDenied while its GET works.
+#   18h. CopyObject source-grant enforcement (bughunt S1): an identity may
+#        write the destination bucket but holds no grant on the copy-source
+#        bucket → 403 AccessDenied and no destination object appears; the
+#        fully-granted identity's copy still succeeds.
 #
 # Private-server pattern (cases 14–16): the suite server is left untouched,
 # so the harness's case-boundary relaunch logic keeps working for later cases.
@@ -163,6 +170,79 @@ export AWS_ACCESS_KEY_ID=e2e18-ak-unknown AWS_SECRET_ACCESS_KEY=e2e18-sk-unknown
 s3req GET "/$A18_BKT/case18/rw.txt"
 assert_eq '18d unknown access key rejected' 403 "$S3_STATUS"
 assert_s3code '18d unknown key error is InvalidAccessKeyId (unchanged)' 'InvalidAccessKeyId'
+a18_stop_server
+
+# --- 18g–18h: per-bucket-beats-wildcard grants + CopyObject source checks ----
+# Fresh private server: same shared dataDir (buckets already seeded above);
+# identities carry the bughunt-relevant grant shapes:
+#   e2e18-ak-mixed: wildcard readwrite PLUS readonly on the case bucket
+#                   (A1: the per-bucket readonly must override "*" write)
+#   e2e18-ak-dst  : readwrite on the copy destination bucket ONLY (S1: no
+#                   grant on the copy source → CopyObject must 403)
+A18_DST_BKT='e2e18-auth-dst-bkt'
+cat > "$A18_WORK/config-mixed.json" <<EOF
+{
+  "dataDir": "$A18_WORK/data",
+  "listenAddr": "127.0.0.1:$A18_PORT",
+  "certFile": "$A18_CERT/cert.pem",
+  "keyFile": "$A18_CERT/key.pem",
+  "identities": [
+    {
+      "name": "ci-mixed",
+      "accessKey": "e2e18-ak-mixed",
+      "secretKey": "e2e18-sk-mixed-not-real",
+      "grants": {"*": "readwrite", "$A18_BKT": "readonly"}
+    },
+    {
+      "name": "ci-dst",
+      "accessKey": "e2e18-ak-dst",
+      "secretKey": "e2e18-sk-dst-not-real",
+      "grants": {"$A18_DST_BKT": "readwrite"}
+    }
+  ]
+}
+EOF
+: > "$A18_WORK/mixed.log"
+a18_start_server "$A18_WORK/config-mixed.json" "$A18_WORK/mixed.log" \
+	e2e18-env-ak e2e18-env-sk-not-real
+
+# Seed: the destination bucket for the copy-denial scenario (env pair,
+# wildcard readwrite). The mixed server's env identity has full access.
+export AWS_ACCESS_KEY_ID=e2e18-env-ak AWS_SECRET_ACCESS_KEY=e2e18-env-sk-not-real
+aws_ok '18g seed: CreateBucket copy-destination bucket' s3api create-bucket --bucket "$A18_DST_BKT"
+aws_ok '18g seed: PutObject into copy-destination bucket' s3api put-object \
+	--bucket "$A18_DST_BKT" --key 'seed/dst-payload.txt' --body "$A18_WORK/obj.txt"
+aws_ok '18g seed: ensure source object exists in case bucket' s3api put-object \
+	--bucket "$A18_BKT" --key 'case18/copy-src.txt' --body "$A18_WORK/obj.txt"
+
+# 18g: per-bucket readonly overrides wildcard readwrite (A1 over the wire).
+# The mixed identity's PUT into $A18_BKT must be denied even though its "*"
+# grant says readwrite; its GET of the same bucket must still work.
+export AWS_ACCESS_KEY_ID=e2e18-ak-mixed AWS_SECRET_ACCESS_KEY=e2e18-sk-mixed-not-real
+s3req GET "/$A18_BKT/case18/copy-src.txt"
+assert_eq '18g mixed identity: GET readonly bucket allowed' 200 "$S3_STATUS"
+s3req PUT "/$A18_BKT/case18/mixed-write-denied.txt" --data-binary 'must-not-land'
+assert_eq '18g mixed identity: per-bucket readonly overrides wildcard write' 403 "$S3_STATUS"
+assert_s3code '18g mixed identity denial returns AccessDenied' 'AccessDenied'
+
+# 18h: CopyObject source-grant enforcement (S1 over the wire). The dst-only
+# identity may write $A18_DST_BKT but holds NO grant on $A18_BKT (the copy
+# source) → 403 AccessDenied, and no destination object may appear. The env
+# identity (wildcard) then proves a granted copy still succeeds.
+export AWS_ACCESS_KEY_ID=e2e18-ak-dst AWS_SECRET_ACCESS_KEY=e2e18-sk-dst-not-real
+s3req PUT "/$A18_DST_BKT/stolen.txt" \
+	--header "x-amz-copy-source: $A18_BKT/case18/copy-src.txt"
+assert_eq '18h dst-only identity: copy from ungranted source rejected' 403 "$S3_STATUS"
+assert_s3code '18h copy-source denial returns AccessDenied' 'AccessDenied'
+s3req GET "/$A18_DST_BKT/stolen.txt"
+assert_eq '18h denied copy must not create the destination object' 404 "$S3_STATUS"
+
+export AWS_ACCESS_KEY_ID=e2e18-env-ak AWS_SECRET_ACCESS_KEY=e2e18-env-sk-not-real
+s3req PUT "/$A18_DST_BKT/copied-ok.txt" \
+	--header "x-amz-copy-source: $A18_BKT/case18/copy-src.txt"
+assert_eq '18h granted identity: copy within grants still succeeds' 200 "$S3_STATUS"
+s3req GET "/$A18_DST_BKT/copied-ok.txt"
+assert_eq '18h granted copy: destination object readable' 200 "$S3_STATUS"
 a18_stop_server
 
 # --- 18e: dev mode (auth.mode "none") is loud and accepts unsigned requests --

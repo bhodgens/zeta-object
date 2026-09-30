@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -185,6 +187,70 @@ func TestDispatchGrantEnforcement(t *testing.T) {
 		}
 		if !strings.Contains(body, "bucket-one") {
 			t.Error("granted bucket missing from ListBuckets")
+		}
+	})
+}
+
+// TestCopyObjectSourceGrantEnforcement pins bughunt S1: CopyObject must
+// enforce the SOURCE bucket grant before the source Get. An identity with
+// write on bucket A and no grant on bucket B cannot copy B's bytes into A.
+// Drives the full serveHTTP pipeline so the request context carries the
+// authenticated identity (the identityOf seam set in serveHTTP).
+func TestCopyObjectSourceGrantEnforcement(t *testing.T) {
+	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
+		{Name: "rw-two", AccessKey: "AKRW2", SecretKey: "sk-rw2", Grants: map[string]string{"copy-src": "readwrite", "copy-dst": "readwrite"}},
+		{Name: "rw-one", AccessKey: "AKRW1", SecretKey: "sk-rw1", Grants: map[string]string{"copy-dst": "readwrite"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newRegistryTestServer(t, reg)
+	handler := srv.Config.Handler
+
+	// Seed with the fully-granted identity: two buckets, one with an object.
+	seed := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, signPath(t, method, path, "AKRW2", "sk-rw2", body))
+		if w.Code >= 400 {
+			t.Fatalf("seed %s %s = %d: %s", method, path, w.Code, w.Body.String())
+		}
+		return w
+	}
+	seed("PUT", "/copy-src", "")
+	seed("PUT", "/copy-dst", "")
+	seed("PUT", "/copy-src/payload.txt", "secret-payload")
+
+	t.Run("copy within granted buckets succeeds", func(t *testing.T) {
+		req := signPath(t, "PUT", "/copy-dst/copied.txt", "AKRW2", "sk-rw2", "")
+		req.Header.Set("x-amz-copy-source", "copy-src/payload.txt")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("granted copy = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "CopyObjectResult") {
+			t.Errorf("body missing CopyObjectResult: %s", w.Body.String())
+		}
+	})
+
+	t.Run("copy from ungranted source is 403 AccessDenied", func(t *testing.T) {
+		// AKRW1 may write copy-dst but holds NO grant on copy-src. The
+		// destination grant passes authorizeS3Request; the source check must
+		// deny before the backend Get (the source bucket need not even exist
+		// — the grant decision precedes existence).
+		req := signPath(t, "PUT", "/copy-dst/stolen.txt", "AKRW1", "sk-rw1", "")
+		req.Header.Set("x-amz-copy-source", "copy-src/payload.txt")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("ungranted-source copy = %d, want 403: %s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "AccessDenied") {
+			t.Errorf("body missing AccessDenied: %s", w.Body.String())
+		}
+		if _, err := os.Stat(filepath.Join(s3.GetBucketPathShim("copy-dst"), "stolen.txt")); !os.IsNotExist(err) {
+			t.Errorf("denied copy must not create the destination object (err=%v)", err)
 		}
 	})
 }
