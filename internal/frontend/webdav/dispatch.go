@@ -33,7 +33,13 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := context.WithValue(r.Context(), identityKey{}, identity)
 
-	res := f.parseResource(r.URL.Path)
+	res, ok := f.parseResource(r.URL.Path)
+	if !ok {
+		// W1: a dot-segment bucket/key would escape dataDir through the
+		// fs backend's unchecked join — reject before any backend call.
+		writeDavError(w, http.StatusForbidden, "")
+		return
+	}
 	if !f.authorize(w, r.WithContext(ctx), identity, res) {
 		return
 	}

@@ -59,16 +59,15 @@ func (f *Frontend) handleCopyMove(w http.ResponseWriter, r *http.Request, src re
 	}
 
 	dstExists := false
-	if _, isFile, err := statFile(r.Context(), f.be, dstRes.bucket, dstRes.key); err != nil {
+	var dstETag string
+	if dstObj, isFile, err := statFile(r.Context(), f.be, dstRes.bucket, dstRes.key); err != nil {
 		writeDavErrorFrom(w, err)
 		return
 	} else if isFile {
 		dstExists = true
+		dstETag = dstObj.ETag
 	}
-	// Overwrite header: "F"/"false" forbids overwriting an existing
-	// destination ⇒ 412. Absent or "T"/"true" allows (RFC default T).
-	if ov := overwriteAllowed(r.Header.Get("Overwrite")); !ov && dstExists {
-		writeDavError(w, http.StatusPreconditionFailed, "")
+	if !destinationPreconditionsOK(w, r, dstExists, dstETag) {
 		return
 	}
 	// Destination parent must exist ⇒ 409 (no auto-vivify).
@@ -144,7 +143,14 @@ func (f *Frontend) resolveDestination(w http.ResponseWriter, r *http.Request) (r
 		writeDavError(w, http.StatusBadRequest, "")
 		return resource{}, false
 	}
-	dst := f.parseResource(u.Path)
+	dst, ok := f.parseResource(u.Path)
+	if !ok {
+		// W1: a dot-segment destination would escape dataDir through the
+		// fs backend's unchecked root+bucket join (COPY/MOVE writes and
+		// MOVE's source delete all use the destination). 403.
+		writeDavError(w, http.StatusForbidden, "")
+		return resource{}, false
+	}
 	if dst.isRoot {
 		writeDavError(w, http.StatusBadRequest, "")
 		return resource{}, false
@@ -161,6 +167,28 @@ func (f *Frontend) resolveDestination(w http.ResponseWriter, r *http.Request) (r
 		return resource{}, false
 	}
 	return dst, true
+}
+
+// destinationPreconditionsOK enforces the pre-Put destination gates for
+// COPY/MOVE and writes the error itself (returns false when it wrote one):
+//   - Overwrite header: "F"/"false" forbids overwriting an existing
+//     destination ⇒ 412. Absent or "T"/"true" allows (RFC default T).
+//   - W2: If-Match/If-None-Match are enforced against the DESTINATION using
+//     the statFile snapshot already fetched. The fs backend ignores
+//     PutOptions conditionals in v1 (see the copymove.go header note), so
+//     COPY/MOVE with conditionals would otherwise clobber unconditionally.
+func destinationPreconditionsOK(w http.ResponseWriter, r *http.Request, dstExists bool, dstETag string) bool {
+	if ov := overwriteAllowed(r.Header.Get("Overwrite")); !ov && dstExists {
+		writeDavError(w, http.StatusPreconditionFailed, "")
+		return false
+	}
+	if r.Header.Get("If-Match") != "" || r.Header.Get("If-None-Match") != "" {
+		if !putConditionalOK(r.Header.Get("If-Match"), r.Header.Get("If-None-Match"), dstExists, dstETag) {
+			writeDavError(w, http.StatusPreconditionFailed, "")
+			return false
+		}
+	}
+	return true
 }
 
 // overwriteAllowed interprets the Overwrite header (case-insensitive;

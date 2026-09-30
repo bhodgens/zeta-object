@@ -5,6 +5,7 @@ package webdav
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -15,6 +16,49 @@ func newTestFrontend(cfg Config) (*Frontend, *stubBackend) {
 		panic(err)
 	}
 	return f, be
+}
+
+// W1 wire pins: an encoded-dot bucket never reaches the backend — PUT /
+// DELETE / PROPFIND on /%2e%2e/name are 403, and a COPY/MOVE whose
+// Destination is /../name is 403.
+func TestDispatch_DotBucket403(t *testing.T) {
+	f, be := newTestFrontend(Config{})
+	put := httptest.NewRequest("PUT", "/../name", strings.NewReader("pwned"))
+	rec := httptest.NewRecorder()
+	f.Handler().ServeHTTP(rec, put)
+	if rec.Code != 403 {
+		t.Fatalf("PUT /../name: status = %d, want 403", rec.Code)
+	}
+	del := httptest.NewRequest("DELETE", "/../name", nil)
+	rec = httptest.NewRecorder()
+	f.Handler().ServeHTTP(rec, del)
+	if rec.Code != 403 {
+		t.Fatalf("DELETE /../name: status = %d, want 403", rec.Code)
+	}
+	pf := httptest.NewRequest("PROPFIND", "/%2e%2e/name", nil)
+	rec = httptest.NewRecorder()
+	f.Handler().ServeHTTP(rec, pf)
+	if rec.Code != 403 {
+		t.Fatalf("PROPFIND /%%2e%%2e/name: status = %d, want 403", rec.Code)
+	}
+	if len(be.putCalls) != 0 || len(be.calls) != 0 {
+		t.Fatalf("dot-bucket request reached the backend: put=%+v calls=%+v", be.putCalls, be.calls)
+	}
+}
+
+func TestCopyMove_DotDestination403(t *testing.T) {
+	f, be := newTestFrontend(Config{})
+	be.seed("photos", "a.txt", []byte("x"))
+	req := httptest.NewRequest("COPY", "/photos/a.txt", nil)
+	req.Header.Set("Destination", "/../name")
+	rec := httptest.NewRecorder()
+	f.Handler().ServeHTTP(rec, req)
+	if rec.Code != 403 {
+		t.Fatalf("COPY Destination /../name: status = %d, want 403", rec.Code)
+	}
+	if len(be.putCalls) != 0 {
+		t.Fatalf("dot destination reached the backend: %+v", be.putCalls)
+	}
 }
 
 func TestDispatch_405Family(t *testing.T) {
@@ -97,7 +141,11 @@ func TestParseResource_ModeTable(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f, _ := newTestFrontend(Config{Bucket: tt.bucket})
-			got := f.parseResource(tt.url)
+			got, ok := f.parseResource(tt.url)
+			if !ok {
+				t.Fatalf("parseResource(%q) rejected, want bucket=%q key=%q coll=%v root=%v",
+					tt.url, tt.wantBucket, tt.wantKey, tt.wantColl, tt.wantRoot)
+			}
 			if got.bucket != tt.wantBucket || got.key != tt.wantKey || got.isCollection != tt.wantColl || got.isRoot != tt.wantRoot {
 				t.Fatalf("parseResource(%q) = %+v, want bucket=%q key=%q coll=%v root=%v",
 					tt.url, got, tt.wantBucket, tt.wantKey, tt.wantColl, tt.wantRoot)
@@ -106,12 +154,44 @@ func TestParseResource_ModeTable(t *testing.T) {
 	}
 }
 
+func TestParseResource_RejectsDotSegments(t *testing.T) {
+	cases := []struct {
+		name string
+		bkt  string // mode B when non-empty
+		url  string
+	}{
+		{"mode A bucket dot", "", "/./f.txt"},
+		{"mode A bucket dotdot", "", "/../f.txt"},
+		{"mode A bucket dotdot root of it", "", "/.."},
+		{"mode A key dotdot", "", "/photos/../f.txt"},
+		{"mode A key dot", "", "/photos/./f.txt"},
+		{"mode A key ends dotdot", "", "/photos/x/../.."},
+		{"mode B key dotdot", "photos", "/../f.txt"},
+		{"mode B key segment dotdot", "photos", "/a/../f.txt"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			f, _ := newTestFrontend(Config{Bucket: tt.bkt})
+			if res, ok := f.parseResource(tt.url); ok {
+				t.Fatalf("parseResource(%q) = %+v ok, want rejection", tt.url, res)
+			}
+		})
+	}
+	// Names that merely contain dots stay legal.
+	f, _ := newTestFrontend(Config{})
+	for _, url := range []string{"/b..a/f.txt", "/photos/a..b", "/photos/.hidden", "/photos/v1.2/x..y"} {
+		if _, ok := f.parseResource(url); !ok {
+			t.Errorf("parseResource(%q) rejected, want accepted (legit dotted name)", url)
+		}
+	}
+}
+
 func TestParseResource_PercentEncodingPinned(t *testing.T) {
 	f, _ := newTestFrontend(Config{})
 	// Go's httptest.NewRequest decodes %20 into the Path; the parser must
 	// keep the decoded space in the key (rendering re-encodes on output).
 	req := httptest.NewRequest("GET", "/photos/my%20file.txt", nil)
-	got := f.parseResource(req.URL.Path)
+	got, _ := f.parseResource(req.URL.Path)
 	if got.key != "my file.txt" {
 		t.Fatalf("key = %q, want %q (decoded once by net/url)", got.key, "my file.txt")
 	}
@@ -119,7 +199,7 @@ func TestParseResource_PercentEncodingPinned(t *testing.T) {
 
 func TestDavPath_RoundTrip(t *testing.T) {
 	f, _ := newTestFrontend(Config{})
-	res := f.parseResource("/photos/my file.txt")
+	res, _ := f.parseResource("/photos/my file.txt")
 	if got := f.davPath(res); got != "/photos/my file.txt" {
 		t.Fatalf("davPath = %q", got)
 	}

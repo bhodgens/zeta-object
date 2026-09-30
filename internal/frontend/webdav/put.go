@@ -2,10 +2,14 @@
 // ETag response header, ETag conditionals through PutOptions, streaming
 // bodies with the declared Content-Length. Chunked bodies without a length
 // are rejected with 400 rather than buffered unboundedly (leaf 03 pin).
+// Conditionals are ALSO enforced here at the frontend (W2): the fs backend
+// ignores PutOptions.IfMatch/IfNoneMatch in v1, so forwarding alone would
+// let a stale-If-Match PUT clobber the current bytes.
 package webdav
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
@@ -20,11 +24,29 @@ func (f *Frontend) handlePUT(w http.ResponseWriter, r *http.Request, res resourc
 		return
 	}
 	existed := false
-	if _, isFile, err := statFile(r.Context(), f.be, res.bucket, res.key); err != nil {
+	var curETag string
+	if obj, isFile, err := statFile(r.Context(), f.be, res.bucket, res.key); err != nil {
 		writeDavErrorFrom(w, err)
 		return
 	} else if isFile {
 		existed = true
+		curETag = obj.ETag
+	}
+
+	// W2: enforce the PUT conditionals HERE, against the Stat snapshot
+	// this handler already fetched. The headers are still forwarded in
+	// PutOptions below so a backend that gains conditional support
+	// enforces them at the seam too.
+	//
+	// Residual race (W3, parent-graded MED — do not fix here): a
+	// concurrent writer can change the object between this Stat and the
+	// Put below; the backend has no compare-and-swap in v1, so the
+	// stat-then-Put window cannot be closed at this layer. The common
+	// non-racing path (stale If-Match on a quiescent object) is fully
+	// guarded.
+	if !putConditionalOK(r.Header.Get("If-Match"), r.Header.Get("If-None-Match"), existed, curETag) {
+		writeDavError(w, http.StatusPreconditionFailed, "")
+		return
 	}
 
 	opts := objectmodel.PutOptions{
@@ -55,4 +77,54 @@ func (f *Frontend) handlePUT(w http.ResponseWriter, r *http.Request, res resourc
 	}
 	w.Header().Set("Content-Length", "0")
 	w.WriteHeader(status)
+}
+
+// putConditionalOK evaluates RFC 7232 If-Match / If-None-Match for a PUT
+// against the Stat snapshot (existed, curETag). RFC order: If-Match wins
+// when present; If-None-Match applies only when If-Match is absent.
+//
+//   - If-Match present: the object must exist and its ETag must match one
+//     list entry (compared with and without quotes; "*" matches any
+//     existing object) — otherwise 412.
+//   - If-None-Match "*": the object must NOT exist — otherwise 412.
+//   - If-None-Match with an ETag list: 412 when the current ETag is in
+//     the list (quote-insensitive).
+func putConditionalOK(ifMatch, ifNoneMatch string, existed bool, curETag string) bool {
+	if ifMatch != "" {
+		if !existed {
+			return false
+		}
+		if ifMatch == "*" {
+			return true
+		}
+		return etagListContains(ifMatch, curETag)
+	}
+	if ifNoneMatch == "" {
+		return true
+	}
+	if ifNoneMatch == "*" {
+		return !existed
+	}
+	if !existed {
+		return true
+	}
+	return !etagListContains(ifNoneMatch, curETag)
+}
+
+// etagListContains reports whether an ETag header list ("a", "b", W/"a")
+// contains the given ETag, comparing with and without surrounding quotes
+// and ignoring any weakness prefix (RFC 7232 comparison rule).
+func etagListContains(header, etag string) bool {
+	normalize := func(s string) string {
+		s = strings.TrimSpace(s)
+		s = strings.TrimPrefix(s, "W/")
+		return strings.Trim(s, `"`)
+	}
+	want := normalize(etag)
+	for entry := range strings.SplitSeq(header, ",") {
+		if normalize(entry) == want {
+			return true
+		}
+	}
+	return false
 }

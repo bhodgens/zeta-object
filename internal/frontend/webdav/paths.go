@@ -28,7 +28,13 @@ type resource struct {
 // segments are dropped. Percent-encoding stays as Go's r.URL.Path decoded
 // it — the caller passes r.URL.Path (already decoded once) and the href
 // renderer re-encodes for output.
-func (f *Frontend) parseResource(urlPath string) resource {
+//
+// Dot-segment safety (W1): the second return value is false when the
+// resource would escape the dataDir through the fs backend's unchecked
+// root+bucket join — mode A bucket "." or "..", and in BOTH modes a key
+// that is "." or ".." or contains a ".." segment. Names that merely
+// contain dots ("a..b", "v1.2") stay legal. Callers render 403.
+func (f *Frontend) parseResource(urlPath string) (resource, bool) {
 	cleaned := urlPath
 	for strings.Contains(cleaned, "//") {
 		cleaned = strings.ReplaceAll(cleaned, "//", "/")
@@ -40,24 +46,49 @@ func (f *Frontend) parseResource(urlPath string) resource {
 	if f.bucket != "" {
 		// Mode B: every resource is under the configured bucket.
 		if trimmed == "" {
-			return resource{bucket: f.bucket, isCollection: true, isRoot: true}
+			return resource{bucket: f.bucket, isCollection: true, isRoot: true}, true
 		}
 		// Strip the trailing slash from the KEY (see mode A comment).
-		return resource{bucket: f.bucket, key: strings.TrimSuffix(trimmed, "/"), isCollection: isCollection}
+		key := strings.TrimSuffix(trimmed, "/")
+		if !keySafe(key) {
+			return resource{}, false
+		}
+		return resource{bucket: f.bucket, key: key, isCollection: isCollection}, true
 	}
 	// Mode A.
 	if trimmed == "" {
-		return resource{isCollection: true, isRoot: true}
+		return resource{isCollection: true, isRoot: true}, true
 	}
 	// Strip the trailing slash from the KEY (the isCollection flag keeps
 	// the client's trailing-slash intent): "/photos/2024/" must resolve to
 	// prefix key "2024", not "2024/".
 	trimmed = strings.TrimSuffix(trimmed, "/")
 	if trimmed == "" {
-		return resource{isCollection: true, isRoot: true}
+		return resource{isCollection: true, isRoot: true}, true
 	}
 	bucket, key, _ := strings.Cut(trimmed, "/")
-	return resource{bucket: bucket, key: key, isCollection: isCollection}
+	// W1: bucket "." or ".." joins one directory above dataDir in the fs
+	// backend; reject before any backend call.
+	if bucket == "." || bucket == ".." || !keySafe(key) {
+		return resource{}, false
+	}
+	return resource{bucket: bucket, key: key, isCollection: isCollection}, true
+}
+
+// keySafe rejects keys that are, or contain a segment equal to, "." or
+// "..". The fs backend joins root+bucket+key with no path cleaning, so a
+// surviving dot-dot segment would read or write outside dataDir. Keys that
+// merely contain dots ("a..b", ".hidden", "v1.2") are untouched.
+func keySafe(key string) bool {
+	if key == "" {
+		return true
+	}
+	for seg := range strings.SplitSeq(key, "/") {
+		if seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // collectionPrefix is the List prefix for a collection resource: "" at

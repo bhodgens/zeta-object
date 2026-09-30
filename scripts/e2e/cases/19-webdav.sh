@@ -51,6 +51,18 @@ print(s.getsockname()[1])
 s.close()
 PY
 )
+# The webdav mode-A entry gets its OWN dedicated listenAddr. It CANNOT share
+# the global listenAddr port: buildDedicatedListeners races the default
+# HTTPS listener for the port and one ListenAndServeTLS fails, aborting
+# startup (same rule case 20 documents for ftp).
+W19_PORT_A=$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)
 openssl req -x509 -newkey rsa:2048 -keyout "$W19_CERT/key.pem" -out "$W19_CERT/cert.pem" \
 	-days 1 -nodes -subj '/CN=localhost' \
 	-addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' >/dev/null 2>&1
@@ -83,7 +95,7 @@ w19_req() {
 	body_file=$(mktemp /tmp/e2e19-req.XXXXXX)
 	W19_STATUS=$(curl -sk -o "$body_file" -w '%{http_code}' \
 		--user "${W19_USER}:${W19_PASS}" \
-		-X "$method" "https://127.0.0.1:$W19_PORT$path" "$@" 2>/dev/null)
+		-X "$method" "https://127.0.0.1:$W19_PORT_A$path" "$@" 2>/dev/null)
 	W19_BODY=$(cat "$body_file")
 	rm -f "$body_file"
 }
@@ -97,7 +109,7 @@ cat > "$W19_WORK/config.json" <<EOF
   "keyFile": "$W19_CERT/key.pem",
   "frontends": [
     {"type": "s3"},
-    {"type": "webdav", "listenAddr": "127.0.0.1:$W19_PORT"},
+    {"type": "webdav", "listenAddr": "127.0.0.1:$W19_PORT_A"},
     {"type": "webdav", "listenAddr": "127.0.0.1:$W19_PORT_B", "bucket": "$W19_BKT"}
   ],
   "identities": [
@@ -112,7 +124,7 @@ W19_PID=$!
 ENDPOINT="https://127.0.0.1:$W19_PORT"
 BASE_URL="$ENDPOINT"
 export E2E_ENDPOINT="$ENDPOINT"
-if ! wait_for_port 127.0.0.1 "$W19_PORT" 15; then
+if ! wait_for_port 127.0.0.1 "$W19_PORT_A" 15; then
 	echo '  (webdav server did not start — failing case)'
 	E2E_FAIL=$((E2E_FAIL + 1))
 	exit 0
@@ -127,29 +139,30 @@ fi
 # neutral-model proof).
 AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
 	aws s3api create-bucket --bucket "$W19_BKT" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
-printf 'webdav-e2e-seed-body' | AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+printf 'webdav-e2e-seed-body' > "$W19_WORK/seed-body.txt"
+AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
 	aws s3api put-object --bucket "$W19_BKT" --key 'seed.txt' \
-	--body /dev/stdin --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
+	--body "$W19_WORK/seed-body.txt" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 
 # --- part 19a: auth gate --------------------------------------------------
 # Anonymous OPTIONS ⇒ 401 + WWW-Authenticate: Basic.
 W19_HDRS=$(mktemp /tmp/e2e19-hdrs.XXXXXX)
 W19_STATUS=$(curl -sk -o /dev/null -w '%{http_code}' -D "$W19_HDRS" \
-	-X OPTIONS "https://127.0.0.1:$W19_PORT/" 2>/dev/null)
+	-X OPTIONS "https://127.0.0.1:$W19_PORT_A/" 2>/dev/null)
 assert_eq 'anonymous OPTIONS rejected' 401 "$W19_STATUS"
-assert_contains '401 carries WWW-Authenticate: Basic' "$(cat "$W19_HDRS")" 'WWW-Authenticate: Basic'
+assert_contains '401 carries WWW-Authenticate: Basic' "$(grep -i 'www-authenticate: basic' "$W19_HDRS")" 'Basic'
 rm -f "$W19_HDRS"
 
 # Bad password ⇒ 401.
 W19_STATUS=$(curl -sk -o /dev/null -w '%{http_code}' --user "$W19_USER:WRONG" \
-	-X OPTIONS "https://127.0.0.1:$W19_PORT/" 2>/dev/null)
+	-X OPTIONS "https://127.0.0.1:$W19_PORT_A/" 2>/dev/null)
 assert_eq 'bad password rejected' 401 "$W19_STATUS"
 
 # Valid creds ⇒ 200 + DAV: 1.
 W19_HDRS=$(mktemp /tmp/e2e19-hdrs.XXXXXX)
-w19_req OPTIONS /
+w19_req OPTIONS / -D "$W19_HDRS"
 assert_eq 'authenticated OPTIONS accepted' 200 "$W19_STATUS"
-assert_contains 'OPTIONS advertises DAV: 1' "$(cat "$W19_HDRS")" 'DAV: 1'
+assert_contains 'OPTIONS advertises DAV: 1' "$(grep -i '^dav:' "$W19_HDRS")" ': 1'
 rm -f "$W19_HDRS"
 
 # --- part 19b: read surface -----------------------------------------------
@@ -177,10 +190,10 @@ assert_eq 'Depth infinity rejected' 403 "$W19_STATUS"
 assert_contains 'Depth infinity names the precondition' "$W19_BODY" 'propfind-finite-depth'
 
 # GET the object: exact body + headers.
-W19_BODY=$(curl -sk --user "$W19_USER:$W19_PASS" "https://127.0.0.1:$W19_PORT/$W19_BKT/seed.txt" 2>/dev/null)
+W19_BODY=$(curl -sk --user "$W19_USER:$W19_PASS" "https://127.0.0.1:$W19_PORT_A/$W19_BKT/seed.txt" 2>/dev/null)
 assert_contains 'GET round-trips the bytes' "$W19_BODY" 'webdav-e2e-seed-body'
 W19_STATUS=$(curl -sk -o /dev/null -w '%{http_code}' -I --user "$W19_USER:$W19_PASS" \
-	"https://127.0.0.1:$W19_PORT/$W19_BKT/seed.txt" 2>/dev/null)
+	"https://127.0.0.1:$W19_PORT_A/$W19_BKT/seed.txt" 2>/dev/null)
 assert_eq 'HEAD succeeds' 200 "$W19_STATUS"
 
 # Missing object ⇒ 404.
@@ -221,11 +234,15 @@ assert_contains 'dir lists its file' "$W19_BODY" 'f.txt'
 w19_req MKCOL "/$W19_BKT/noparent-dir/sub/"
 assert_eq 'MKCOL missing parent 409' 409 "$W19_STATUS"
 
-# DELETE file ⇒ 204; DELETE dir ⇒ 204 (recursive); dir then 404.
+# DELETE file ⇒ 204. Deleting the dir's only file empties the prefix, and a
+# collection exists IFF its prefix lists (Contract 3) — so the now-empty
+# collection is already gone: DELETE dir ⇒ 404, PROPFIND dir ⇒ 404.
+# (The recursive collection DELETE itself is pinned above via PROPFIND/MKCOL
+# and in unit tests with populated prefixes.)
 w19_req DELETE "/$W19_BKT/e2e19dir/f.txt"
 assert_eq 'DELETE file' 204 "$W19_STATUS"
 w19_req DELETE "/$W19_BKT/e2e19dir/"
-assert_eq 'DELETE dir' 204 "$W19_STATUS"
+assert_eq 'DELETE emptied dir 404 (already gone)' 404 "$W19_STATUS"
 w19_req PROPFIND "/$W19_BKT/e2e19dir/" -H 'Depth: 0' --data-binary ''
 assert_eq 'deleted dir PROPFIND 404' 404 "$W19_STATUS"
 
@@ -233,6 +250,54 @@ assert_eq 'deleted dir PROPFIND 404' 404 "$W19_STATUS"
 # proven in 19a.
 w19_req LOCK "/$W19_BKT/e2e19.txt"
 assert_eq 'LOCK rejected 405' 405 "$W19_STATUS"
+
+# --- part 19c-2: dot-bucket escape + conditional PUT (W1/W2) ---------------
+# W1: an encoded-dot bucket must never reach the fs backend's unchecked
+# root+bucket join. PUT /%2e%2e/pwned ⇒ 403 and nothing lands one directory
+# ABOVE the dataDir.
+w19_req PUT "/%2e%2e/pwned" --data-binary 'pwned-body'
+assert_eq 'PUT dot-bucket 403' 403 "$W19_STATUS"
+[ ! -e "$W19_WORK/pwned" ] && assert_eq 'no file above dataDir' ok ok \
+	|| assert_eq 'no file above dataDir' 'missing' "leaked: $W19_WORK/pwned"
+w19_req DELETE "/%2e%2e/pwned"
+assert_eq 'DELETE dot-bucket 403' 403 "$W19_STATUS"
+w19_req PROPFIND "/%2e%2e/pwned" -H 'Depth: 0' --data-binary ''
+assert_eq 'PROPFIND dot-bucket 403' 403 "$W19_STATUS"
+# Legit dotted names still work (only whole "."/".." segments are rejected).
+w19_req PUT "/$W19_BKT/a..b.txt" --data-binary 'dots-are-fine'
+assert_eq 'PUT dotted name accepted' 201 "$W19_STATUS"
+
+# W2: conditional PUT. PUT v1, capture the ETag; If-Match with the CURRENT
+# etag overwrites (204); If-Match with the STALE etag is 412 and the bytes
+# stay at v2.
+w19_req PUT "/$W19_BKT/e2e19-cond.txt" --data-binary 'cond-v1'
+assert_eq 'conditional PUT v1 create' 201 "$W19_STATUS"
+W19_ETAG_HDRS=$(mktemp /tmp/e2e19-etag.XXXXXX)
+w19_req GET "/$W19_BKT/e2e19-cond.txt" -D "$W19_ETAG_HDRS"
+assert_eq 'GET v1' 200 "$W19_STATUS"
+W19_ETAG_V1=$(grep -i '^ETag:' "$W19_ETAG_HDRS" | tr -d '\r' | awk '{print $2}')
+rm -f "$W19_ETAG_HDRS"
+[ -n "$W19_ETAG_V1" ] || { echo '  (no ETag on GET — failing case)'; E2E_FAIL=$((E2E_FAIL + 1)); exit 0; }
+
+# If-Match matching the FIRST etag, different body ⇒ 204.
+w19_req PUT "/$W19_BKT/e2e19-cond.txt" -H "If-Match: $W19_ETAG_V1" --data-binary 'cond-v2'
+assert_eq 'If-Match current etag 204' 204 "$W19_STATUS"
+w19_req GET "/$W19_BKT/e2e19-cond.txt"
+assert_contains 'body advanced to v2' "$W19_BODY" 'cond-v2'
+
+# If-Match with the now-STALE first etag ⇒ 412; bytes unchanged.
+w19_req PUT "/$W19_BKT/e2e19-cond.txt" -H "If-Match: $W19_ETAG_V1" --data-binary 'cond-v3-clobber'
+assert_eq 'If-Match stale etag 412' 412 "$W19_STATUS"
+w19_req GET "/$W19_BKT/e2e19-cond.txt"
+assert_contains 'stale If-Match left v2 bytes intact' "$W19_BODY" 'cond-v2'
+case "$W19_BODY" in
+*cond-v3-clobber*) assert_eq 'stale If-Match did not clobber' clobbered intact ;;
+*) assert_eq 'stale If-Match did not clobber' intact intact ;;
+esac
+
+# If-None-Match: * on an existing object ⇒ 412.
+w19_req PUT "/$W19_BKT/e2e19-cond.txt" -H 'If-None-Match: *' --data-binary 'cond-v4-clobber'
+assert_eq 'If-None-Match * on existing 412' 412 "$W19_STATUS"
 
 # --- part 19d: mode B ------------------------------------------------------
 w19_status_b() {
