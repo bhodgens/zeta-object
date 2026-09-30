@@ -108,7 +108,9 @@ jobs:
         run: |
           go mod verify
           go mod tidy
-          git diff --exit-code go.mod go.sum
+          # This module has no external dependencies, so go.sum does not
+          # exist; tidy must not create one. Check whichever files exist.
+          git diff --exit-code go.mod $(ls go.sum 2>/dev/null)
       - name: Secrets (gitleaks)
         uses: gitleaks/gitleaks-action@v2
         env:
