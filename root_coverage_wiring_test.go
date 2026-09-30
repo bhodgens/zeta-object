@@ -354,15 +354,23 @@ func TestBuildFrontendsFactoryErrorWrapped(t *testing.T) {
 }
 
 // TestBuildFrontendsRegisterErrorWrapped pins the duplicate-registration
-// guard inside buildFrontends: a factory returning an already-registered
-// name aborts with a wrapped register error.
+// guard inside buildFrontends: a factory whose frontend collides with an
+// ALREADY-registered name aborts with a wrapped register error. (A repeated
+// config type re-registering its OWN name is tolerated — the mount plan
+// carries the second listener — so the collision must come from a
+// different config type.)
 func TestBuildFrontendsRegisterErrorWrapped(t *testing.T) {
+	// registerTestFrontend (frontends_nonhttp_test.go) would work, but the
+	// direct map write keeps this pin self-contained like the original.
 	frontendFactories["dup"] = func(cfg FrontendConfig, b backend.Backend, creds auth.CredentialSource) (frontend.Frontend, error) {
 		return &stubFrontend{name: "s3"}, nil // collides with the real s3 frontend
 	}
-	t.Cleanup(func() { delete(frontendFactories, "dup") })
+	frontendFactories["dup2"] = func(cfg FrontendConfig, b backend.Backend, creds auth.CredentialSource) (frontend.Frontend, error) {
+		return &stubFrontend{name: "s3"}, nil // ALSO collides — "dup2" is registered first, then hits the guard
+	}
+	t.Cleanup(func() { delete(frontendFactories, "dup"); delete(frontendFactories, "dup2") })
 
-	_, _, err := buildFrontends([]FrontendConfig{{Type: "s3"}, {Type: "dup"}}, nilBackend{}, stubCreds{})
+	_, _, err := buildFrontends([]FrontendConfig{{Type: "s3"}, {Type: "dup"}, {Type: "dup2"}}, nilBackend{}, stubCreds{})
 	if err == nil || !strings.Contains(err.Error(), "register frontend") {
 		t.Fatalf("err = %v, want wrapped register error", err)
 	}

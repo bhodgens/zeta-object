@@ -212,6 +212,17 @@ func loadServerTLSCertPair() (*tls.Config, error) {
 	}, nil
 }
 
+// frontendMountKey is the uniqueness key for configured frontend entries:
+// the SAME (type, listenAddr, bucket) triple repeated is an ambiguous
+// mount (which handler would serve which listener?); any differing member
+// makes the second entry a legal distinct mount (e.g. webdav mode A +
+// mode B in the README / e2e case 19 shape).
+type frontendMountKey struct {
+	typ        string
+	listenAddr string
+	bucket     string
+}
+
 // frontendMount pairs a constructed frontend with its listen address
 // (empty = share the default listener's mux).
 type frontendMount struct {
@@ -227,20 +238,35 @@ type listenerSpec struct {
 
 // buildFrontends constructs each configured frontend, registers it, and
 // returns the registry plus mount plans. Startup is loud: an unknown type
-// fails with the known-type list, a duplicate type fails, and a factory
-// error is wrapped and returned — all abort startup.
+// fails with the known-type list, an AMBIGUOUS duplicate fails (same type
+// on the same listenAddr with the same bucket), and a factory error is
+// wrapped and returned — all abort startup.
+//
+// The duplicate key is (type, listenAddr, bucket): a second webdav entry
+// with its own listenAddr (mode A + mode B) or its own bucket is a legal
+// distinct mount (README / e2e case 19), while the identical shape is an
+// ambiguous mount and is rejected.
+//
+// Registry names are unique per type, so a repeated type shares one
+// registry entry; the mount plan (below) is what gives each entry its own
+// listener. The first constructed frontend wins the registry slot; the
+// collision (same Name()) is ignored and left to the ambiguity check above.
 func buildFrontends(cfg []FrontendConfig, b backend.Backend, creds auth.CredentialSource) (*frontend.Registry, []frontendMount, error) {
 	if len(cfg) == 0 {
 		cfg = []FrontendConfig{{Type: "s3"}}
 	}
 	reg := frontend.NewRegistry()
 	var mounts []frontendMount
-	seen := map[string]bool{}
+	seen := map[frontendMountKey]bool{}
+	seenTypes := map[string]bool{} // for the registry-tolerance check below
 	for _, fc := range cfg {
-		if seen[fc.Type] {
-			return nil, nil, fmt.Errorf("frontend type %q configured more than once", fc.Type)
+		key := frontendMountKey{typ: fc.Type, listenAddr: fc.ListenAddr, bucket: fc.Bucket}
+		if seen[key] {
+			return nil, nil, fmt.Errorf("frontend type %q configured more than once with identical listenAddr %q and bucket %q (an ambiguous mount — give each entry its own listenAddr or bucket)",
+				fc.Type, fc.ListenAddr, fc.Bucket)
 		}
-		seen[fc.Type] = true
+		seen[key] = true
+		repeatType := seenTypes[fc.Type]
 		factory, ok := frontendFactories[fc.Type]
 		if !ok {
 			known := make([]string, 0, len(frontendFactories))
@@ -255,8 +281,17 @@ func buildFrontends(cfg []FrontendConfig, b backend.Backend, creds auth.Credenti
 			return nil, nil, fmt.Errorf("build frontend %q: %w", fc.Type, err)
 		}
 		if err := reg.Register(f); err != nil {
-			return nil, nil, fmt.Errorf("register frontend %q: %w", fc.Type, err)
+			// A repeated config type (mode A + mode B webdav) reaches
+			// this branch with "already registered": that is fine —
+			// both mounts carry the same handler kind, and each mount
+			// below gets its own listener. Any OTHER register failure
+			// (a foreign name collision, nil frontend, empty name) is
+			// still a loud startup error.
+			if !repeatType {
+				return nil, nil, fmt.Errorf("register frontend %q: %w", fc.Type, err)
+			}
 		}
+		seenTypes[fc.Type] = true
 		mounts = append(mounts, frontendMount{frontend: f, listenAddr: fc.ListenAddr})
 	}
 	return reg, mounts, nil

@@ -119,9 +119,19 @@ func main() {
 	// factory map, register them, and mount: handlers without their own
 	// listenAddr go on the shared mux; entries with a listenAddr get a
 	// dedicated TLS listener (same cert pair). Any failure (unknown type,
-	// duplicate, factory error) aborts startup loudly.
+	// ambiguous duplicate mount, factory error) aborts startup loudly.
 	installS3Seams()
-	plan, err := startupPlan(serverConfig.Frontends, nil, mainCredentialSource{})
+	// Resolve the REAL default backend (the dataDir-rooted fs instance the
+	// s3 seam's backendFor("") returns) before the plan is built: the
+	// webdav/owncloud constructors reject a nil backend (bughunt C1), so
+	// passing nil here made every webdav/owncloud config fatal before
+	// listen. ftp/sftp keep resolving per-bucket lazily through the same
+	// installed table; initBackendLookup above guarantees it exists.
+	defaultBackend, err := backendFor("")
+	if err != nil {
+		log.Fatalf("Default backend initialization failed: %v", err)
+	}
+	plan, err := startupPlan(serverConfig.Frontends, defaultBackend, mainCredentialSource{})
 	if err != nil {
 		log.Fatalf("Frontend initialization failed: %v", err)
 	}

@@ -67,9 +67,19 @@ func TestBuildFrontends(t *testing.T) {
 			wantNames: []string{"webdav"},
 		},
 		{
-			name:    "duplicate type rejected",
-			cfg:     []FrontendConfig{{Type: "s3"}, {Type: "s3", ListenAddr: ":8444"}},
-			wantErr: true,
+			name: "ambiguous duplicate rejected (same type+addr+bucket)",
+			cfg:  []FrontendConfig{{Type: "s3", ListenAddr: ":8444"}, {Type: "s3", ListenAddr: ":8444"}},
+			// Both entries carry type s3, listenAddr ":8444" and no
+			// bucket: an ambiguous mount. C2 (2026-09-30 bughunt)
+			// reworked the duplicate check from type-only to this triple;
+			// see the dedicated listener variant below.
+			wantErr:     true,
+			errContains: "configured more than once with identical",
+		},
+		{
+			name:      "second webdav with own listenAddr+bucket is legal (e2e case 19 shape)",
+			cfg:       []FrontendConfig{{Type: "s3"}, {Type: "webdav", ListenAddr: ":8444"}, {Type: "webdav", ListenAddr: ":8445", Bucket: "photos"}},
+			wantNames: []string{"s3", "webdav"},
 		},
 	}
 	for _, tt := range tests {
@@ -206,10 +216,9 @@ func TestStartupPlan_BackwardCompat(t *testing.T) {
 // A frontend entry with its own listenAddr lands in the plan's listener list;
 // the s3 default mount stays on the shared mux.
 func TestStartupPlan_DedicatedListenerSpec(t *testing.T) {
-	// buildFrontends rejects duplicate types, so exercise the plan split with
-	// a pre-built mount set via mountFrontends (covered above) and here via a
-	// hand-built registry path: one s3 on default, one dedicated stub via
-	// mountFrontends directly.
+	// The duplicate check keys on (type, listenAddr, bucket), so the plan
+	// split can also be exercised through a real two-entry config: two
+	// webdav entries (mode A + mode B) yield two dedicated listeners.
 	plan, err := startupPlan([]FrontendConfig{{Type: "s3"}}, nilBackend{}, stubCreds{})
 	if err != nil {
 		t.Fatalf("startupPlan: %v", err)
@@ -221,4 +230,54 @@ func TestStartupPlan_DedicatedListenerSpec(t *testing.T) {
 		t.Fatal("registry missing s3 frontend")
 	}
 	_ = plan.mux
+}
+
+// startupPlan with TWO webdav entries (mode A on its own listenAddr, mode B
+// on another listenAddr with a bucket) is the documented e2e case 19 shape:
+// it must return 2 dedicated listeners and no error (bughunt C2).
+func TestStartupPlan_TwoWebdavEntriesLegal(t *testing.T) {
+	// The webdav factory reads the process identity registry and rejects a
+	// nil backend (bughunt C1) — install both like main() does.
+	prevReg := identityRegistry
+	reg16, err16 := auth.NewMultiRegistry([]auth.IdentityConfig{
+		{Name: "test", AccessKey: "ak", SecretKey: "sk"},
+	})
+	if err16 != nil {
+		t.Fatal(err16)
+	}
+	identityRegistry = reg16
+	defer func() { identityRegistry = prevReg }()
+
+	plan, err := startupPlan([]FrontendConfig{
+		{Type: "webdav", ListenAddr: ":8444"},
+		{Type: "webdav", ListenAddr: ":8445", Bucket: "photos"},
+	}, nilBackend{}, stubCreds{})
+	if err != nil {
+		t.Fatalf("startupPlan with two webdav entries: %v", err)
+	}
+	if len(plan.listeners) != 2 {
+		t.Fatalf("listeners = %+v, want 2 dedicated webdav listeners", plan.listeners)
+	}
+	if len(plan.shared) != 0 {
+		t.Fatalf("shared = %+v, want none (both entries carry a listenAddr)", plan.shared)
+	}
+	if plan.listeners[0].addr != ":8444" || plan.listeners[1].addr != ":8445" {
+		t.Fatalf("listener addrs = %q, %q; want :8444 then :8445",
+			plan.listeners[0].addr, plan.listeners[1].addr)
+	}
+}
+
+// Two IDENTICAL s3 entries (same type, same listenAddr, same bucket) remain
+// an ambiguous mount: startupPlan must still reject them (bughunt C2 pin).
+func TestStartupPlan_IdenticalDuplicateEntriesRejected(t *testing.T) {
+	_, err := startupPlan([]FrontendConfig{
+		{Type: "s3", ListenAddr: ":8444"},
+		{Type: "s3", ListenAddr: ":8444"},
+	}, nilBackend{}, stubCreds{})
+	if err == nil {
+		t.Fatal("startupPlan accepted two identical s3 entries; want ambiguous-mount error")
+	}
+	if !strings.Contains(err.Error(), "configured more than once with identical") {
+		t.Fatalf("err = %q, want the identical-mount ambiguity message", err.Error())
+	}
 }
