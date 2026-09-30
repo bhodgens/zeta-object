@@ -75,3 +75,19 @@ provider against a live dataset when:
 - `MINIS3_ZFS_TEST_DATASET` names a dataset with `events=on`.
 
 Both conditions are absent on macOS dev hosts, where the test skips.
+
+
+## zfs-events-live-ordcap.txt (captured 2026-09-30, zfs-meta host)
+
+REAL `zfs events -j testpool/ordcap` output after: mkdir dirA; create+remove
+f1.txt; create f2.txt; remove f2.txt; create f3.txt. Key facts it pins:
+
+1. OLDEST-FIRST ordering (txg ascending) - the consumer's per-id mapping
+   must be LAST-seen-wins, not first-seen.
+2. The dataset-root dir emits its own SETATTR record (object=34, no name,
+   no parent) on ordinary activity - root detection must ignore
+   nameless records AND must not treat the root as a nameless byID entry.
+3. REMOVE records carry name+parent like CREATE.
+4. Fresh creates within a mount session get fresh objids; id REUSE requires
+   allocator wraparound (long-lived datasets) - mapping rules must still be
+   correct when it happens.

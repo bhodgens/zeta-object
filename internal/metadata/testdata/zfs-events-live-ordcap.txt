@@ -1,0 +1,7 @@
+[{"txg":33943,"object":34,"op":"SETATTR"},
+{"txg":33966,"object":3,"op":"CREATE","name":"dirA","parent":34},
+{"txg":33966,"object":128,"op":"CREATE","name":"f1.txt","parent":3},
+{"txg":33966,"object":128,"op":"REMOVE","name":"f1.txt","parent":3},
+{"txg":33966,"object":129,"op":"CREATE","name":"f2.txt","parent":3},
+{"txg":33966,"object":129,"op":"REMOVE","name":"f2.txt","parent":3},
+{"txg":33966,"object":256,"op":"CREATE","name":"f3.txt","parent":3}]
