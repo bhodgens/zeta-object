@@ -7,7 +7,7 @@ zeta-object speaks the S3 protocol and stores your data where you can see it: pl
 - **One static binary.** No database, no etcd, no external services. `make build`, run it, done.
 - **Zero-format storage.** Objects are plain files; metadata is a JSON sidecar. Your data is readable with `cat` and `ls` with the server stopped. Point a bucket at `/var/log`, a ZFS dataset, an NFS mount, or a directory of symlinks and it is an S3 bucket *now*.
 - **Standard, verified wire compatibility.** AWS CLI, boto3, and mc work against it - proven by an interop e2e suite and a ceph/s3-tests ratchet, not by marketing.
-- **Protocol-flexible by design.** A pluggable frontend/backend architecture (S3 today; WebDAV, FTP/SFTP, ownCloud tracked) over a neutral object model - one implementation per protocol and per storage, not one per combination.
+- **Protocol-flexible by design.** A pluggable frontend/backend architecture (S3 + WebDAV shipped; FTP/SFTP, ownCloud tracked) over a neutral object model - one implementation per protocol and per storage, not one per combination.
 - **Extensible metadata.** A probe-based MetadataProvider seam attaches enrichment capabilities to buckets when - and only when - the underlying filesystem supports them. The first provider reads ZFS per-dataset file-event logs, giving per-object history and version-style listings that hosted S3 cannot give you.
 
 ## The pitch: what proves zeta-object different
@@ -216,6 +216,65 @@ aws s3 cp s3://mytestbucket/test.txt downloaded_test.txt --profile zetaobject --
 
 Presigned URLs and `mc`/`rclone` work the same way - see the interop e2e cases (`scripts/e2e/cases/12-interop-boto3.sh`, `13-interop-mc.sh`) for working examples.
 
+## WebDAV frontend
+
+zeta-object speaks WebDAV (RFC 4918, class 1 subset) so macOS Finder, Linux davfs2/gvfs, and Windows can mount it as a drive. The frontend implements exactly: `OPTIONS`, `PROPFIND` (Depth 0/1), `GET`, `HEAD`, `PUT`, `DELETE`, `MKCOL`, `COPY`, `MOVE`. Every storage touch goes through the same neutral object model the S3 frontend uses — an object written over WebDAV is byte-identical to the S3 view of the same key.
+
+### Enabling
+
+```jsonc
+"frontends": [
+  { "type": "s3" },
+  // multi-bucket mode: top-level collections are the server's buckets
+  { "type": "webdav", "listenAddr": ":8444" },
+  // single-bucket mode: "/" IS the photos bucket
+  { "type": "webdav", "listenAddr": ":8445", "bucket": "photos" }
+]
+```
+
+*   `type` (required): `webdav`. `listenAddr` (optional): give the frontend its own TLS port, or omit to share the default listener. `bucket` (optional): pins the frontend to one bucket. Unknown keys inside an entry abort startup.
+*   **TLS is always on** (the server is HTTPS-only). Clients must accept the cert — self-signed by default (`make certs`).
+*   **Credentials**: every method requires HTTP Basic auth. The username is an identity `accessKey`, the password its `secretKey` (the `identities` config or the environment pair). The auth realm is `zeta-object`. Missing/invalid credentials get `401` with `WWW-Authenticate: Basic`; a valid identity without the bucket grant gets `403`. Read-only identities (`"grants": {"photos": "readonly"}`) can mount and browse but every write is rejected with 403.
+
+### Bucket mapping
+
+| WebDAV resource | Mode A (multi-bucket) | Mode B (single-bucket `bucket: B`) |
+|---|---|---|
+| `/` (root collection) | synthetic collection; Depth 1 children = buckets via `Buckets()` | collection rooted at bucket `B`; Depth 1 children = keys/prefixes of `B` with prefix `` |
+| `/b/` (collection) | bucket `b`; children via `List(b, Prefix="", Delimiter="/")` | prefix collection `b/` in `B` (if `b/` has no keys/prefixes ⇒ 404) |
+| `/b/dir/` (collection) | prefix `dir/` in `b` via `List(Prefix="dir/", Delimiter="/")` | same, bucket always `B` |
+| `/b/dir/file.txt` | object key `dir/file.txt` in `b` | object key `b/dir/file.txt` in `B` |
+| MKCOL `/new` | 403 (the storage seam has no create-bucket method) | 403 (bucket selection fixed by config) |
+| MKCOL `/b/a/bc/` | valid only if parent `/b/a/` exists as a collection or bucket; collections are VIRTUAL (a prefix with zero objects "exists" only if listed as a common prefix or the parent exists); on success 200, nothing is written | same rule within `B` |
+| MKCOL `/x/y` where `/x/` missing | 409 Conflict (RFC 4918 §9.3.1) | same |
+| Trailing slash | collections end with `/`; a GET of a collection returns its listing (Depth-0 PROPFIND body semantics are for PROPFIND only) | same |
+
+**Collections are virtual prefixes**: MKCOL never writes a marker object, and an empty MKCOL-only directory is invisible to S3 clients (it has no keys). This keeps the S3 and WebDAV views of the same data consistent.
+
+### What is rejected, and why (never silent emulation)
+
+| Request | Response |
+|---|---|
+| `LOCK` / `UNLOCK` / `PROPPATCH` / any unimplemented method | `405` + `Allow` header (no locking in v1) |
+| `PROPFIND` with `Depth: infinity` (or no `Depth`) | `403` with `<propfind-finite-depth/>` |
+| `COPY`/`MOVE` of a collection (any Depth) | `403` (a recursive collection copy cannot be expressed without risking a partial fake copy) |
+| PROPFIND naming an unknown property | `404` propstat for that property (no synthesized values) |
+| `MKCOL` with a request body | `415` (RFC 4918 §9.3.5) |
+| `DELETE` of a bucket (mode A) or the root | `403` (bucket deletion is not expressible safely over WebDAV) |
+| `PUT` to a collection URL | `405` |
+| Versioning, multipart uploads, quotas, dead properties | not exposed |
+
+### Mounting
+
+*   **macOS Finder**: `Cmd+K` → `https://localhost:8444/` → accept the self-signed cert → enter the access key/secret key.
+*   **macOS CLI**: `mkdir /tmp/webdav && mount_webdav -v webdav https://localhost:8444/ /tmp/webdav`.
+*   **Linux davfs2**: `mount -t davfs2 https://localhost:8444/ /mnt/webdav` — set `use_locks 0` in the davfs2 config (v1 has no LOCK and rejects it with 405).
+*   **Windows**: `net use W: https://localhost:8444/ /user:ACCESSKEY SECRETKEY` (self-signed certs require trusting the cert first).
+
+### Limitations
+
+No locking (davfs2 needs `use_locks 0`), no versioning, no quotas, no dead properties, no collection COPY/MOVE, no Depth-infinity PROPFIND. Wire-level coverage lives in e2e case `scripts/e2e/cases/19-webdav.sh`; the mount-level checks above are manual by design (they need a kernel filesystem and interactive cert trust).
+
 ## Metadata Capability Endpoints (ZFS events)
 
 If a bucket's backing dataset is ZFS with the `org.openzfs:events` pool feature enabled (file-level operation history per dataset), zeta-object detects it and exposes the log over S3-style subresources:
@@ -268,8 +327,8 @@ The e2e suite (`make e2e`, 213 asserts / 17 cases) additionally covers every use
 
 ```
 FRONTEND (client protocols)          BACKEND (storage)
-  S3 today; WebDAV/FTP/ownCloud        filesystem today; crush-lite ZFS
-  tracked in issues #1-#3              ring + S3 upstreams planned
+  S3 + WebDAV shipped (#1);           filesystem today; crush-lite ZFS
+  FTP/ownCloud tracked (#2, #3)       ring + S3 upstreams planned
           \                               /
            \                             /
         neutral object model (internal/objectmodel)
@@ -325,7 +384,7 @@ Every pull goes through the pre-commit chain (secrets scan, vet, error-pattern c
 
 ## Roadmap
 
-*   **Frontend protocols**: WebDAV (#1), FTP/FTPS + SFTP (#2), ownCloud (#3) - the pluggable seam and conformance suite are in place.
+*   **Frontend protocols**: WebDAV (#1) SHIPPED (`internal/frontend/webdav`, e2e case 19); FTP/FTPS + SFTP (#2), ownCloud (#3) tracked - the pluggable seam and conformance suite are in place.
 *   **Pluggable authentication**: multi-identity keys with per-bucket grants across all frontends (#4) — S3 core is DONE (registry + grants + dev mode); Basic-auth/SFTP frontends land with their protocol issues.
 *   **More backends**: crush-lite distributed ZFS ring ([plan](docs/plan-distributed-zfs-backing.md)), S3-compatible upstreams.
 *   **More metadata providers**: NTFS USN journal, NILFS2 - the seam probes rather than assumes.

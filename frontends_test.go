@@ -52,9 +52,19 @@ func TestBuildFrontends(t *testing.T) {
 		},
 		{
 			name:        "unknown type rejected with known list",
-			cfg:         []FrontendConfig{{Type: "webdav"}}, // webdav factory not yet wired (GH issue)
+			cfg:         []FrontendConfig{{Type: "gopher"}},
 			wantErr:     true,
-			errContains: "known: [s3]",
+			errContains: "known: [s3 webdav]",
+		},
+		{
+			name:      "webdav mode A registers",
+			cfg:       []FrontendConfig{{Type: "webdav"}},
+			wantNames: []string{"webdav"},
+		},
+		{
+			name:      "webdav mode B registers",
+			cfg:       []FrontendConfig{{Type: "webdav", Bucket: "photos"}},
+			wantNames: []string{"webdav"},
 		},
 		{
 			name:    "duplicate type rejected",
@@ -64,6 +74,17 @@ func TestBuildFrontends(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// The webdav factory reads the process identity registry;
+			// install a minimal one for the registration paths.
+			prev := identityRegistry
+			reg16, err16 := auth.NewMultiRegistry([]auth.IdentityConfig{
+				{Name: "test", AccessKey: "ak", SecretKey: "sk"},
+			})
+			if err16 != nil {
+				t.Fatal(err16)
+			}
+			identityRegistry = reg16
+			defer func() { identityRegistry = prev }()
 			reg, _, err := buildFrontends(tt.cfg, nilBackend{}, stubCreds{})
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("buildFrontends err = %v, wantErr %v", err, tt.wantErr)

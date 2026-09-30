@@ -74,10 +74,35 @@ type AuthConfig struct {
 // FrontendConfig is one entry of the "frontends" config array (leaf 03).
 // Type names a registered frontend factory ("s3" today; "webdav", "ftp"
 // later). ListenAddr empty = share the default listener's mux; set it to
-// give this frontend its own dedicated TLS listener.
+// give this frontend its own dedicated TLS listener. Bucket is webdav-only
+// (single-bucket mode): non-empty pins that frontend's root to the named
+// bucket. Unknown keys inside an entry abort startup via
+// FrontendConfig.UnmarshalJSON (webdav-2026-09 leaf 01 Contract 2:
+// fail-loud).
 type FrontendConfig struct {
 	Type       string `json:"type"`
 	ListenAddr string `json:"listenAddr,omitempty"`
+	Bucket     string `json:"bucket,omitempty"`
+}
+
+// UnmarshalJSON decodes a frontends entry with DisallowUnknownFields: a
+// typo like "bogus" must abort startup, never silently drop (master
+// Contract 2). Accepted keys: "type" and "listenAddr" for every frontend;
+// "bucket" additionally for "webdav" only.
+func (c *FrontendConfig) UnmarshalJSON(data []byte) error {
+	type plain FrontendConfig
+	var p plain
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p); err != nil {
+		return err
+	}
+	cfg := FrontendConfig(p)
+	if cfg.Type != "" && cfg.Type != "webdav" && cfg.Bucket != "" {
+		return fmt.Errorf("frontend type %q does not accept the \"bucket\" key (webdav only)", cfg.Type)
+	}
+	*c = cfg
+	return nil
 }
 
 // BackendCfg is the per-backend-type config from config.json "backends".

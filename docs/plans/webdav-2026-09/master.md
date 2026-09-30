@@ -447,3 +447,106 @@ Integration Test Plan, Notes. If any is missing, fill it in first.
 - Future frontends (ownCloud = WebDAV superset, issue #3) will consume this
   package's property/error mapping — keep those helpers exported and
   side-effect-free so the ownCloud tree can reuse them.
+
+## Implementation Record (2026-09-30)
+
+Implemented in one change by the tree's execution agent (leaves 01–06
+landed together; all six leaves COMPLETE). All work left UNCOMMITTED per
+instruction.
+
+### Files
+
+New — `internal/frontend/webdav/`:
+- `frontend.go` — Frontend implementation: `New(be, Config, ...Option)`,
+  Name/Handler/Authenticator/Capabilities, mode flip via `Config.Bucket`,
+  whitespace-bucket rejection, `WithAuthenticator` (required — fail-loud).
+- `paths.go` — the single URL→resource parser (Contract 3), both modes,
+  slash normalization, `davPath` href rendering.
+- `exists.go` — file/prefix existence resolution (List MaxKeys-1 probe;
+  no marker objects).
+- `dispatch.go` — pipeline: authenticate (401 challenge) → authorize
+  (grants via `frontend.AuthorizeRequest`) → method dispatch; 405+Allow
+  family; root-visibility rule.
+- `errors.go` — `davStatus` (the ONLY objectmodel→status map) +
+  `writeDavError`/`writeDavErrorFrom` RFC 4918 rendering.
+- `props.go` — `ObjectProps` (Contract 5, exported, side-effect-free).
+- `propfind.go` — PROPFIND Depth 0/1, allprop/propname/named bodies,
+  full pagination, multistatus encoding.
+- `get.go` — GET/HEAD, conditionals (If-None-Match ⇒ 304), collection
+  200 + httpd/unix-directory.
+- `put.go`, `mkcol.go`, `delete.go`, `copymove.go` — write surface;
+  streaming PUT (chunked-without-length ⇒ 400), virtual MKCOL (parent
+  rule, no markers), recursive DELETE with pagination + sweep bound,
+  streamed COPY/MOVE with Overwrite semantics and mode-B escape 403.
+- Tests: `frontend_test.go`, `dispatch_test.go`, `get_test.go`,
+  `propfind_test.go`, `errors_test.go`, `put_test.go`, `mkcol_test.go`,
+  `delete_test.go`, `copymove_test.go`, `auth_test.go`,
+  `conformance_test.go`, `stubbackend_test.go`, `stubauth_test.go`.
+
+New — main-side / harness / docs:
+- `webdav_config_test.go` — bucket key, fail-loud unknown keys, factory +
+  BasicAuthenticator wiring assertions.
+- `scripts/e2e/cases/19-webdav.sh` — curl-based wire coverage: 401/403,
+  all verbs, both bucket modes (two webdav entries, two ports),
+  fail-loud unknown-key startup abort, manual mount procedure in the
+  header. (Leaf 05 planned case 18; 18 was taken by the landed auth tree
+  — the next free number 19 is used instead.)
+- Modified: `config.go` (FrontendConfig.Bucket + fail-loud
+  UnmarshalJSON), `frontends.go` ("webdav" factory constructing
+  auth.NewBasicAuthenticator over the process registry),
+  `frontends_test.go`, `root_coverage_wiring_test.go` (known-list
+  updated), `config.json.example`, `README.md` (WebDAV section:
+  mapping table verbatim, degradation table, mounting, limitations;
+  roadmap/architecture/pitch updated to "shipped").
+
+### Gate results
+
+- `make fmt` / `make fmt-check`: clean.
+- `make vet`: clean. `make lint` (golangci-lint, whole tree): 0 issues.
+- `make test`: all packages pass; aggregate coverage 85.8% (floor 47).
+- `make build`: green.
+- `make test-race`: green.
+- `make e2e`: 254 asserts / 19 cases, 0 failures — including new case
+  19-webdav and unchanged cases 01–17 (case 16's known-types assertion
+  updated from `[s3]` to `[s3 webdav]`, the only pre-existing-case edit,
+  forced by the new factory registration).
+- Filesystem-access grep: no `os.`/`ioutil.` in internal/frontend/webdav.
+- No `internal/frontend/s3` imports in the webdav package.
+
+### Deviations from the leaf contracts (code wins over plan)
+
+1. **No create-bucket on the Backend seam** (leaf 03 Task 3 anticipated
+   this fork): mode-A top-level MKCOL is 403 with the reason documented in
+   mkcol.go; the STOP rule (do not extend Backend) was followed.
+2. **XML namespace form**: Go's encoding/xml cannot emit the
+   `xmlns:D="DAV:"` prefixed form cleanly from struct tags; the 207 bodies
+   use the RFC 4918-equivalent default-namespace form
+   (`<multistatus xmlns="DAV:">` with `xmlns="DAV:"` on each element).
+   Golden tests pin the shipped bytes; davfs2/Finder accept both forms.
+3. **Slash-less collection GET is 404** (leaf 02 recommended 404; pinned
+   in get.go + get_test.go).
+4. **Conditionals evaluated at the seam**: the fs Backend ignores
+   GetOptions/PutOptions conditionals in v1 (its docs pin conditionals as
+   protocol-side), so If-None-Match/If-Match are evaluated in the webdav
+   handlers AND forwarded via the options for future backends; COPY's
+   Overwrite:F is enforced by a post-Put re-verification (documented in
+   copymove.go).
+5. **Authenticator is a required constructor option** (leaf 01 sketched
+   injection without a failure mode): New fails without one — a webdav
+   handler without an authenticator would 500 on every request.
+6. **e2e case number 19** (leaf 05 said 18; taken by auth-identities).
+7. **PROPFIND request-body parsing**: Go's unmarshaller does not set bool
+   fields from empty elements, so allprop/propname/prop children are
+   classified from captured element names; named props are re-extracted
+   from the raw body (propfind.go, tested for all three modes).
+8. **PUT chunked bodies** rejected 400 (leaf 03's recommended strategy);
+   streamed with the declared Content-Length otherwise.
+
+| Leaf | Status |
+|---|---|
+| 01-package-skeleton-config | COMPLETE |
+| 02-read-path-propfind-get | COMPLETE |
+| 03-write-path-copy-move | COMPLETE |
+| 04-auth-grants | COMPLETE |
+| 05-conformance-e2e | COMPLETE |
+| 06-docs | COMPLETE |

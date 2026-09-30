@@ -19,13 +19,24 @@ import (
 	"github.com/bhodgens/zeta-object/internal/backend"
 	"github.com/bhodgens/zeta-object/internal/frontend"
 	s3 "github.com/bhodgens/zeta-object/internal/frontend/s3"
+	"github.com/bhodgens/zeta-object/internal/frontend/webdav"
 )
 
 // frontendFactories maps config Type -> constructor. Future frontends
-// (webdav, ftp/sftp, owncloud — see their GH issues) add one entry each.
+// (ftp/sftp, owncloud — see their GH issues) add one entry each. The
+// webdav factory builds the Basic authenticator over the process identity
+// registry (webdav-2026-09 leaf 04 Task 3: same auth model as the s3
+// frontend's adapter, rendered as a Basic challenge).
 var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, creds auth.CredentialSource) (frontend.Frontend, error){
 	"s3": func(cfg FrontendConfig, b backend.Backend, creds auth.CredentialSource) (frontend.Frontend, error) {
 		return s3.New(b, s3.WithCredentialSource(creds)), nil
+	},
+	"webdav": func(cfg FrontendConfig, b backend.Backend, creds auth.CredentialSource) (frontend.Frontend, error) {
+		if identityRegistry == nil {
+			return nil, fmt.Errorf("webdav frontend requires an identity registry (auth configuration failed earlier?)")
+		}
+		authnr := auth.NewBasicAuthenticator(identityRegistry)
+		return webdav.New(b, webdav.Config{Bucket: cfg.Bucket}, webdav.WithAuthenticator(authnr))
 	},
 }
 

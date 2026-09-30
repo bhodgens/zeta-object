@@ -117,4 +117,4 @@ launch_expect_fail "$F16_WORK/config-bad.json" "$F16_FAILOG" 10
 assert_eq 'unknown frontend type aborts startup (process exits)' 0 "$FAILSTART_EXIT"
 assert_eq 'server exits non-zero on unknown frontend' 1 "$(( FAILSTART_RC > 0 ? 1 : 0 ))"
 assert_contains 'startup log names the unknown frontend type' "$(cat "$F16_FAILOG")" 'unknown frontend type "gopher"'
-assert_contains 'startup error lists known frontend types' "$(cat "$F16_FAILOG")" 'known: [s3]'
+assert_contains 'startup error lists known frontend types' "$(cat "$F16_FAILOG")" 'known: [s3 webdav]'

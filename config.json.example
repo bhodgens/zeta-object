@@ -13,12 +13,21 @@
   "keyFile": "certs/key.pem",
 
   // Optional protocol frontends. Absent = S3 on "listenAddr" (backward
-  // compatible). Each entry: "type" (required) and "listenAddr" (optional —
+  // compatible). Each entry: "type" (required), "listenAddr" (optional —
   // omit to share the default listener; set to give this frontend its own
-  // TLS port, e.g. ":8444" for a future WebDAV frontend).
+  // TLS port), and, for webdav only, "bucket" (see below). Unknown keys
+  // inside an entry ABORT startup (fail-loud).
+  //
+  // WebDAV (RFC 4918 class-1 subset): mount the server as a drive from
+  // macOS Finder, Linux davfs2/gvfs, or Windows. "bucket" present and
+  // non-empty ⇒ single-bucket mode ("/" IS that bucket; no bucket concept
+  // on the wire); absent ⇒ multi-bucket mode (top-level collections are
+  // buckets). All methods require HTTP Basic credentials. See the README
+  // "WebDAV frontend" section for the full URL→bucket mapping.
+  //
   // "frontends": [
   //   { "type": "s3" },
-  //   { "type": "webdav", "listenAddr": ":8444" }
+  //   { "type": "webdav", "listenAddr": ":8444", "bucket": "photos" }
   // ],
 
   // Optional multi-identity authentication. Absent = the environment
