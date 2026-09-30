@@ -746,6 +746,19 @@ func runCommand(name, cmd string, timeout int, workDir string) {
 	execCmd.Dir = workDir
 	// New process group; safe on darwin+linux (Setpgid is in syscall for both).
 	execCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Deadline kill must take the whole group: CommandContext's default
+	// Cancel kills only the direct child, so on Linux a grandchild (or the
+	// shell when it does not exec) keeps the stdout/stderr pipes open and
+	// Run() blocks until the grandchildren exit — the timeout looks broken.
+	// Kill -pgid instead. WaitDelay caps the pipe-drain wait so Run returns
+	// even if some descendant survives and holds a descriptor.
+	execCmd.WaitDelay = 2 * time.Second
+	execCmd.Cancel = func() error {
+		if execCmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		return syscall.Kill(-execCmd.Process.Pid, syscall.SIGKILL)
+	}
 
 	stdout, stderr := newLimitBuffer(), newLimitBuffer()
 	execCmd.Stdout = stdout
