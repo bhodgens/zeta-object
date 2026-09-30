@@ -13,6 +13,7 @@ import (
 	"encoding/xml"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -228,5 +229,113 @@ func TestVersionsMarkerEncoding(t *testing.T) {
 	}
 	if got.NextKeyMarker != "a%20b.txt" {
 		t.Fatalf("NextKeyMarker = %q, want encoded a%%20b.txt (body %s)", got.NextKeyMarker, body)
+	}
+}
+
+// TestVersionsMarkerRoundTripEncodableKeys pins M4 (bughunt-postF2-2026-09-29):
+// with encoding-type=url, echoing the ENCODED NextKeyMarker back as
+// key-marker must decode it before the lexicographic comparison, so paging
+// over keys containing encodable characters (space, +, &, !) neither skips
+// nor repeats entries. Regression: the incoming marker was compared raw, so
+// keys lexicographically between the raw ("a%20…", '%' = 0x25) and decoded
+// ("a …", ' ' = 0x20) marker forms were silently skipped.
+func TestVersionsMarkerRoundTripEncodableKeys(t *testing.T) {
+	srv := newTestServer(t)
+
+	if resp := doSigned(t, srv, "PUT", "/vmrt-bkt", ""); resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("create bucket: got %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	// Sorted order: "a b.txt" < "a!.txt" < "a.txt" < "b.txt" < "c+d.txt" < "e&f.txt".
+	for _, target := range []string{"/vmrt-bkt/a%20b.txt", "/vmrt-bkt/a%21.txt", "/vmrt-bkt/a.txt", "/vmrt-bkt/b.txt", "/vmrt-bkt/c+d.txt", "/vmrt-bkt/e%26f.txt"} {
+		if resp := doSigned(t, srv, "PUT", target, "x"); resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			t.Fatalf("put %s: got %d", target, resp.StatusCode)
+		} else {
+			resp.Body.Close()
+		}
+	}
+	// D7: with encoding-type=url the XML carries ENCODED keys (the marker
+	// decode fix (M4) is about the INCOMING marker, not outgoing keys).
+	wantKeys := []string{"a%20b.txt", "a%21.txt", "a.txt", "b.txt", "c%2Bd.txt", "e%26f.txt"}
+
+	// Page one key at a time, echoing the encoded marker back exactly as a
+	// compliant client does (% → %25: the marker value is itself a string
+	// that must be valid query syntax).
+	var gotKeys []string
+	marker := ""
+	for page := 0; page < len(wantKeys)+2; page++ {
+		target := "/vmrt-bkt?versions&encoding-type=url&max-keys=1"
+		if marker != "" {
+			target += "&key-marker=" + strings.ReplaceAll(marker, "%", "%25")
+		}
+		resp := doSigned(t, srv, "GET", target, "")
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("page %d status = %d (body %s)", page, resp.StatusCode, body)
+		}
+		got := decodeVersionsResponse(t, string(body))
+		if len(got.Versions) != 1 {
+			t.Fatalf("page %d versions = %+v, want exactly 1 (body %s)", page, got.Versions, body)
+		}
+		gotKeys = append(gotKeys, got.Versions[0].Key)
+		if !got.IsTruncated {
+			break
+		}
+		next := got.NextKeyMarker
+		if next == "" {
+			t.Fatalf("truncated page %d without NextKeyMarker (body %s)", page, body)
+		}
+		if next == marker {
+			t.Fatalf("page %d returned the same marker %q — listing stuck (body %s)", page, next, body)
+		}
+		marker = next
+	}
+	if len(gotKeys) != len(wantKeys) {
+		t.Fatalf("paged %d keys (%v), want %d — skip or repeat in marker round-trip", len(gotKeys), gotKeys, len(wantKeys))
+	}
+	// Encoding-type=url responses carry encoded keys; wantKeys are the
+	// encoded wire forms, so compare directly (no decode - the marker
+	// round-trip is what this test pins).
+	for i, k := range wantKeys {
+		if gotKeys[i] != k {
+			t.Fatalf("paged key[%d] = %q, want %q (full walk: %v)", i, gotKeys[i], k, gotKeys)
+		}
+	}
+}
+
+// TestVersionsRawMarkerBackwardCompat pins M4 backward compatibility: an
+// UNENCODED key-marker still works alongside encoding-type=url (a marker
+// with no encodable characters decodes to itself).
+func TestVersionsRawMarkerBackwardCompat(t *testing.T) {
+	srv := newTestServer(t)
+
+	if resp := doSigned(t, srv, "PUT", "/vraw-bkt", ""); resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("create bucket: got %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	for _, k := range []string{"a.txt", "b.txt", "c.txt"} {
+		if resp := doSigned(t, srv, "PUT", "/vraw-bkt/"+k, "x"); resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			t.Fatalf("put %s: got %d", k, resp.StatusCode)
+		} else {
+			resp.Body.Close()
+		}
+	}
+
+	resp := doSigned(t, srv, "GET", "/vraw-bkt?versions&encoding-type=url&key-marker=a.txt", "")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", resp.StatusCode, body)
+	}
+	got := decodeVersionsResponse(t, string(body))
+	if len(got.Versions) != 2 || got.Versions[0].Key != "b.txt" || got.Versions[1].Key != "c.txt" {
+		t.Fatalf("versions = %+v, want [b.txt c.txt] (body %s)", got.Versions, body)
 	}
 }

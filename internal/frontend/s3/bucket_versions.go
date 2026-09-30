@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -43,6 +44,15 @@ func listObjectVersionsHandler(w http.ResponseWriter, r *http.Request, bucketNam
 	query := r.URL.Query()
 	prefix := query.Get("prefix")
 	keyMarker := query.Get("key-marker")
+	// M4 (bughunt-postF2-2026-09-29): with encoding-type=url the client
+	// echoes the ENCODED NextKeyMarker back; decode it before the
+	// lexicographic comparison or keys between the raw and decoded forms
+	// are silently skipped (raw '%' = 0x25 vs decoded ' ' = 0x20).
+	if keyMarker != "" && query.Get("encoding-type") == "url" {
+		if decoded, err := url.QueryUnescape(keyMarker); err == nil {
+			keyMarker = decoded
+		}
+	}
 	maxKeys := 1000
 	if v := query.Get("max-keys"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {

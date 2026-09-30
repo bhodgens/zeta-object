@@ -5,9 +5,11 @@ package s3
 // dispatch (exactly like ?acl / ?uploads / ?uploadId):
 //
 //	GET /{bucket}/{key}?events          → JSON ObjectEventHistory (key-scoped)
-//	GET /{bucket}?events                → JSON ObjectEventHistory (bucket summary)
-//	GET /{bucket}?events&versions       → XML ListObjectVersionsExt (DERIVED,
-//	                                      NON-STANDARD, LOSSY — not S3 versioning)
+// GET /{bucket}?events                → JSON ObjectEventHistory (bucket summary)
+// GET /{bucket}?events&versions       → XML ListObjectVersionsExt (DERIVED,
+//                                       NON-STANDARD, LOSSY — not S3 versioning;
+//                                       prefix is honored; delimiter and
+//                                       encoding-type are NOT — documented limitation)
 //
 // Auth is inherited from the serveHTTP pipeline (SigV4 runs before any
 // dispatch); these handlers add no auth code of their own. Errors go
@@ -195,7 +197,7 @@ func handleBucketEvents(w http.ResponseWriter, r *http.Request, bucketName strin
 
 	// ?versions sub-sub-resource: the derived, lossy XML extension.
 	if _, ok := r.URL.Query()["versions"]; ok {
-		ext := versionsFromEvents(events, detail)
+		ext := versionsFromEvents(events, detail, r.URL.Query().Get("prefix"))
 		ext.Name = bucketName // S3 Name convention: the bucket name
 		writeXML(w, http.StatusOK, ext)
 		return
@@ -208,10 +210,13 @@ func handleBucketEvents(w http.ResponseWriter, r *http.Request, bucketName strin
 }
 
 // resolveEventsContext validates the bucket for an ?events request:
-// unknown buckets keep the standard 404 (404 precedence over provider
-// resolution). Returns false when it has written the error.
+// names that fail validBucket (S3 naming rules, or traversal like
+// /..%2f..%2fetc which would otherwise escape dataDir and pass the
+// exists check) and unknown buckets keep the standard 404 (404
+// precedence over provider resolution). Returns false when it has
+// written the error.
 func resolveEventsContext(w http.ResponseWriter, bucketName string) bool {
-	if !bucketExists(bucketName) {
+	if !validBucket(bucketName) || !bucketExists(bucketName) {
 		log.Printf("Bucket %s does not exist for ?events", strconv.Quote(bucketName))
 		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return false
@@ -263,6 +268,9 @@ func toEventJSON(events []metadata.ObjectEvent) []objectEventJSON {
 // PINNED derivation rules (metadata-zfs master decision 4):
 //   - events arrive newest-first (provider ring-buffer stream order);
 //     that order — never timestamps — defines recency here.
+//   - prefix: events whose reconstructed key lacks the prefix produce
+//     no version entry (D4, bughunt-postF2-2026-09-29).
+//   - delimiter and encoding-type are NOT honored (documented limitation).
 //   - create / rename / truncate → version entry: Size = SizeNew,
 //     VersionId = "txg-<txg>-<index>" with index = position in THIS
 //     event slice (txg alone is not unique; the id is deliberately
@@ -272,7 +280,7 @@ func toEventJSON(events []metadata.ObjectEvent) []objectEventJSON {
 //   - IsLatest = first entry per key in stream order.
 //   - IsLossy/RecordsLost surface ring-buffer loss so clients know the
 //     listing (and its ids) is incomplete.
-func versionsFromEvents(events []metadata.ObjectEvent, detail metadata.HistoryDetail) ListObjectVersionsExt {
+func versionsFromEvents(events []metadata.ObjectEvent, detail metadata.HistoryDetail, prefix string) ListObjectVersionsExt {
 	out := ListObjectVersionsExt{
 		Name:        detail.Dataset,
 		IsLossy:     detail.RecordsLost > 0,
@@ -280,6 +288,9 @@ func versionsFromEvents(events []metadata.ObjectEvent, detail metadata.HistoryDe
 	}
 	latest := map[string]bool{}
 	for i, e := range events { // newest-first (stream order)
+		if prefix != "" && !strings.HasPrefix(e.Key, prefix) {
+			continue
+		}
 		v := ObjectVersionExt{Key: e.Key}
 		switch strings.ToLower(e.Op) {
 		case "create", "rename", "truncate":

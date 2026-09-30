@@ -498,6 +498,93 @@ func TestEventsJSONNoOwnerFields(t *testing.T) {
 	}
 }
 
+// TestEventsTraversalBucketRejected pins D3 (bughunt-postF2-2026-09-29):
+// a path-traversal bucket name reaching ?events must get the standard 404
+// NoSuchBucket — never a 200/503/500 from a provider probe that escaped
+// dataDir. Regression: resolveEventsContext checked only bucketExists,
+// whose filepath.Join raw name let /..%2f..%2fetc resolve to a real
+// directory outside dataDir. Both bucket-level and object-level ?events
+// are pinned, and a normal bucket still resolves.
+func TestEventsTraversalBucketRejected(t *testing.T) {
+	stub := eventsStubFor(t)
+	stub.configure(nil, metadata.HistoryDetail{}, nil)
+	srv, root := newEventsTestServer(t)
+	eventsAttachedBucket(t, srv, root, "travbkt", "a.txt", "x")
+
+	for _, target := range []string{
+		"/..%2f..%2fetc?events",
+		"/..%2f..%2fetc/passwd?events",
+		"/.%2e%2ftravbkt?events",
+	} {
+		code, _, body := eventsGet(t, srv, target)
+		if code != http.StatusNotFound {
+			t.Fatalf("traversal %s = %d, want 404 (body %s)", target, code, body)
+		}
+		if !strings.Contains(body, "NoSuchBucket") {
+			t.Fatalf("traversal %s body %s missing NoSuchBucket", target, body)
+		}
+	}
+
+	// Normal bucket still works (bucket-level and object-level).
+	if code, _, body := eventsGet(t, srv, "/travbkt?events"); code != http.StatusOK {
+		t.Fatalf("normal bucket ?events = %d (body %s)", code, body)
+	}
+	if code, _, body := eventsGet(t, srv, "/travbkt/a.txt?events"); code != http.StatusOK {
+		t.Fatalf("normal bucket object ?events = %d (body %s)", code, body)
+	}
+}
+
+// TestEventsVersionsPrefixFilter pins D4 (bughunt-postF2-2026-09-29):
+// ?events&versions honors the prefix query parameter — only events whose
+// reconstructed key carries the prefix produce version entries. The
+// endpoint doc also documents delimiter/encoding-type as not honored.
+func TestEventsVersionsPrefixFilter(t *testing.T) {
+	stub := eventsStubFor(t)
+	stub.configure(
+		[]metadata.ObjectEvent{
+			{Op: "create", Key: "a/one.txt", Txg: 10, SizeNew: 10},
+			{Op: "create", Key: "b/two.txt", Txg: 11, SizeNew: 20},
+			{Op: "create", Key: "a/one.txt", Txg: 12, SizeNew: 30},
+			{Op: "remove", Key: "b/gone.txt", Txg: 13},
+		},
+		metadata.HistoryDetail{Dataset: "stub/data", RecordsLost: 0},
+		nil,
+	)
+	srv, root := newEventsTestServer(t)
+	eventsAttachedBucket(t, srv, root, "prefbkt", "a/one.txt", "x")
+
+	code, _, body := eventsGet(t, srv, "/prefbkt?events&versions&prefix=a/")
+	if code != http.StatusOK {
+		t.Fatalf("status %d (body %s)", code, body)
+	}
+	var got struct {
+		Version []struct {
+			Key       string `xml:"Key"`
+			VersionId string `xml:"VersionId"`
+		} `xml:"Version"`
+	}
+	if err := xml.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("unmarshal %q: %v", body, err)
+	}
+	if len(got.Version) != 2 {
+		t.Fatalf("versions = %+v, want exactly the 2 a/ entries (body %s)", got.Version, body)
+	}
+	for _, v := range got.Version {
+		if !strings.HasPrefix(v.Key, "a/") {
+			t.Fatalf("non-prefixed key leaked: %q (body %s)", v.Key, body)
+		}
+	}
+	// Prefix boundary: "a/" must not swallow "ab"-prefixed keys.
+	stub.configure(
+		[]metadata.ObjectEvent{{Op: "create", Key: "ab.txt", Txg: 20, SizeNew: 5}},
+		metadata.HistoryDetail{Dataset: "stub/data", RecordsLost: 0},
+		nil,
+	)
+	if _, _, body := eventsGet(t, srv, "/prefbkt?events&versions&prefix=a/"); strings.Contains(body, "ab.txt") {
+		t.Fatalf("prefix a/ matched ab.txt (body %s)", body)
+	}
+}
+
 // TestInstallMetadataProviderHook pins the exported wiring entry: installing
 // a resolver routes provider lookups through it, and installing nil restores
 // the probe-on-request shim. (Wired from s3_wiring.go at startup; 0%-covered
