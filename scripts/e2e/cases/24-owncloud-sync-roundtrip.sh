@@ -29,6 +29,17 @@ print(s.getsockname()[1])
 s.close()
 PY
 )
+# S3 gets its own port: the owncloud frontend takes a dedicated HTTPS listener,
+# so sharing the default listenAddr made two servers race for one port
+# (EADDRINUSE on whichever bound second — same rule case 23 documents).
+OC24_S3_PORT=$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)
 openssl req -x509 -newkey rsa:2048 -keyout "$OC24_CERT/key.pem" -out "$OC24_CERT/cert.pem" \
 	-days 1 -nodes -subj '/CN=localhost' \
 	-addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' >/dev/null 2>&1
@@ -68,7 +79,7 @@ oc24_req() {
 cat > "$OC24_WORK/config.json" <<EOF
 {
   "dataDir": "$OC24_WORK/data",
-  "listenAddr": "127.0.0.1:$OC24_PORT",
+  "listenAddr": "127.0.0.1:$OC24_S3_PORT",
   "certFile": "$OC24_CERT/cert.pem",
   "keyFile": "$OC24_CERT/key.pem",
   "frontends": [
@@ -84,7 +95,7 @@ EOF
 ZETAOBJECT_ACCESS_KEY=minioadmin ZETAOBJECT_SECRET_KEY=minioadmin \
 	ZETAOBJECT_CONFIG="$OC24_WORK/config.json" ./zeta-object-server >"$OC24_WORK/server.log" 2>&1 &
 OC24_PID=$!
-ENDPOINT="https://127.0.0.1:$OC24_PORT"
+ENDPOINT="https://127.0.0.1:$OC24_S3_PORT"
 BASE_URL="$ENDPOINT"
 export E2E_ENDPOINT="$ENDPOINT"
 if ! wait_for_port 127.0.0.1 "$OC24_PORT" 15; then
@@ -157,11 +168,15 @@ assert_contains 'one.txt still listed' "$OC24_BODY" 'one.txt'
 oc24_req REPORT "$OC24_DAV/phone-photos/one.txt" --data-binary ''
 assert_eq 'versioning REPORT rejected 405' 405 "$OC24_STATUS"
 
-# Cleanup: delete the tree; the final PROPFIND 404s.
+# Cleanup: delete the tree; the final PROPFIND 404s. DELETE of the empty
+# directory 404s — collections are VIRTUAL prefixes (Contract 3: a
+# collection exists iff its prefix lists), so once the last child is
+# gone the dir is already gone. The old 204 expectation contradicted
+# that contract (same correction as case 19).
 oc24_req DELETE "$OC24_DAV/phone-photos/one.txt"
 assert_eq 'cleanup DELETE one.txt' 204 "$OC24_STATUS"
 oc24_req DELETE "$OC24_DAV/phone-photos/"
-assert_eq 'cleanup DELETE directory' 204 "$OC24_STATUS"
+assert_eq 'cleanup DELETE empty directory is already gone' 404 "$OC24_STATUS"
 oc24_req PROPFIND "$OC24_DAV/phone-photos/" -H 'Depth: 0' --data-binary ''
 assert_eq 'final PROPFIND of deleted dir 404' 404 "$OC24_STATUS"
 

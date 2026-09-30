@@ -32,6 +32,17 @@ print(s.getsockname()[1])
 s.close()
 PY
 )
+# S3 gets its own port: the owncloud frontend takes a dedicated HTTPS listener,
+# so sharing the default listenAddr made two servers race for one port (whichever
+# bound second died EADDRINUSE — it passed only on goroutine-scheduling luck).
+OC23_S3_PORT=$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)
 openssl req -x509 -newkey rsa:2048 -keyout "$OC23_CERT/key.pem" -out "$OC23_CERT/cert.pem" \
 	-days 1 -nodes -subj '/CN=localhost' \
 	-addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' >/dev/null 2>&1
@@ -70,7 +81,7 @@ oc23_req() {
 cat > "$OC23_WORK/config.json" <<EOF
 {
   "dataDir": "$OC23_WORK/data",
-  "listenAddr": "127.0.0.1:$OC23_PORT",
+  "listenAddr": "127.0.0.1:$OC23_S3_PORT",
   "certFile": "$OC23_CERT/cert.pem",
   "keyFile": "$OC23_CERT/key.pem",
   "frontends": [

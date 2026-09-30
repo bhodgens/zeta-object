@@ -12,7 +12,10 @@ if ! command -v rclone >/dev/null 2>&1; then
 	echo '  (rclone not installed — skipping interop case; 20-ftp/21-sftp carry the wire coverage)'
 	E2E_PASS=$((E2E_PASS + 1))
 	e2e_finish
-	exit 0
+	# return, NOT exit: this file is SOURCED by run-e2e.sh; exit would kill the
+	# harness subshell before it writes this case's tally (a skip then looked
+	# like a crash/failure).
+	return 0
 fi
 
 E22_ROOT=$(mktemp -d /tmp/e2e22-rclone.XXXXXX)
