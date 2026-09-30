@@ -7,7 +7,7 @@ zeta-object speaks the S3 protocol and stores your data where you can see it: pl
 - **One static binary.** No database, no etcd, no external services. `make build`, run it, done.
 - **Zero-format storage.** Objects are plain files; metadata is a JSON sidecar. Your data is readable with `cat` and `ls` with the server stopped. Point a bucket at `/var/log`, a ZFS dataset, an NFS mount, or a directory of symlinks and it is an S3 bucket *now*.
 - **Standard, verified wire compatibility.** AWS CLI, boto3, and mc work against it - proven by an interop e2e suite and a ceph/s3-tests ratchet, not by marketing.
-- **Protocol-flexible by design.** A pluggable frontend/backend architecture (S3 + WebDAV + ownCloud shipped; FTP/SFTP shipped) over a neutral object model - one implementation per protocol and per storage, not one per combination.
+- **Protocol-flexible by design.** A pluggable frontend/backend architecture (S3, WebDAV, FTP/FTPS, SFTP, and ownCloud all shipped) over a neutral object model - one implementation per protocol and per storage, not one per combination.
 - **Extensible metadata.** A probe-based MetadataProvider seam attaches enrichment capabilities to buckets when - and only when - the underlying filesystem supports them. The first provider reads ZFS per-dataset file-event logs, giving per-object history and version-style listings that hosted S3 cannot give you.
 
 ## The pitch: what proves zeta-object different
@@ -18,7 +18,7 @@ Most "S3-compatible" servers are the same idea restated: a service that owns a b
 2. **Existing directories become S3 buckets with zero migration.** Bucket `logs` at `/var/log` means the decade of log files already on disk is immediately listable, downloadable, and presign-able over S3 - byte-for-byte, no import, no copy. Symlinks are followed, so a bucket can live anywhere.
 3. **Filesystem capabilities become S3 capabilities.** When a bucket sits on a ZFS dataset with the `org.openzfs:events` feature (per-dataset file-op history), zeta-object detects it at startup and serves `GET /<bucket>?events` and `GET /<bucket>?versions` derived from the kernel's own record of what happened to each file - create, rename, truncate, delete - with loss indicators. No hosted S3 offers object history; no opaque object server can borrow it from the filesystem. When the filesystem does not support it, the capability is simply absent (a clean 503), never faked.
 4. **Pluggable on both axes, honest about semantics.** Frontends (client protocols) and backends (storage) plug into one neutral object model, and the seams reject what a protocol cannot express instead of silently emulating it. A parity gate proves an enabled metadata provider changes nothing about core S3 responses.
-5. **Small enough to read, hardened enough to trust.** One Go binary, stdlib-only dependencies, and a gate wall: 200+ unit tests, 213-assert e2e suite, race detector, fuzzing, ceph/s3-tests conformance ratchet, staticcheck/gosec, and a pre-commit chain that enforces all of it. The codebase is small enough that an afternoon of reading covers every line that touches your data.
+5. **Small enough to read, hardened enough to trust.** One Go binary, a tiny audited dependency set (all licenses in docs/licenses/), and a gate wall: 200+ unit tests, 349-assert e2e suite, race detector, fuzzing, ceph/s3-tests conformance ratchet, staticcheck/gosec, and a pre-commit chain that enforces all of it. The codebase is small enough that an afternoon of reading covers every line that touches your data.
 
 ## Who it is for
 
@@ -62,7 +62,7 @@ Quality gates and tests:
 ```bash
 make test         # unit tests with coverage summary
 make check        # full local gate: build, vet, fmt, lint, tests, race, vuln, secrets
-make e2e          # end-to-end suite: 213 asserts over 17 cases (incl. boto3 + mc interop)
+make e2e          # end-to-end suite: 349 asserts over 24 cases (incl. boto3 + mc interop)
 ```
 
 ## Credentials Configuration
@@ -214,7 +214,7 @@ aws s3 ls s3://mytestbucket --profile zetaobject --endpoint-url https://localhos
 aws s3 cp s3://mytestbucket/test.txt downloaded_test.txt --profile zetaobject --endpoint-url https://localhost:8443 --no-verify-ssl
 ```
 
-Presigned URLs and `mc`/`rclone` work the same way - see the interop e2e cases (`scripts/e2e/cases/12-interop-boto3.sh`, `13-interop-mc.sh`) for working examples.
+Presigned URLs and `mc`/`rclone` work the same way - see the interop e2e cases (`scripts/e2e/cases/12-interop-boto3.sh`, `13-interop-mc.sh`, `22-interop-rclone.sh`) for working examples.
 
 ## WebDAV frontend
 
@@ -434,14 +434,14 @@ Inspect configured actions with `./scripts/show-bucket-actions.sh data/`.
 
 zeta-object is baselined against the industry-standard [ceph/s3-tests](https://github.com/ceph/s3-tests) suite. `make conformance` builds the server, launches it on a free HTTPS port, runs the in-scope pytest subset (277 tests - buckets, objects, listing, multipart, copy, conditional, range, presigned), and exits non-zero only when a previously-passing test regresses against the committed ratchet `scripts/conformance/baseline.txt`. The full matrix with per-failure triage: [docs/conformance/2026-09-28-matrix.md](docs/conformance/2026-09-28-matrix.md).
 
-The e2e suite (`make e2e`, 213 asserts / 17 cases) additionally covers every user-facing surface - including custom buckets, backend/frontend configuration, the metadata endpoints, and live boto3/mc interop - per the repo rule in [AGENTS.md](AGENTS.md).
+The e2e suite (`make e2e`, 349 asserts / 24 cases) additionally covers every user-facing surface - including custom buckets, backend/frontend configuration, the metadata endpoints, all four protocol frontends, and live boto3/mc/rclone interop - per the repo rule in [AGENTS.md](AGENTS.md).
 
 ## Architecture
 
 ```
 FRONTEND (client protocols)          BACKEND (storage)
-  S3 + WebDAV shipped (#1);           filesystem today; crush-lite ZFS
-  FTP/ownCloud tracked (#2, #3)       ring + S3 upstreams planned
+  S3, WebDAV, FTP/FTPS, SFTP,         filesystem today; crush-lite ZFS
+  ownCloud - all shipped              ring + S3 upstreams planned
           \                               /
            \                             /
         neutral object model (internal/objectmodel)
@@ -478,7 +478,7 @@ make clean    # remove build artifacts
 ```bash
 make test              # unit tests with coverage summary
 make check             # build, vet, fmt, lint, tests, race, vuln, secrets
-make e2e               # 213-assert end-to-end suite, 17 cases
+make e2e               # 349-assert end-to-end suite, 24 cases
 make parity-test       # metadata-provider parity gate (FS vs provider-backed identical)
 make test-cover-enforce # aggregate coverage floor (ratchets up over time)
 make conformance       # ceph/s3-tests subset vs committed ratchet
@@ -489,7 +489,7 @@ Every pull goes through the pre-commit chain (secrets scan, vet, error-pattern c
 
 ## Known Limitations
 
-*   No ACLs or bucket policies; authorization is per-identity bucket grants (`identities` config, GH issue #4).
+*   No ACLs or bucket policies; authorization is per-identity bucket grants (the `identities` config block).
 *   Region pinned to `us-east-1`.
 *   Object keys with `..` or `.metadata` path segments are rejected, and keys must be in canonical form (safety over S3 compatibility; no `a//b` aliasing).
 *   S3 versioning is not implemented; `?versions` lists existing objects, and the ZFS-events-derived version listing is an extension, not S3 versioning.
@@ -498,7 +498,7 @@ Every pull goes through the pre-commit chain (secrets scan, vet, error-pattern c
 ## Roadmap
 
 *   **Frontend protocols**: S3, WebDAV (#1, e2e case 19), FTP/FTPS + SFTP (#2, e2e cases 20/21), ownCloud (#3, e2e cases 23/24 — wire-verified; real-client pass is a documented manual gate) — all SHIPPED; the pluggable seam and conformance suite are in place.
-*   **Pluggable authentication**: multi-identity keys with per-bucket grants across all frontends (#4) — S3 core is DONE (registry + grants + dev mode); Basic-auth/SFTP frontends land with their protocol issues.
+*   **Pluggable authentication**: multi-identity keys with per-bucket grants across all frontends (#4) — SHIPPED across all frontends: SigV4, HTTP Basic (WebDAV/ownCloud), FTP login, SFTP password + public-key - one identity registry, per-bucket grants everywhere.
 *   **More backends**: crush-lite distributed ZFS ring ([plan](docs/plan-distributed-zfs-backing.md)), S3-compatible upstreams.
 *   **More metadata providers**: NTFS USN journal, NILFS2 - the seam probes rather than assumes.
 

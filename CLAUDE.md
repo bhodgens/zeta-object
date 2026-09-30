@@ -57,7 +57,8 @@ backend lookup, and process wiring:
 | `internal/backend`, `internal/backend/fsbackend`, `internal/backend/conformance` | Storage backend interface, filesystem backend, conformance helpers |
 | `internal/metadata` | ZFS sidecar metadata and parity tests |
 | `internal/objectmodel` | Object model, encoded key paths, snapshot/header parity |
-| `internal/auth` | Authenticator seam (placeholder; pluggable auth is an open issue) |
+| `internal/auth` | Multi-identity registry, grants, dev-mode + public-key authenticators (pluggable auth, GH #4 - shipped) |
+| `internal/frontend/webdav`, `internal/frontend/ftp`, `internal/frontend/sftp`, `internal/frontend/owncloud` | The WebDAV, FTP/FTPS, SFTP, and ownCloud protocol frontends (GH #1/#2/#3 - shipped) |
 
 All object-data and metadata JSON writes go through the `storage.go` atomic
 helpers (temp file in the same directory, fsync, rename), so a crash never leaves

@@ -11,7 +11,7 @@ Today `s3`, `webdav`, `ftp`, `sftp`, and `owncloud` are registered.
 type Frontend interface {
     Name() string                      // "s3", "webdav", "ftp", ...
     Handler() http.Handler             // mounts itself under the server mux
-    Authenticator() auth.Authenticator // per-frontend auth adapter (placeholder model; auth GH issue will replace it)
+    Authenticator() auth.Authenticator // per-frontend auth adapter (multi-identity registry, GH #4 - shipped)
     Capabilities() ProtocolCaps        // what this protocol can express
 }
 ```
@@ -30,7 +30,10 @@ The optional `frontends` array in `config.json` selects what runs:
 ```jsonc
 "frontends": [
   { "type": "s3" },
-  { "type": "webdav", "listenAddr": ":8444" }
+  { "type": "webdav", "listenAddr": ":8444" },
+  { "type": "ftp", "listenAddr": ":2121" },
+  { "type": "sftp", "listenAddr": ":2022", "options": { "hostKeyFile": "certs/host_ed25519" } },
+  { "type": "owncloud", "listenAddr": ":8446" }
 ]
 ```
 
@@ -65,7 +68,12 @@ all within the same 30-second `serverShutdownTimeout` window.
 
 ## Related work
 
-- WebDAV, (S)FTP, ownCloud frontends: tracked in their individual GH issues.
-- The `auth.Authenticator`/`auth.Identity` shape is a placeholder; the open
-  "auth: pluggable authentication architecture" GH issue replaces it with a
-  real identity model (per-frontend/per-user credentials).
+- All four additional frontends are SHIPPED: WebDAV (#1), FTP/FTPS + SFTP
+  (#2), ownCloud (#3) - each with its own e2e case under
+  `scripts/e2e/cases/` and a README section documenting its mapping and
+  degradation contract.
+- Pluggable authentication (#4) is SHIPPED: multi-identity registry with
+  per-bucket grants, HTTP Basic (WebDAV/ownCloud), FTP login, SFTP
+  password + public-key auth, and the opt-in zero-auth dev mode. See the
+  `identities` / `auth` blocks in `config.json.example` and the README's
+  credentials section.
