@@ -74,7 +74,11 @@ func isDecodedStreaming(ctx context.Context) bool {
 
 // debugAuthEnabled reports whether verbose auth debugging is on (fix 9).
 func debugAuthEnabled() bool {
-	return os.Getenv("ZETAOBJECT_DEBUG_AUTH") == "1"
+	if os.Getenv("ZETAOBJECT_DEBUG_AUTH") == "1" {
+		return true
+	}
+	// Deprecated-prefix fallback (bughunt H3).
+	return os.Getenv("MINIS3_DEBUG_AUTH") == "1"
 }
 
 // VerifyDecodedLength checks a decoded body length against the

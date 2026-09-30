@@ -323,7 +323,14 @@ func startupPlan(cfg []FrontendConfig, b backend.Backend, creds auth.CredentialS
 func applyListenAddrOverride(cfg *ServerConfig) {
 	value, ok := os.LookupEnv("ZETAOBJECT_LISTEN_ADDR")
 	if !ok {
-		return
+		// Deprecated-prefix fallback (bughunt H3): operators with the
+		// pre-rename variable in unit files must not silently lose the
+		// override.
+		value, ok = os.LookupEnv("MINIS3_LISTEN_ADDR")
+		if !ok {
+			return
+		}
+		log.Printf("Note: MINIS3_LISTEN_ADDR is deprecated; set ZETAOBJECT_LISTEN_ADDR instead")
 	}
 	if value == "" {
 		log.Printf("Warning: environment variable ZETAOBJECT_LISTEN_ADDR is set but empty; ignoring (config listenAddr stays %s)", cfg.ListenAddr)
