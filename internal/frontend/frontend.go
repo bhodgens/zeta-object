@@ -4,6 +4,7 @@
 package frontend
 
 import (
+	"net"
 	"net/http"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
@@ -22,4 +23,22 @@ type ProtocolCaps struct {
 	ConditionalReads bool
 	Multipart        bool
 	PresignedURLs    bool
+}
+
+// NonHTTPFrontend is an OPTIONAL extension implemented by frontends whose
+// wire protocol is not expressible as http.Handler (FTP, SFTP). A frontend
+// implementing it MUST NOT be mounted on the shared mux: main() opens a
+// plain net.Listener at NonHTTPAddr() and runs Serve until shutdown.
+// The frozen Frontend interface and Registry are untouched by this
+// extension (sftp-ftp-2026-09 master Contract A).
+type NonHTTPFrontend interface {
+	Frontend
+	// NonHTTPAddr returns this frontend's dedicated listen address from its
+	// config ("" => config error, rejected at construction).
+	NonHTTPAddr() string
+	// Serve accepts connections on l until Stop is called or l is closed.
+	// Blocking.
+	Serve(l net.Listener) error
+	// Stop gracefully stops: stop accepting, close sessions.
+	Stop() error
 }

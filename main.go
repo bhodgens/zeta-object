@@ -126,16 +126,7 @@ func main() {
 		log.Fatalf("Frontend initialization failed: %v", err)
 	}
 	srv := newServer(serverConfig.ListenAddr, plan.mux, serverConfig.CertFile, serverConfig.KeyFile)
-
-	// Dedicated-listener servers (leaf 03 multi-listener decision): one
-	// http.Server per frontend entry that carries its own listenAddr, all
-	// sharing the default cert/key pair. Drained by the same graceful
-	// shutdown window below.
-	var extraServers []*http.Server
-	for _, ls := range plan.listeners {
-		extraServers = append(extraServers, newServer(ls.addr, ls.frontend.Handler(),
-			serverConfig.CertFile, serverConfig.KeyFile))
-	}
+	extraServers, nonHTTPServers := buildDedicatedListeners(plan.listeners)
 
 	// Graceful shutdown: SIGINT/SIGTERM stop accepting new connections and
 	// drain in-flight requests within serverShutdownTimeout (default
@@ -159,6 +150,9 @@ func main() {
 				serverErr <- fmt.Errorf("dedicated listener %s: %w", es.Addr, err)
 			}
 		}()
+	}
+	for _, nhs := range nonHTTPServers {
+		startNonHTTPFrontend(nhs, serverErr)
 	}
 
 	select {
@@ -184,6 +178,9 @@ func main() {
 				errs[i] = s.Shutdown(drainCtx)
 			}(i, s)
 		}
+		// Non-HTTP frontends drain through their own Stop (graceful:
+		// stop accepting, close sessions) in the same concurrent fan.
+		drainNonHTTPFrontends(nonHTTPServers, &wg)
 		wg.Wait()
 		for i, err := range errs {
 			if err != nil {

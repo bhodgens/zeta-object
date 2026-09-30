@@ -13,10 +13,11 @@
   "keyFile": "certs/key.pem",
 
   // Optional protocol frontends. Absent = S3 on "listenAddr" (backward
-  // compatible). Each entry: "type" (required), "listenAddr" (optional —
-  // omit to share the default listener; set to give this frontend its own
-  // TLS port), and, for webdav only, "bucket" (see below). Unknown keys
-  // inside an entry ABORT startup (fail-loud).
+  // compatible). Each entry: "type" (required), "listenAddr" (optional for
+  // HTTP frontends — omit to share the default listener; REQUIRED for the
+  // non-HTTP frontends "ftp" and "sftp", which cannot share the HTTPS mux),
+  // "bucket" for webdav only, and "options" (protocol-specific string
+  // settings; unknown keys inside an entry ABORT startup — fail-loud).
   //
   // WebDAV (RFC 4918 class-1 subset): mount the server as a drive from
   // macOS Finder, Linux davfs2/gvfs, or Windows. "bucket" present and
@@ -25,9 +26,25 @@
   // buckets). All methods require HTTP Basic credentials. See the README
   // "WebDAV frontend" section for the full URL→bucket mapping.
   //
+  // FTP/FTPS: plain FTP and explicit FTPS (AUTH TLS) on the same port —
+  // AUTH TLS reuses the top-level "certFile"/"keyFile" (no new keys).
+  // Options: "passivePortMin"/"passivePortMax" (passive data-channel range;
+  // default kernel-assigned), "publicIP" (PASV reply address; default
+  // listener IP). REST/resume is rejected (no partial transfers).
+  //
+  // SFTP: the SSH subsystem over its own port. "hostKeyFile" is REQUIRED —
+  // the key auto-generates there on first start (ed25519, 0600) and is
+  // REUSED after (clients pin host keys). Option "allowPasswordAuth"
+  // (default "true"; "false" = public-key only). Identities authenticate by
+  // password (accessKey/secretKey) or by "sshPublicKeys" association.
+  //
   // "frontends": [
   //   { "type": "s3" },
-  //   { "type": "webdav", "listenAddr": ":8444", "bucket": "photos" }
+  //   { "type": "webdav", "listenAddr": ":8444", "bucket": "photos" },
+  //   { "type": "ftp", "listenAddr": ":2121",
+  //     "options": { "passivePortMin": "50000", "passivePortMax": "50100" } },
+  //   { "type": "sftp", "listenAddr": ":2022",
+  //     "options": { "hostKeyFile": "certs/host_ed25519" } }
   // ],
 
   // Optional multi-identity authentication. Absent = the environment
@@ -38,8 +55,9 @@
   // (required, unique across identities AND the env pair), "secretKey"
   // (required), "grants" (optional; absent = full read/write to every
   // bucket; per-bucket values "readonly" | "readwrite", "*" allowed as the
-  // wildcard bucket, write implies read), "sshPublicKeys" (optional;
-  // reserved for the future SFTP frontend).
+  // bucket, write implies read), "sshPublicKeys" (optional; authorized_keys-
+  // format lines. Consumed by the SFTP frontend for public-key auth — one
+  // key resolves to exactly one identity across the whole registry).
   //
   // Denied operations get the standard S3 AccessDenied (403); an unknown
   // access key gets InvalidAccessKeyId. Validation is fail-loud: any

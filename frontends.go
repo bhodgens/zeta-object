@@ -9,7 +9,10 @@
 package main
 
 import (
+	"context"
+	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -18,15 +21,22 @@ import (
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/backend"
 	"github.com/bhodgens/zeta-object/internal/frontend"
+	ftp "github.com/bhodgens/zeta-object/internal/frontend/ftp"
 	s3 "github.com/bhodgens/zeta-object/internal/frontend/s3"
+	sftp "github.com/bhodgens/zeta-object/internal/frontend/sftp"
 	"github.com/bhodgens/zeta-object/internal/frontend/webdav"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // frontendFactories maps config Type -> constructor. Future frontends
-// (ftp/sftp, owncloud — see their GH issues) add one entry each. The
-// webdav factory builds the Basic authenticator over the process identity
-// registry (webdav-2026-09 leaf 04 Task 3: same auth model as the s3
-// frontend's adapter, rendered as a Basic challenge).
+// (owncloud — see its GH issue) add one entry each. The webdav factory
+// builds the Basic authenticator over the process identity registry
+// (webdav-2026-09 leaf 04 Task 3: same auth model as the s3 frontend's
+// adapter, rendered as a Basic challenge). The ftp/sftp factories build the
+// non-HTTP frontends (sftp-ftp-2026-09 leaves 03/04): each takes the
+// process backend resolver (same data plane as s3), the identity registry
+// (USER/PASS / pubkey adapters), and the shared TLS cert pair (ftp AUTH TLS
+// reuses it; sftp uses its own SSH host key instead).
 var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, creds auth.CredentialSource) (frontend.Frontend, error){
 	"s3": func(cfg FrontendConfig, b backend.Backend, creds auth.CredentialSource) (frontend.Frontend, error) {
 		return s3.New(b, s3.WithCredentialSource(creds)), nil
@@ -38,6 +48,149 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 		authnr := auth.NewBasicAuthenticator(identityRegistry)
 		return webdav.New(b, webdav.Config{Bucket: cfg.Bucket}, webdav.WithAuthenticator(authnr))
 	},
+	"ftp": func(cfg FrontendConfig, b backend.Backend, creds auth.CredentialSource) (frontend.Frontend, error) {
+		if identityRegistry == nil {
+			return nil, fmt.Errorf("ftp frontend requires an identity registry (auth configuration failed earlier?)")
+		}
+		if cfg.Bucket != "" {
+			return nil, fmt.Errorf(`frontend type "ftp" does not accept the "bucket" key (webdav only)`)
+		}
+		if err := validateOptions(cfg.Type, cfg.Options, ftp.KnownOptionKeys); err != nil {
+			return nil, err
+		}
+		tlsCfg, err := loadServerTLSCertPair()
+		if err != nil {
+			return nil, err
+		}
+		ftpCfg, err := ftp.ConfigFromOptions(cfg.ListenAddr, cfg.Options, tlsCfg,
+			ftp.NewRegistryVerifier(identityRegistry))
+		if err != nil {
+			return nil, err
+		}
+		return ftp.New(backendResolver(), ftpCfg)
+	},
+	"sftp": func(cfg FrontendConfig, b backend.Backend, creds auth.CredentialSource) (frontend.Frontend, error) {
+		if identityRegistry == nil {
+			return nil, fmt.Errorf("sftp frontend requires an identity registry (auth configuration failed earlier?)")
+		}
+		if cfg.Bucket != "" {
+			return nil, fmt.Errorf(`frontend type "sftp" does not accept the "bucket" key (webdav only)`)
+		}
+		if err := validateOptions(cfg.Type, cfg.Options, sftp.KnownOptionKeys); err != nil {
+			return nil, err
+		}
+		sftpCfg, err := sftp.ConfigFromOptions(cfg.ListenAddr, cfg.Options, identityRegistry)
+		if err != nil {
+			return nil, err
+		}
+		return sftp.New(backendResolver(), sftpCfg)
+	},
+}
+
+// validateOptions checks every options key is known to the owning frontend
+// (fail-loud; the error names the key and the known set).
+func validateOptions(frontendType string, options map[string]string, known map[string]bool) error {
+	for k := range options {
+		if !known[k] {
+			knownList := make([]string, 0, len(known))
+			for name := range known {
+				knownList = append(knownList, name)
+			}
+			sort.Strings(knownList)
+			return fmt.Errorf("frontend %q: unknown option key %q (known: %v)", frontendType, k, knownList)
+		}
+	}
+	return nil
+}
+
+// backendResolver resolves a bucket to its Backend through the same
+// config-driven table the s3 handlers use (installed by initBackendLookup
+// before frontends are constructed in main(); errors here abort startup).
+func backendResolver() backend.Backend {
+	return &perBucketBackend{lookup: backendFor}
+}
+
+// perBucketBackend routes each bucket to its configured Backend via the
+// process resolver (the ftp/sftp frontends speak whole-bucket paths, so the
+// per-bucket selection semantics match s3 exactly).
+type perBucketBackend struct {
+	lookup func(bucket string) (backend.Backend, error)
+}
+
+func (p *perBucketBackend) backendForBucket(bucket string) (backend.Backend, error) {
+	if p == nil || p.lookup == nil {
+		return nil, fmt.Errorf("backend resolver not installed")
+	}
+	return p.lookup(bucket)
+}
+
+func (p *perBucketBackend) Get(ctx context.Context, bucket, key string, opts objectmodel.GetOptions) (io.ReadCloser, objectmodel.Object, error) {
+	b, err := p.backendForBucket(bucket)
+	if err != nil {
+		return nil, objectmodel.Object{}, err
+	}
+	return b.Get(ctx, bucket, key, opts)
+}
+
+func (p *perBucketBackend) Put(ctx context.Context, bucket, key string, data io.Reader, size int64, opts objectmodel.PutOptions) (objectmodel.Object, error) {
+	b, err := p.backendForBucket(bucket)
+	if err != nil {
+		return objectmodel.Object{}, err
+	}
+	return b.Put(ctx, bucket, key, data, size, opts)
+}
+
+func (p *perBucketBackend) Delete(ctx context.Context, bucket, key string) error {
+	b, err := p.backendForBucket(bucket)
+	if err != nil {
+		return err
+	}
+	return b.Delete(ctx, bucket, key)
+}
+
+func (p *perBucketBackend) Stat(ctx context.Context, bucket, key string) (objectmodel.Object, error) {
+	b, err := p.backendForBucket(bucket)
+	if err != nil {
+		return objectmodel.Object{}, err
+	}
+	return b.Stat(ctx, bucket, key)
+}
+
+func (p *perBucketBackend) List(ctx context.Context, bucket string, params objectmodel.ListParams) (objectmodel.ListPage, error) {
+	b, err := p.backendForBucket(bucket)
+	if err != nil {
+		return objectmodel.ListPage{}, err
+	}
+	return b.List(ctx, bucket, params)
+}
+
+func (p *perBucketBackend) Buckets(ctx context.Context) ([]objectmodel.BucketInfo, error) {
+	b, err := p.backendForBucket("")
+	if err != nil {
+		return nil, err
+	}
+	return b.Buckets(ctx)
+}
+
+func (p *perBucketBackend) Capabilities() objectmodel.CapabilitySet {
+	b, err := p.backendForBucket("")
+	if err != nil {
+		return objectmodel.CapabilitySet{}
+	}
+	return b.Capabilities()
+}
+
+// loadServerTLSCertPair loads the server certFile/keyFile for FTP AUTH TLS
+// (explicit TLS reuses the HTTPS cert pair — no new config keys).
+func loadServerTLSCertPair() (*tls.Config, error) {
+	cert, err := tls.LoadX509KeyPair(serverConfig.CertFile, serverConfig.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("ftp frontend: loading certFile/keyFile for AUTH TLS: %w", err)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}, nil
 }
 
 // frontendMount pairs a constructed frontend with its listen address
@@ -99,6 +252,13 @@ func buildFrontends(cfg []FrontendConfig, b backend.Backend, creds auth.Credenti
 func mountFrontends(mux *http.ServeMux, mounts []frontendMount) (shared []frontend.Frontend, extra []listenerSpec, err error) {
 	for _, m := range mounts {
 		if m.listenAddr == "" {
+			// A non-HTTP frontend (FTP/SFTP) cannot express itself as an
+			// http.Handler — mounting it on the shared mux would serve its
+			// 501 stub on every path. Loud startup error instead
+			// (sftp-ftp-2026-09 master Contract A).
+			if nh, ok := m.frontend.(frontend.NonHTTPFrontend); ok {
+				return nil, nil, fmt.Errorf("frontend %q is a non-HTTP frontend and requires its own listenAddr (it cannot share the default HTTPS mux)", nh.Name())
+			}
 			if len(shared) > 0 {
 				return nil, nil, fmt.Errorf("frontend %q cannot share the default listener: frontend %q is already mounted on it (give one of them its own listenAddr)",
 					m.frontend.Name(), shared[0].Name())

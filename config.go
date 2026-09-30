@@ -72,17 +72,20 @@ type AuthConfig struct {
 }
 
 // FrontendConfig is one entry of the "frontends" config array (leaf 03).
-// Type names a registered frontend factory ("s3" today; "webdav", "ftp"
-// later). ListenAddr empty = share the default listener's mux; set it to
-// give this frontend its own dedicated TLS listener. Bucket is webdav-only
-// (single-bucket mode): non-empty pins that frontend's root to the named
-// bucket. Unknown keys inside an entry abort startup via
-// FrontendConfig.UnmarshalJSON (webdav-2026-09 leaf 01 Contract 2:
-// fail-loud).
+// Type names a registered frontend factory ("s3", "webdav", "ftp", "sftp").
+// ListenAddr empty = share the default listener's mux; set it to give this
+// frontend its own dedicated listener. Bucket is webdav-only (single-bucket
+// mode): non-empty pins that frontend's root to the named bucket. Options
+// carries protocol-specific string settings for the owning factory (FTP
+// passive-port range, SFTP host-key path, ...); unknown keys are rejected by
+// the owning factory (fail-loud). Unknown JSON keys inside an entry abort
+// startup via FrontendConfig.UnmarshalJSON (webdav-2026-09 leaf 01 Contract
+// 2: fail-loud).
 type FrontendConfig struct {
-	Type       string `json:"type"`
-	ListenAddr string `json:"listenAddr,omitempty"`
-	Bucket     string `json:"bucket,omitempty"`
+	Type       string            `json:"type"`
+	ListenAddr string            `json:"listenAddr,omitempty"`
+	Bucket     string            `json:"bucket,omitempty"`
+	Options    map[string]string `json:"options,omitempty"`
 }
 
 // UnmarshalJSON decodes a frontends entry with DisallowUnknownFields: a

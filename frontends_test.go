@@ -54,7 +54,7 @@ func TestBuildFrontends(t *testing.T) {
 			name:        "unknown type rejected with known list",
 			cfg:         []FrontendConfig{{Type: "gopher"}},
 			wantErr:     true,
-			errContains: "known: [s3 webdav]",
+			errContains: "known: [ftp s3 sftp webdav]",
 		},
 		{
 			name:      "webdav mode A registers",

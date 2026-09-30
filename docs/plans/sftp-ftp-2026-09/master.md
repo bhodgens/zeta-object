@@ -195,3 +195,69 @@ success that faked the capability.
       re-measured if any code moved between packages (AGENTS.md rule).
 - [ ] README documents the new frontends, config keys, and the license
       policy note.
+
+## Implementation record (2026-09-30)
+
+All 7 leaves implemented on `main` at 955779b (auth tree 4a11572 + WebDAV
+955779b prerequisites landed). Gates: `make fmt`, `make lint`, `make test`,
+`make build` green; `make e2e` green — 22/22 cases, 311 asserts, 0 failures
+(cases 20-ftp, 21-sftp, 22-interop-rclone added; case 16's known-types
+assert updated for the two new registrations).
+
+- **Leaf 01** — `internal/frontend/frontend.go` additive `NonHTTPFrontend`
+  (NonHTTPAddr/Serve/Stop); `FrontendConfig.Options` map (omitempty,
+  decode-only); `mountFrontends` rejects a shared-mux NonHTTP mount (loud
+  error naming the frontend + "requires its own listenAddr"); `main.go`
+  type-asserts the dedicated-listener path: NonHTTP frontends get a raw
+  `net.Listen` + `Serve` goroutine drained through `Stop()` in the existing
+  graceful-shutdown fan. Backward compatibility proven by the untouched
+  s3-only startup tests.
+- **Leaf 02** — `docs/licenses/THIRD-PARTY-LICENSES.md`: all six modules
+  (4 planned + 2 transitive) read from the module cache — ftpserverlib
+  v0.32.4 MIT (license.txt), pkg/sftp v1.13.11 BSD-2-Clause, x/crypto
+  v0.57.0 BSD-3-Clause, jlaffaye/ftp v0.2.4 ISC (test-only), kr/fs v0.1.0
+  BSD-3-Clause, afero v1.15.0 Apache-2.0. GATE PASSED — no copyleft.
+- **Leaf 03** — `internal/frontend/ftp` on ftpserverlib: afero.Fs driver
+  over Backend (Contract C), AUTH TLS explicit reusing certFile/keyFile,
+  passive-port + publicIP options, fail-loud factory, REST rejected
+  (551-style), SITE disabled, active mode disabled (passive-only).
+- **Leaf 04** — `internal/frontend/sftp` on pkg/sftp + x/crypto/ssh:
+  Handlers triple over Backend, host-key load-or-generate with persisted
+  fingerprint (ed25519, 0600), password + public-key auth via
+  RegistryVerifier/RegistryKeyChecker over the LANDED auth registry
+  (LookupByBasicCredential / AuthenticatePublicKey), setstat →
+  PERMISSION_DENIED, symlink/readlink → OP_UNSUPPORTED.
+- **Leaf 05** — both frontends gate through `frontend.AuthorizeRequest`
+  before every storage touch (zero Backend calls on denied paths, tested
+  via recording fakes); FTP denials 550 / auth 530; SFTP denials
+  PERMISSION_DENIED (os.ErrPermission client-side), unsupported OP_
+  UNSUPPORTED; StaticVerifier-style fallbacks live only in tests.
+- **Leaf 06** — conformance suite instantiated in both packages; e2e cases
+  20 (curl FTP + FTPS + read-only negative + fail-loud), 21 (sftp CLI key
+  auth round-trip + host-key + wrong-key/password negatives), 22 (rclone
+  both remotes + S3 parity; soft-skips when rclone absent — rclone is NOT
+  installed here, so 22 exercised its skip path while 20/21 carry the
+  AGENTS.md hard-rule wire coverage).
+- **Leaf 07** — config.json.example frontends block (ftp/sftp entries +
+  option keys), README "FTP / FTPS frontend" + "SFTP frontend" +
+  "Licenses & dependencies" sections with client examples and mapping
+  tables; consistency greps pass both directions; the uncommented
+  config.json.example JSON still parses.
+
+Deviations from leaf contracts (code wins):
+1. ftpserverlib's ClientDriver is afero.Fs — the driver implements it
+   directly (as the leaf required) plus the FileList/FileTransfer/RemoveDir
+   convenience extensions (the wire commands need them; the leaf's
+   "ReadDir" listing path routes through the extension).
+2. STOR buffers the upload and issues ONE `Put` with the exact byte count
+   on Close (FTP carries no size hint; documented in the driver). SFTP
+   writes buffer the same way (WriteAt offsets are sequential-only;
+   out-of-order writes → OP_UNSUPPORTED, never silent corruption).
+3. `RemoveAll` (recursive delete) is rejected 502 in FTP — a List+Delete
+   loop would be silent emulation of a directory semantic; the leaf did
+   not pin this case.
+4. The SFTP identity rides ssh.Permissions.CriticalOptions (rendered
+   grants string) — x/crypto/ssh has no other per-connection callback→
+   session state channel; round-trip is lossless and tested.
+5. Leaf 06's suggested case numbers 18/19/20 were taken (auth tree + webdav
+   landed first); the cases took 20/21/22 as the task brief directed.

@@ -67,7 +67,13 @@ func TestLoadConfig_Frontends(t *testing.T) {
 				t.Fatalf("Frontends = %+v, want %+v", cfg.Frontends, tt.want)
 			}
 			for i := range tt.want {
-				if cfg.Frontends[i] != tt.want[i] {
+				// Field-wise compare: FrontendConfig carries an Options map
+				// (sftp-ftp-2026-09 leaf 01), which makes the struct
+				// non-comparable.
+				if cfg.Frontends[i].Type != tt.want[i].Type ||
+					cfg.Frontends[i].ListenAddr != tt.want[i].ListenAddr ||
+					cfg.Frontends[i].Bucket != tt.want[i].Bucket ||
+					!stringMapsEqual(cfg.Frontends[i].Options, tt.want[i].Options) {
 					t.Fatalf("Frontends[%d] = %+v, want %+v", i, cfg.Frontends[i], tt.want[i])
 				}
 			}
@@ -118,5 +124,40 @@ func TestLoadConfigUnknownBucketObjectKeyFails(t *testing.T) {
 	}
 	if err := loadConfig(cfgPath); err != nil {
 		t.Fatalf("loadConfig with valid bucket object form: %v", err)
+	}
+}
+
+// stringMapsEqual compares two possibly-nil string maps by content
+// (FrontendConfig.Options made the struct non-comparable).
+func stringMapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
+}
+
+// sftp-ftp-2026-09 leaf 01 Contract B: the options map decodes on frontends
+// entries; absent options decodes to nil (backward compatible).
+func TestLoadConfig_FrontendOptions(t *testing.T) {
+	cfg := loadConfigForTest(t, writeTempConfig(t,
+		`{"frontends":[{"type":"ftp","listenAddr":":2121","options":{"passivePortMin":"50000","passivePortMax":"50100"}},{"type":"s3"}]}`))
+	if len(cfg.Frontends) != 2 {
+		t.Fatalf("Frontends = %+v, want 2 entries", cfg.Frontends)
+	}
+	ftp := cfg.Frontends[0]
+	if ftp.Type != "ftp" || ftp.ListenAddr != ":2121" {
+		t.Fatalf("ftp entry = %+v", ftp)
+	}
+	want := map[string]string{"passivePortMin": "50000", "passivePortMax": "50100"}
+	if !stringMapsEqual(ftp.Options, want) {
+		t.Fatalf("Options = %+v, want %+v", ftp.Options, want)
+	}
+	if cfg.Frontends[1].Options != nil {
+		t.Fatalf("absent options must decode to nil, got %+v", cfg.Frontends[1].Options)
 	}
 }

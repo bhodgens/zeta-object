@@ -275,6 +275,98 @@ zeta-object speaks WebDAV (RFC 4918, class 1 subset) so macOS Finder, Linux davf
 
 No locking (davfs2 needs `use_locks 0`), no versioning, no quotas, no dead properties, no collection COPY/MOVE, no Depth-infinity PROPFIND. Wire-level coverage lives in e2e case `scripts/e2e/cases/19-webdav.sh`; the mount-level checks above are manual by design (they need a kernel filesystem and interactive cert trust).
 
+## FTP / FTPS frontend
+
+zeta-object speaks FTP with explicit FTPS (AUTH TLS) so lftp, curl, WinSCP, and cron scripts can move files without an S3 client. Every storage touch goes through the same neutral object model the S3 frontend uses — an object uploaded over FTP is byte-identical to the S3 view of the same key.
+
+### Enabling
+
+```jsonc
+"frontends": [
+  { "type": "s3" },
+  { "type": "ftp", "listenAddr": ":2121",
+    "options": { "passivePortMin": "50000", "passivePortMax": "50100", "publicIP": "127.0.0.1" } }
+]
+```
+
+*   `type` (required): `ftp`. `listenAddr` (REQUIRED): FTP is a raw-TCP protocol and cannot share the HTTPS mux — an entry without its own port aborts startup.
+*   `passivePortMin` / `passivePortMax`: the passive data-channel port range (default: kernel-assigned). Set a range when a firewall sits between client and server; open the same range there.
+*   `publicIP`: the address advertised in PASV replies (default: the listener's IP). Set it to the address clients can actually reach when behind NAT.
+*   **FTPS is explicit (AUTH TLS)**: the control channel upgrades on demand and the data channel follows `PROT P`. It reuses the top-level `certFile`/`keyFile` — no new config keys. Plain FTP keeps working on the same port; TLS 1.2 is the floor.
+
+### Command mapping
+
+| FTP command | Object-model call | Notes |
+|---|---|---|
+| `LIST` / `NLST` / `MLSD` | `List` (prefix + delimiter `/`) | buckets are top-level directories; common prefixes render as directories |
+| `STOR` (upload) | `Put` (single-shot, exact size) | no multipart emulation; `REST`/resume is rejected |
+| `RETR` (download) | `Get` | no Range mapping — restart requests are rejected |
+| `DELE` | `Delete` | |
+| `RMD` | `Delete` of the `dir/` marker | missing marker ⇒ `550` |
+| `MKD` | `Put` of the zero-byte `dir/` marker | consistent with the fs layout |
+| `SIZE` / `MDTM` / `STAT` | `Stat` | |
+| `RNFR` / `RNTO` | `Get` + `Put` + `Delete` | no atomic-rename guarantee |
+| `SITE`, `CHMOD`-style commands | rejected | `502`-class — never silent emulation |
+
+### Errors you will see
+
+`550` for missing objects/directories and grant denials, `530` for failed login, `502` for operations the capability set cannot express (no conditional reads, no multipart, no server-side copy guarantees).
+
+### Client examples
+
+```sh
+# plain FTP
+curl --ftp-pasv -u ACCESSKEY:SECRETKEY -T file.txt ftp://127.0.0.1:2121/mybucket/file.txt
+curl --ftp-pasv -u ACCESSKEY:SECRETKEY ftp://127.0.0.1:2121/mybucket/file.txt
+# explicit FTPS (self-signed cert: --insecure / --ftp-skip-pasv-ip as needed)
+curl --ftp-ssl --insecure --ftp-pasv -u ACCESSKEY:SECRETKEY ftp://127.0.0.1:2121/mybucket/file.txt
+```
+
+Wire-level coverage lives in e2e case `scripts/e2e/cases/20-ftp.sh` (plain + FTPS + read-only-credential negatives).
+
+## SFTP frontend
+
+zeta-object speaks the SFTP subsystem over SSH so `sftp`, WinSCP, and rclone (`:sftp:`) can use the identity model directly — including public-key auth via each identity's `sshPublicKeys` config.
+
+### Enabling
+
+```jsonc
+"frontends": [
+  { "type": "s3" },
+  { "type": "sftp", "listenAddr": ":2022",
+    "options": { "hostKeyFile": "certs/host_ed25519" } }
+]
+```
+
+*   `type` (required): `sftp`. `listenAddr` (REQUIRED): SFTP rides SSH and cannot share the HTTPS mux.
+*   `hostKeyFile` (REQUIRED): the SSH host key path. The key auto-generates there on first start (ed25519, mode 0600) and is REUSED after — clients pin host keys, so the file must be stable across restarts. Back it up; a regenerated key makes every client scream about a changed host key.
+*   `allowPasswordAuth` (default `"true"`): `"false"` = public-key only.
+
+### Auth
+
+*   **Password**: the username is an identity `accessKey`, the password its `secretKey` (same namespace as S3 SigV4 and WebDAV Basic).
+*   **Public key**: add authorized_keys-format lines to the identity's `sshPublicKeys` config. One key resolves to exactly one identity across the whole registry (duplicates abort startup). Unknown keys are rejected at the SSH auth layer — no subsystem is opened.
+*   Grants apply per bucket exactly as everywhere else: read-only identities can browse and download but every write answers `SSH_FX_PERMISSION_DENIED`.
+
+### Command mapping and degradation
+
+Reads/writes/removes map 1:1 onto `Get`/`Put`/`Delete`; `readdir` maps to `List` (delimiter `/`, buckets as top-level directories); `mkdir`/`rmdir` manage the zero-byte `dir/` marker; `stat` maps to `Stat`. Degradation is protocol-appropriate, never silent emulation: `setstat`/`fsetstat` (chmod/chown/utimes) → `SSH_FX_PERMISSION_DENIED`; `symlink`/`readlink` → `SSH_FX_OP_UNSUPPORTED`; `rename` is `Get`+`Put`+`Delete` (no atomicity guarantee); there is no multipart, no conditional read, no versioning.
+
+### Client examples
+
+```sh
+# key auth (server host key pinned after first connect)
+sftp -P 2022 -i ~/.ssh/id_ed25519 ACCESSKEY@127.0.0.1
+# rclone
+rclone copyto file.txt :sftp,host=127.0.0.1,port=2022,user=ACCESSKEY:/mybucket/file.txt
+```
+
+Wire-level coverage lives in e2e case `scripts/e2e/cases/21-sftp.sh` (key-auth round-trip, host-key generation, wrong-key/wrong-password negatives).
+
+## Licenses & dependencies
+
+The FTP/FTPS and SFTP frontends are the first linked third-party Go dependencies in this repo. Their licenses were audited from the module cache (not from memory) and recorded in [`docs/licenses/THIRD-PARTY-LICENSES.md`](docs/licenses/THIRD-PARTY-LICENSES.md): `github.com/fclairamb/ftpserverlib` (MIT), `github.com/pkg/sftp` (BSD-2-Clause), `golang.org/x/crypto` (BSD-3-Clause), plus the test-only `github.com/jlaffaye/ftp` (ISC) and transitive `github.com/spf13/afero` (Apache-2.0) / `github.com/kr/fs` (BSD-3-Clause). Policy: GPL/AGPL dependencies are acceptable ONLY as separate subprocesses — never vendored, never linked into shipped binaries.
+
 ## Metadata Capability Endpoints (ZFS events)
 
 If a bucket's backing dataset is ZFS with the `org.openzfs:events` pool feature enabled (file-level operation history per dataset), zeta-object detects it and exposes the log over S3-style subresources:
