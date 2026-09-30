@@ -135,7 +135,7 @@ The server loads configuration from `config.json` (or the path specified by the
 | Key | Default | Meaning |
 |---|---|---|
 | `dataDir` | `./data/` | Root directory for auto-discovered buckets |
-| `listenAddr` | `:8443` | HTTPS listen address; `MINIS3_LISTEN_ADDR` env var overrides |
+| `listenAddr` | `:8443` | HTTPS listen address; `ZETAOBJECT_LISTEN_ADDR` env var overrides |
 | `certFile` | `certs/cert.pem` | TLS certificate path |
 | `keyFile` | `certs/key.pem` | TLS private key path |
 | `buckets` | `{}` | Bucket name to custom filesystem path (bare string, or object `{ "path": ..., "backend": ... }`) |
