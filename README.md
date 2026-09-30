@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.jpeg" alt="zeta-object logo: hexagonal Z emblem with the OBJECT FILE GATEWAY tagline" width="640">
+</p>
+
 # zeta-object
 
 **A single-binary S3 server with filesystem superpowers.**
