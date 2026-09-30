@@ -235,23 +235,81 @@ func TestPartialRenameMatchesSuffixKey(t *testing.T) {
 	}
 }
 
-// TestNewestObjIDMappingWins pins wraparound object-id reuse: the log is
-// newest-first, and when an object id is reused after compaction the NEWER
-// record's mapping must win (it is what later records in the window
-// reference), never the stale one.
-func TestNewestObjIDMappingWins(t *testing.T) {
-	// Newest-first stream: obj 300 is currently dir 'fresh' (parent 34),
-	// older record shows the same id as file 'stale'.
+// TestObjIDReuseLastSeenWins pins txg-scoped mapping under wraparound
+// object-id reuse (bughunt H6/M8): the log is OLDEST-FIRST (txg ascending
+// — pinned by the live ordcap fixture), and when an object id is reused
+// (delete + recreate / allocator wraparound) each record must resolve
+// through the mapping AS OF ITS OWN POSITION: the older record keeps the
+// stale name, later records resolve under the fresh one. A single
+// for-all-time mapping (either first-seen or last-seen) rewrites history
+// for one side.
+func TestObjIDReuseLastSeenWins(t *testing.T) {
+	// Oldest-first: obj 300 was file 'stale' (txg 30), then became dir
+	// 'fresh' (txg 50); f.txt was created under it at txg 40 — while the
+	// id still mapped to 'stale'. Historical resolution:
+	//   - f.txt's parent 300 at txg 40 → "stale/f.txt" (the path AS IT WAS)
+	//   - fresh's own create at txg 50 → key "fresh"
 	canned := "[" +
-		`{"txg":50,"object":300,"op":"CREATE","name":"fresh","parent":34},` +
+		`{"txg":30,"object":300,"op":"CREATE","name":"stale","parent":34},` +
 		`{"txg":40,"object":301,"op":"CREATE","name":"f.txt","parent":300},` +
-		`{"txg":30,"object":300,"op":"CREATE","name":"stale","parent":0}]`
-	events, err := historyViaRunner(t, canned, "fresh/f.txt")
+		`{"txg":50,"object":300,"op":"REMOVE","name":"stale","parent":34},` +
+		`{"txg":60,"object":300,"op":"CREATE","name":"fresh","parent":34},` +
+		`{"txg":70,"object":302,"op":"CREATE","name":"g.txt","parent":300}]`
+	events, err := historyViaRunner(t, canned, "")
 	if err != nil {
 		t.Fatalf("History: %v", err)
 	}
-	if len(events) != 1 || events[0].Key != "fresh/f.txt" {
-		t.Fatalf("events = %+v, want fresh/f.txt (newest mapping wins)", events)
+	byTxg := map[uint64]ObjectEvent{}
+	for _, e := range events {
+		byTxg[e.Txg] = e
+	}
+	// Pre-reuse record keeps the historical path.
+	if e := byTxg[40]; e.Key != "stale/f.txt" {
+		t.Fatalf("txg 40 (pre-reuse) = %q, want stale/f.txt (historical mapping)", e.Key)
+	}
+	// Post-reuse record resolves under the fresh name.
+	if e := byTxg[70]; e.Key != "fresh/g.txt" {
+		t.Fatalf("txg 70 (post-reuse) = %q, want fresh/g.txt (current mapping)", e.Key)
+	}
+	// And the reused id's own records keep their per-time names.
+	if e := byTxg[30]; e.Key != "stale" {
+		t.Fatalf("txg 30 = %q, want stale", e.Key)
+	}
+	if e := byTxg[60]; e.Key != "fresh" {
+		t.Fatalf("txg 60 = %q, want fresh", e.Key)
+	}
+}
+
+// TestInWindowDirRenameHistoricalPaths pins H6's rename case: a directory
+// renamed mid-window resolves events BEFORE the rename under the old name
+// and events AFTER it under the new name, instead of rewriting all history
+// to the newest label.
+func TestInWindowDirRenameHistoricalPaths(t *testing.T) {
+	// dir (obj 400) created as "olddir" at txg 10, f.txt created under it
+	// at txg 20, dir RENAMED to "newdir" at txg 30 (RENAME on the dir id
+	// relabels it going forward), g.txt created under it at txg 40.
+	canned := "[" +
+		`{"txg":10,"object":400,"op":"CREATE","name":"olddir","parent":34},` +
+		`{"txg":20,"object":401,"op":"CREATE","name":"f.txt","parent":400},` +
+		`{"txg":30,"object":400,"op":"RENAME","name":"newdir","old_name":"olddir","parent":34,"old_parent":34},` +
+		`{"txg":40,"object":402,"op":"CREATE","name":"g.txt","parent":400}]`
+	events, err := historyViaRunner(t, canned, "")
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	byTxg := map[uint64]ObjectEvent{}
+	for _, e := range events {
+		byTxg[e.Txg] = e
+	}
+	if e := byTxg[20]; e.Key != "olddir/f.txt" {
+		t.Fatalf("txg 20 (pre-rename) = %q, want olddir/f.txt", e.Key)
+	}
+	if e := byTxg[40]; e.Key != "newdir/g.txt" {
+		t.Fatalf("txg 40 (post-rename) = %q, want newdir/g.txt", e.Key)
+	}
+	// The rename record itself: new key newdir, old key olddir.
+	if e := byTxg[30]; e.Key != "newdir" || e.OldKey != "olddir" {
+		t.Fatalf("txg 30 rename = %+v, want newdir <- olddir", e)
 	}
 }
 

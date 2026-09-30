@@ -88,9 +88,24 @@ func TestParseEventsOutput(t *testing.T) {
 		},
 		{
 			name: "future fields tolerated and mapped",
-			in:   `[{"txg":9,"object":2,"op":"SETATTR","name":"x","time":500,"uid":1000,"gid":100,"mode":420,"attrs":7}]` + "\n",
+			in:   `[{"txg":9,"object":2,"op":"SETATTR","name":"x","time":1780000000000000000,"uid":1000,"gid":100,"mode":420,"attrs":7}]` + "\n",
 			want: []ObjectEvent{{Op: "setattr", Key: "x", Txg: 9, UID: 1000, GID: 100,
-				Timestamp: time.Unix(0, 500)}},
+				Timestamp: time.Unix(0, 1780000000000000000)}},
+		},
+		{
+			// Boot-relative hrtime (bughunt M2): ~10 days of uptime is NOT
+			// wall-clock — it must map to the zero time (unknown on the
+			// wire), never a fabricated 1970 date that would break the
+			// Since filter.
+			name: "boot-relative time stays zero",
+			in:   `[{"txg":9,"object":2,"op":"SETATTR","name":"x","time":10000000000}]` + "\n",
+			want: []ObjectEvent{{Op: "setattr", Key: "x", Txg: 9, Timestamp: time.Time{}}},
+		},
+		{
+			// Just under the plausibility floor (2001-01-01 unix ns): zero.
+			name: "pre-2001 time stays zero",
+			in:   `[{"txg":9,"object":2,"op":"SETATTR","name":"x","time":978307199999999999}]` + "\n",
+			want: []ObjectEvent{{Op: "setattr", Key: "x", Txg: 9, Timestamp: time.Time{}}},
 		},
 		{
 			name:    "garbage output",

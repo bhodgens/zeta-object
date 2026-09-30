@@ -52,6 +52,33 @@ back to conservative bare-name/suffix matching — querying
 []. A wrong exact key would be worse than a broad match: it silently
 hides the only record of an object (the F-live-1 failure mode).
 
+## Reconstruction contract (post-H4/H5/H6/M8 fixes, 2026-09)
+
+The consumer (`reconstructPaths` in `zfs_events.go`) interprets every
+fixture under these rules, all pinned by tests:
+
+- OLDEST-FIRST (M8): records are processed in stream (txg) order; the
+  per-objid mapping is txg-scoped — each record resolves through the map
+  AS OF its own position (H6), so objid reuse and in-window directory
+  renames preserve pre-event paths instead of rewriting them.
+- Root election (H4): only KNOWN dirs (named records in-window, referenced
+  as a parent) vote; each climbs its resolvable ancestor chain to a
+  terminus above the map. The election requires CHAIN-TERMINUS UNANIMITY:
+  any dissenting terminus refuses detection. Frequency voting is gone (a
+  lost mid-chain dir must never out-vote the root).
+- Root's own records (H5): the dataset-root dir emits a nameless SETATTR
+  on ordinary activity (objid 34 in the ordcap fixture). Nameless records
+  never enter the object map and never vote; the root may not be elected
+  as terminus "for itself".
+- Unresolvable parents / partial contract: when detection is refused (no
+  corroboration, or dissent), events keep their BARE names and match keys
+  conservatively (exact bare-name or `key` ends with `"/"+bare`). A wrong
+  EXACT key is worse than a broad match — the exact key silently hides the
+  only record of an object (the F-live-1 failure mode).
+- Timestamps (M2): a wire `time` value is mapped to wall-clock only when
+  >= 2001-01-01 unix ns; boot-relative hrtime stays zero (= unknown), so
+  the Since filter passes those events instead of filtering them all out.
+
 ## Regenerating on a real host
 
 On a host running the extended-metadata ZFS branch with a dataset that has

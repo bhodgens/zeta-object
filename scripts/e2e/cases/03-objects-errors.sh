@@ -40,6 +40,27 @@ assert_contains 'plain listing shows raw space key' "$LIST2" 'hello world file.t
 # the CLI re-encodes arguments itself, so it is not a clean encoder probe)
 s3req DELETE "/$BKT/hello%20world%20file.txt"
 assert_eq 'delete url-encoded spaced key → 204' 204 "$S3_STATUS"
+
+# H1: the bare key "." aliases the bucket directory itself. The backend
+# seam rejects it (InvalidArgument), and on the wire the shared mux
+# normalizes the "/." segment away (curl without --path-as-is sends
+# "/$BKT", i.e. a bucket-level request — never a key write). Pin the
+# WIRE-VISIBLE consequence: a dot-key PUT must NEVER materialize data at
+# the bucket path — the bucket must still be a working, listable bucket
+# with no stray "." object afterward (the bug made it vanish from
+# listings entirely).
+aws_ok 'dot-key put does not brick the bucket' s3api list-objects-v2 \
+	--bucket "$BKT" --endpoint-url "$ENDPOINT" --no-verify-ssl
+S3_STATUS=$(curl -sk -o /tmp/e2e03-dotbody -w '%{http_code}' \
+	--aws-sigv4 "aws:amz:us-east-1:s3" \
+	--user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" \
+	-X PUT "$BASE_URL/$BKT/." --data-binary 'brick' 2>/dev/null)
+assert_eq 'dot-key put never writes an object → bucket-level response' 409 "$S3_STATUS"
+LIST4=$(aws s3api list-objects-v2 --bucket "$BKT" \
+	--endpoint-url "$ENDPOINT" --no-verify-ssl 2>/dev/null)
+assert_eq 'no stray dot object after dot-key put' 0 \
+	"$(printf '%s' "$LIST4" | grep -c 'Key' || true)"
+rm -f /tmp/e2e03-dotbody
 LIST3=$(aws s3api list-objects-v2 --bucket "$BKT" \
 	--endpoint-url "$ENDPOINT" --no-verify-ssl 2>/dev/null)
 assert_eq 'spaced key gone after encoded delete' 0 "$(printf '%s' "$LIST3" | grep -c 'hello' || true)"

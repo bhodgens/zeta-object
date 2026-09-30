@@ -132,12 +132,13 @@ func validateKey(key string) error {
 	// silently alias one object. S3 keys are byte-exact; such keys are
 	// rejected as InvalidArgument instead of colliding.
 	//
-	// Exception: the bare key "." is S3-legal (a byte-exact key), but Clean
-	// folds "/." to "/" (regression review). It cannot alias another key
-	// (no other canonical key equals "/") and the traversal guard above
-	// already forbids real escapes, so it is allowed through; resolveDataPath
-	// handles it like any other key relative to the bucket dir.
-	if cleaned != "/"+key && (key != "." || cleaned != "/") {
+	// The bare key "." is rejected UNCONDITIONALLY (bughunt H1): it aliases
+	// the bucket directory itself (Join(bucketPath, ".") == bucketPath), so
+	// a Put into a not-yet-materialized bucket would write the data file AT
+	// the bucket path — the sidecar mkdir then fails, the residual-file rule
+	// keeps the stray file, and the bucket disappears from ListBuckets. No
+	// S3-legality argument survives a destructive on-disk mapping.
+	if cleaned != "/"+key {
 		return keyInvalidError(`object key must be in canonical form (no empty or "." path segments, no leading/trailing slash)`)
 	}
 	return nil

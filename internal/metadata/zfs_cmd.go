@@ -69,6 +69,14 @@ func ResolveDataset(ctx context.Context, path string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, zfsCmdTimeout)
 	defer cancel()
 
+	// Bound concurrent zfs processes (bughunt D5, same semaphore as
+	// runZFS): dataset resolution is per-request on ?events paths too.
+	select {
+	case zfsExecSem <- struct{}{}:
+		defer func() { <-zfsExecSem }()
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 	cmd := exec.CommandContext(ctx, "zfs", "get", "-H", "-o", "value", "name,mountpoint", path)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

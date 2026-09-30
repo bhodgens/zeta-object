@@ -240,17 +240,70 @@ func TestPutCapConfigurableViaOption(t *testing.T) {
 	}
 }
 
-// TestValidateKeyDotKeyAllowed pins the regression-review fix: the bare
-// S3-legal key "." must not be rejected by the canonical-form rule
-// (Clean folds "/." to "/"). It cannot alias any other canonical key.
-func TestValidateKeyDotKeyAllowed(t *testing.T) {
-	if err := validateKey("."); err != nil {
-		t.Fatalf(`validateKey(".") = %v, want nil`, err)
+// TestValidateKeyDotKeyRejected pins the bughunt H1 fix: the bare key "."
+// is rejected even though it is byte-exact S3-legal, because it aliases the
+// bucket directory itself (Join(bucketPath, ".") == bucketPath): a
+// fresh-bucket Put would write the data file AT the bucket path, the
+// sidecar mkdir would fail, and the bucket would vanish from ListBuckets.
+func TestValidateKeyDotKeyRejected(t *testing.T) {
+	if err := validateKey("."); err == nil {
+		t.Fatalf(`validateKey(".") = nil, want rejection (aliases the bucket dir)`)
 	}
 	// The reject set must still hold.
-	for _, k := range []string{"a//b", "a/./b", "/abs", "a/", "./a", "..", "a/../b"} {
+	for _, k := range []string{"a//b", "a/./b", "/abs", "a/", "./a", "..", "a/../b", "./a/b"} {
 		if err := validateKey(k); err == nil {
 			t.Fatalf("validateKey(%q) = nil, want rejection", k)
 		}
+	}
+}
+
+// TestPutDotKeyDoesNotBrickBucket is the object-level H1 pin: Put(bucket,
+// ".") must return an InvalidArgument-class error and must NOT create or
+// modify anything at the bucket path — including when the bucket is not yet
+// materialized on disk (the exact scenario that made the old exemption
+// destructive).
+func TestPutDotKeyDoesNotBrickBucket(t *testing.T) {
+	root := t.TempDir()
+	f, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := f.Put(ctx, "bkt", ".", strings.NewReader("x"), 1, objectmodel.PutOptions{}); err == nil {
+		t.Fatal(`Put(bkt, ".") = nil error, want InvalidArgument`)
+	} else if omErr := (*objectmodel.Error)(nil); !errors.As(err, &omErr) || omErr.Code != objectmodel.CodeInvalidArgument {
+		t.Errorf(`Put(bkt, ".") err = %v, want code InvalidArgument`, err)
+	}
+	// The bucket dir must be untouched: still a directory (not a file that
+	// a stray data write would have created AT the path), still empty.
+	fi, err := os.Stat(filepath.Join(root, "bkt"))
+	if err == nil {
+		if !fi.IsDir() {
+			t.Fatal("bucket path is not a directory after rejected Put — the H1 data-at-bucket-path write happened")
+		}
+		entries, err := os.ReadDir(filepath.Join(root, "bkt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("bucket dir not empty after rejected Put: %d entries", len(entries))
+		}
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("bucket path stat: %v", err)
+	}
+	// The bucket must still be usable and listable after the rejection.
+	mustPut(t, f, "bkt", "ok", "fine")
+	buckets, err := f.Buckets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, b := range buckets {
+		if b.Name == "bkt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("bucket bkt missing from ListBuckets after rejected '.' Put")
 	}
 }
