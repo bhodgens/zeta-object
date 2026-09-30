@@ -96,8 +96,14 @@ func TestInitializeForBucketInvalidDurationNotRegistered(t *testing.T) {
 // recordActivity branches (ResetOn filtering, unknown-activity no-op)
 // ---------------------------------------------------------------------------
 
-// TestRecordActivityResetOnFilter pins the ResetOn filter: activity types
-// outside the list do NOT re-arm the timer; listed ones do.
+// TestRecordActivityResetOnFilter pins the ResetOn filter through the
+// tracker's observable timer state: the reset path in recordActivity always
+// stops the armed timer and replaces it with a freshly armed one, while the
+// filter returns BEFORE touching the timer map. So an activity type OUTSIDE
+// ResetOn must leave the same *time.Timer armed (pointer unchanged), and a
+// listed type must re-arm it (a new timer replaces the old). No sleeping
+// needed; the 30m window never fires. Deleting the slices.Contains guard in
+// actions.go makes the unlisted-activity assertion fail.
 func TestRecordActivityResetOnFilter(t *testing.T) {
 	capture := &runnerCapture{}
 	swapActionRunner(t, capture.run)
@@ -110,19 +116,33 @@ func TestRecordActivityResetOnFilter(t *testing.T) {
 		ResetOn:  []string{"put"},
 	})
 
-	// "delete" is not in ResetOn: the timer is NOT stopped/re-armed. Probe
-	// via the tracker's timer: after a listed activity the deadline moved.
-	tr.mu.Lock()
-	armed := tr.timers[bucketDir] != nil
-	tr.mu.Unlock()
-	if !armed {
+	timerAt := func() *time.Timer {
+		tr.mu.RLock()
+		defer tr.mu.RUnlock()
+		return tr.timers[bucketDir]
+	}
+
+	initial := timerAt()
+	if initial == nil {
 		t.Fatal("initializeForBucket did not arm a timer")
 	}
 
-	// Unlisted activity: still registered as last activity, timer untouched
-	// (no panic, no fire). Listed activity: re-arm path executes cleanly.
+	// "delete" is not in ResetOn: the timer must NOT be stopped or re-armed —
+	// the identical timer stays armed with its original deadline.
 	tr.recordActivity(bucketDir, "delete")
+	if got := timerAt(); got != initial {
+		t.Error("unlisted activity 'delete' re-armed the timer: ResetOn filter did not apply")
+	}
+
+	// "put" IS in ResetOn: the reset path runs — the old timer is stopped and
+	// replaced by a fresh, still-armed timer.
 	tr.recordActivity(bucketDir, "put")
+	if got := timerAt(); got == initial {
+		t.Error("listed activity 'put' did not re-arm the timer (same timer pointer)")
+	}
+	if got := timerAt(); got == nil {
+		t.Error("listed activity left no timer armed")
+	}
 
 	if n := capture.count(); n != 0 {
 		t.Errorf("runner fired %d times inside the window, want 0", n)
