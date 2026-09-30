@@ -2,6 +2,12 @@
   <img src="logo.jpeg" alt="zeta-object logo: hexagonal Z emblem with the OBJECT FILE GATEWAY tagline" width="640">
 </p>
 
+<p align="center">
+  <img src="logo-icon.png" alt="zeta-object icon: glowing hexagonal Z emblem" width="96">
+  <br>
+  <sub>Square icon variant (<code>logo-icon.png</code>) for favicons and avatars.</sub>
+</p>
+
 # zeta-object
 
 **A single-binary S3 server with filesystem superpowers.**
