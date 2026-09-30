@@ -164,18 +164,21 @@ func (d *clientDriver) OpenFile(name string, flag int, perm os.FileMode) (afero.
 		return nil, mapBackendError(err)
 	}
 	if write {
-		return &writeFile{
-			fileBase: fileBase{name: path.Base("/" + key)},
-			d:        d, bucket: bucket, key: key,
+		wf := &writeFile{
+			d: d, bucket: bucket, key: key,
 			append: flag&os.O_APPEND != 0,
-		}, nil
+		}
+		wf.name = path.Base("/" + key)
+		return wf, nil
 	}
 	ctx := context.Background()
 	rc, obj, err := d.f.be.Get(ctx, bucket, key, objectmodel.GetOptions{})
 	if err != nil {
 		return nil, mapBackendError(err)
 	}
-	return &readFile{fileBase: fileBase{name: path.Base("/" + key)}, rc: rc, obj: obj}, nil
+	rf := &readFile{rc: rc, obj: obj}
+	rf.name = path.Base("/" + key)
+	return rf, nil
 }
 
 // Remove deletes an object (DELE). A "dir/" marker key is NOT removable via
@@ -463,6 +466,10 @@ type writeFile struct {
 	buf    bytes.Buffer
 	append bool // APPE: existing bytes are fetched first (still one Put)
 	filled bool
+	// aborted records an interrupted transfer (ftpserver.FileTransferError):
+	// Close must then refuse to Put the partial buffer over the stored object.
+	aborted     bool
+	transferErr error // first TransferError cause (nil → generic 451)
 }
 
 // Write accumulates upload bytes.
@@ -516,9 +523,35 @@ func (f *writeFile) Stat() (os.FileInfo, error) {
 	return dirFileInfo{name: f.name}, nil // size not final until Close
 }
 
+// TransferError implements ftpserver.FileTransferError: ftpserverlib calls
+// it BEFORE Close whenever a STOR did not complete (ABOR, dropped data
+// connection, mid-copy I/O error — handle_files.go:103 and :162 of
+// v0.32.4). The first error and the aborted flag are recorded so Close can
+// refuse to commit a partial body over a good object.
+func (f *writeFile) TransferError(err error) {
+	if f.aborted {
+		return // keep the first (root-cause) error
+	}
+	f.aborted = true
+	f.transferErr = err
+}
+
 // Close commits the buffered upload as ONE Put with the exact size
 // (streaming contract: the size parameter always matches the payload).
+// An ABORTED transfer never commits: no Put is issued, so the previously
+// stored object (if any) stays byte-intact, and the stored transfer error
+// (as an ftpError so the reply mapping keeps its 4xx/5xx class) is returned
+// so ftpserverlib reports failure. A clean Close still commits.
 func (f *writeFile) Close() error {
+	if f.aborted {
+		if f.transferErr != nil {
+			if fe, ok := errors.AsType[*ftpError](f.transferErr); ok {
+				return fe
+			}
+			return &ftpError{code: 451, message: "Transfer aborted: local error in processing (" + f.transferErr.Error() + ")"}
+		}
+		return &ftpError{code: 451, message: "Transfer aborted"}
+	}
 	payload := f.buf.Bytes()
 	_, err := f.d.f.be.Put(context.Background(), f.bucket, f.key,
 		bytes.NewReader(payload), int64(len(payload)), objectmodel.PutOptions{})
@@ -537,4 +570,8 @@ var (
 	_ afero.File             = (*writeFile)(nil)
 	_ ftpserver.FileTransfer = (*readFile)(nil)
 	_ ftpserver.FileTransfer = (*writeFile)(nil)
+	// F1: aborted transfers are notified via TransferError before Close
+	// (ftpserverlib v0.32.4 handle_files.go:103/:162), letting Close refuse
+	// to commit the partial buffer over the stored object.
+	_ ftpserver.FileTransferError = (*writeFile)(nil)
 )
