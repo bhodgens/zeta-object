@@ -60,11 +60,14 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 		}
 		// Mode B: the classic client speaks /remote.php/webdav/<bucket>/<path>
 		// and the wrapped webdav re-roots at the configured bucket, so the
-		// "/remote.php/webdav/<bucket>" prefix must be stripped before
-		// delegation (MKCOL of "<prefix>/dir" 409'd on the phantom parent).
-		ocPrefix := "/remote.php/webdav"
+		// bucket segment must be stripped before delegation (MKCOL of
+		// "<anything>/dir" 409'd on the phantom parent). The wrapper's
+		// serveHTTP strips the classic /remote.php/webdav prefix first
+		// (owncloud.go); this second strip removes the bucket segment that
+		// remains, whether or not the classic prefix was present.
+		ocPrefix := ""
 		if cfg.Bucket != "" {
-			ocPrefix += "/" + cfg.Bucket
+			ocPrefix = "/" + cfg.Bucket
 		}
 		oc, err := owncloud.NewWithPathPrefix(wd, ocPrefix)
 		if err != nil {
