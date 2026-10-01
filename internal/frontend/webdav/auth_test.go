@@ -4,6 +4,7 @@
 package webdav
 
 import (
+	"encoding/json"
 	"io"
 	"net/http/httptest"
 	"testing"
@@ -18,9 +19,9 @@ import (
 func basicAuth() *auth.BasicAuthenticator {
 	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
 		{Name: "rw", AccessKey: "ak-rw", SecretKey: "sk-rw"},
-		{Name: "ro", AccessKey: "ak-ro", SecretKey: "sk-ro", Grants: map[string]string{"photos": "readonly"}},
-		{Name: "prw", AccessKey: "ak-photos-rw", SecretKey: "sk-prw", Grants: map[string]string{"photos": "readwrite"}},
-		{Name: "bk", AccessKey: "ak-bk", SecretKey: "sk-bk", Grants: map[string]string{"backup": "readwrite"}},
+		{Name: "ro", AccessKey: "ak-ro", SecretKey: "sk-ro", Grants: rawGrants(map[string]string{"photos": "readonly"})},
+		{Name: "prw", AccessKey: "ak-photos-rw", SecretKey: "sk-prw", Grants: rawGrants(map[string]string{"photos": "readwrite"})},
+		{Name: "bk", AccessKey: "ak-bk", SecretKey: "sk-bk", Grants: rawGrants(map[string]string{"backup": "readwrite"})},
 	})
 	if err != nil {
 		panic(err)
@@ -172,7 +173,7 @@ func TestGrantMatrix_ReadWriteOnPhotos(t *testing.T) {
 
 func TestGrant_NoGrantsAtAll(t *testing.T) {
 	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
-		{Name: "ng", AccessKey: "ak-ng", SecretKey: "sk-ng", Grants: map[string]string{"unrelated": "readonly"}},
+		{Name: "ng", AccessKey: "ak-ng", SecretKey: "sk-ng", Grants: rawGrants(map[string]string{"unrelated": "readonly"})},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +195,7 @@ func TestGrant_NoGrantsAtAll(t *testing.T) {
 
 func TestGrant_ModeB_EffectiveBucketIsConfigured(t *testing.T) {
 	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
-		{Name: "ro", AccessKey: "ak-ro", SecretKey: "sk-ro", Grants: map[string]string{"photos": "readonly"}},
+		{Name: "ro", AccessKey: "ak-ro", SecretKey: "sk-ro", Grants: rawGrants(map[string]string{"photos": "readonly"})},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +221,7 @@ func TestGrant_CrossBucketCopy_IndependentChecks(t *testing.T) {
 	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
 		// Read on photos, write on backup — the exact cross-bucket split.
 		{Name: "split", AccessKey: "ak-split", SecretKey: "sk-split",
-			Grants: map[string]string{"photos": "readonly", "backup": "readwrite"}},
+			Grants: rawGrants(map[string]string{"photos": "readonly", "backup": "readwrite"})},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -254,7 +255,7 @@ func TestGrant_CheckPrecedesExistence(t *testing.T) {
 	// ak-ro has NO grant on "nope": even an EXISTING object there must
 	// 403, never 404 (grant check before existence — no leakage).
 	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
-		{Name: "ro", AccessKey: "ak-ro", SecretKey: "sk-ro", Grants: map[string]string{"photos": "readonly"}},
+		{Name: "ro", AccessKey: "ak-ro", SecretKey: "sk-ro", Grants: rawGrants(map[string]string{"photos": "readonly"})},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -287,4 +288,15 @@ func TestAuth_InternalFailureMaps500(t *testing.T) {
 	}
 	_ = do(f, "GET", "/", "", "", nil) // smoke: no panic
 	_ = objectmodel.ErrAccessDenied
+}
+
+// rawGrants adapts the legacy string-literal grant map to the dual-form
+// config type (leaf 09): semantics identical, fewer literal bytes.
+func rawGrants(m map[string]string) map[string]json.RawMessage {
+	out := make(map[string]json.RawMessage, len(m))
+	for k, v := range m {
+		b, _ := json.Marshal(v)
+		out[k] = b
+	}
+	return out
 }

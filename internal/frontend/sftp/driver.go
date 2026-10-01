@@ -50,6 +50,13 @@ func authorize(id auth.Identity, bucket string, write bool) error {
 	return frontendAuthorize(id, bucket, write)
 }
 
+// authorizeObject is the key-aware form (leaf 09): the resolved object key
+// rides through to auth.AuthorizeOp so prefix-scoped rich grants apply per
+// object (GET/PUT/Remove/Mkdir/Rmdir and rename's both ends).
+func authorizeObject(id auth.Identity, bucket, key string, write bool) error {
+	return frontendAuthorizeKey(id, bucket, key, write)
+}
+
 // --- FileGet (Get / reads) --------------------------------------------------
 
 type fileGet struct {
@@ -66,7 +73,7 @@ func (g *fileGet) Fileread(req *sftp.Request) (io.ReaderAt, error) {
 	if bucket == "" || key == "" {
 		return nil, errNoSuchFile
 	}
-	if err := authorize(g.id, bucket, false); err != nil {
+	if err := authorizeObject(g.id, bucket, key, false); err != nil {
 		return nil, errPermission
 	}
 	rc, _, err := g.f.be.Get(context.Background(), bucket, key, objectmodel.GetOptions{})
@@ -102,7 +109,7 @@ func (p *filePut) Filewrite(req *sftp.Request) (io.WriterAt, error) {
 	if bucket == "" || key == "" || strings.HasSuffix(key, dirMarkerSuffix) {
 		return nil, errNoSuchFile
 	}
-	if err := authorize(p.id, bucket, true); err != nil {
+	if err := authorizeObject(p.id, bucket, key, true); err != nil {
 		return nil, errPermission
 	}
 	return &putWriter{f: p.f, bucket: bucket, key: key}, nil
@@ -216,7 +223,7 @@ func (c *fileCmd) mkdir(p string) error {
 	if bucket == "" || key == "" {
 		return errPermission // bucket creation is S3-API-only
 	}
-	if err := authorize(c.id, bucket, true); err != nil {
+	if err := authorizeObject(c.id, bucket, key+dirMarkerSuffix, true); err != nil {
 		return errPermission
 	}
 	_, err := c.f.be.Put(context.Background(), bucket, key+dirMarkerSuffix,
@@ -230,7 +237,7 @@ func (c *fileCmd) rmdir(p string) error {
 	if bucket == "" || key == "" {
 		return errPermission
 	}
-	if err := authorize(c.id, bucket, true); err != nil {
+	if err := authorizeObject(c.id, bucket, key+dirMarkerSuffix, true); err != nil {
 		return errPermission
 	}
 	if err := c.f.be.Delete(context.Background(), bucket, key+dirMarkerSuffix); err != nil {
@@ -245,7 +252,7 @@ func (c *fileCmd) remove(p string) error {
 	if bucket == "" || key == "" {
 		return errNoSuchFile
 	}
-	if err := authorize(c.id, bucket, true); err != nil {
+	if err := authorizeObject(c.id, bucket, key, true); err != nil {
 		return errPermission
 	}
 	if err := c.f.be.Delete(context.Background(), bucket, key); err != nil {
@@ -272,10 +279,10 @@ func (c *fileCmd) rename(oldPath, newPath string) error {
 	if oldB == "" || oldK == "" || newB == "" || newK == "" {
 		return errPermission
 	}
-	if err := authorize(c.id, oldB, true); err != nil {
+	if err := authorizeObject(c.id, oldB, oldK, true); err != nil {
 		return errPermission
 	}
-	if err := authorize(c.id, newB, true); err != nil {
+	if err := authorizeObject(c.id, newB, newK, true); err != nil {
 		return errPermission
 	}
 	// F2 twin: a directory source's marker key ("d/") is what must move.

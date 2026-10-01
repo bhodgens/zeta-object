@@ -46,6 +46,10 @@ type Config struct {
 	Verifier PasswordVerifier
 	// KeyChecker resolves public keys (nil = pubkey auth disabled).
 	KeyChecker PublicKeyChecker
+	// RichGrants re-resolves an identity's rich grant table by access key
+	// ID at session start (leaf 09; nil = legacy-only behavior — the
+	// CriticalOptions floor is the whole story).
+	RichGrants RichGrantsResolver
 }
 
 // Frontend implements frontend.Frontend + frontend.NonHTTPFrontend for SFTP.

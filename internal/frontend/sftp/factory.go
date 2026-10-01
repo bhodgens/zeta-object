@@ -26,6 +26,10 @@ type IdentityRegistries interface {
 		LookupByBasicCredential(username, password string) (auth.Identity, bool)
 	}
 	Keys() auth.PublicKeyAuthenticator
+	// RichGrantsFor re-resolves an identity's rich grant table by access
+	// key ID (leaf 09 — the SFTP session handler's one lookup at session
+	// start; CriticalOptions round-trip only the floor).
+	RichGrantsFor(accessKeyID string) []auth.GrantExpr
 }
 
 // KnownOptionKeys lists every option key this frontend accepts.
@@ -50,6 +54,9 @@ func ConfigFromOptions(listenAddr string, options map[string]string, reg Identit
 	if reg != nil && reg.Registry() != nil {
 		cfg.Verifier = NewRegistryVerifier(reg.Registry())
 		cfg.KeyChecker = NewRegistryKeyChecker(reg.Keys())
+		// Leaf 09: the session handler re-resolves rich grants from the
+		// registry at session start (CriticalOptions carry only the floor).
+		cfg.RichGrants = registryRichGrantsAdapter{reg}
 	}
 	for k, v := range options {
 		if !KnownOptionKeys[k] {
@@ -73,6 +80,14 @@ func ConfigFromOptions(listenAddr string, options map[string]string, reg Identit
 		return Config{}, fmt.Errorf(`sftp: the "hostKeyFile" option is required (e.g. "certs/host_ed25519"; the key is generated there on first start)`)
 	}
 	return cfg, nil
+}
+
+// registryRichGrantsAdapter adapts the IdentityRegistries seam to the
+// Config.RichGrants resolver (the session handler's one lookup).
+type registryRichGrantsAdapter struct{ reg IdentityRegistries }
+
+func (a registryRichGrantsAdapter) RichGrantsFor(accessKeyID string) []auth.GrantExpr {
+	return a.reg.RichGrantsFor(accessKeyID)
 }
 
 // ensure the ed25519 import stays tied to the host-key generator contract.

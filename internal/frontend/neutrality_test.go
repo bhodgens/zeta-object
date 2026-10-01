@@ -10,6 +10,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -29,7 +30,7 @@ func neutralityFixture(t *testing.T) *auth.MultiRegistry {
 	t.Helper()
 	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
 		{Name: "rw", AccessKey: "AKRW", SecretKey: "sk-rw"}, // wildcard readwrite
-		{Name: "ro", AccessKey: "AKRO", SecretKey: "sk-ro", Grants: map[string]string{"neuro": "readonly"}},
+		{Name: "ro", AccessKey: "AKRO", SecretKey: "sk-ro", Grants: rawGrants(map[string]string{"neuro": "readonly"})},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -231,3 +232,14 @@ func TestNeutralitySameIdentity(t *testing.T) {
 var (
 	_ backend.Backend = (*fsbackend.FS)(nil)
 )
+
+// rawGrants adapts the legacy string-literal grant map to the dual-form
+// config type (leaf 09): semantics identical, fewer literal bytes.
+func rawGrants(m map[string]string) map[string]json.RawMessage {
+	out := make(map[string]json.RawMessage, len(m))
+	for k, v := range m {
+		b, _ := json.Marshal(v)
+		out[k] = b
+	}
+	return out
+}

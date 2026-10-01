@@ -8,6 +8,7 @@ package frontend
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 )
@@ -34,22 +35,25 @@ func (e *AuthzError) Error() string {
 }
 
 // AuthorizeRequest checks id's grants for bucket access. write=true
-// requires CanWrite (which implies read); write=false requires CanRead.
-// nil means allowed. A service-level request (bucket == "") is always
-// allowed here — ListBuckets filtering by grants is per-frontend policy
-// computed from the identity's grants, not a per-request denial.
+// requires write; write=false requires read. nil means allowed. A
+// service-level request (bucket == "") is always allowed here — ListBuckets
+// filtering by grants is per-frontend policy computed from the identity's
+// grants, not a per-request denial.
+//
+// Leaf 09: this is now a thin special case of auth.AuthorizeOp (THE single
+// rich-grant decision) with op = read|write, key = "", now = time.Now() —
+// the delegation keeps all HTTP frontends coherent with prefix/op/time-
+// scoped grants without touching their call sites.
 func AuthorizeRequest(id auth.Identity, bucket string, write bool) error {
 	if bucket == "" {
 		return nil
 	}
+	op := auth.OpRead
 	if write {
-		if !id.CanWrite(bucket) {
-			return &AuthzError{Bucket: bucket, Write: true}
-		}
-		return nil
+		op = auth.OpWrite
 	}
-	if !id.CanRead(bucket) {
-		return &AuthzError{Bucket: bucket, Write: false}
+	if !auth.AuthorizeOp(id, op, bucket, "", time.Now().UTC()) {
+		return &AuthzError{Bucket: bucket, Write: write}
 	}
 	return nil
 }

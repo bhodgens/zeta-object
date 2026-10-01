@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/backend"
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
@@ -1319,7 +1320,8 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 	// on another could read the other bucket's bytes via a copy. The
 	// identity arrives in the request context (set by serveHTTP); a missing
 	// identity degrades to the legacy wildcard principal (see identityOf).
-	if srcID := identityOf(r); !srcID.CanRead(srcBucket) {
+	// Leaf 09: the decision is AuthorizeOp (read on the source bucket/key).
+	if srcID := identityOf(r); !auth.AuthorizeOp(srcID, auth.OpRead, srcBucket, srcKey, time.Now().UTC()) {
 		log.Printf("Authorization Denied: identity %s, CopyObject source bucket %s", strconv.Quote(srcID.AccessKeyID), strconv.Quote(srcBucket))
 		writeS3Error(w, "AccessDenied", "Access Denied", http.StatusForbidden)
 		return

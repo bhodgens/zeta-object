@@ -5,6 +5,7 @@
 package s3_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -18,7 +19,7 @@ func registryFixture(t *testing.T) *auth.MultiRegistry {
 	t.Helper()
 	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
 		{Name: "env", AccessKey: "AKENV", SecretKey: "sk-env"},
-		{Name: "ro", AccessKey: "AKBOT", SecretKey: "sk-bot", Grants: map[string]string{"b1": "readonly"}},
+		{Name: "ro", AccessKey: "AKBOT", SecretKey: "sk-bot", Grants: rawGrants(map[string]string{"b1": "readonly"})},
 	})
 	if err != nil {
 		t.Fatalf("NewMultiRegistry: %v", err)
@@ -116,4 +117,15 @@ func TestSigV4LegacyCredentialSourceFallback(t *testing.T) {
 	if !id.CanRead("anything") || !id.CanWrite("anything") {
 		t.Errorf("legacy fallback must be wildcard: %+v", id.BucketGrants)
 	}
+}
+
+// rawGrants adapts the legacy string-literal grant map to the dual-form
+// config type (leaf 09): semantics identical, fewer literal bytes.
+func rawGrants(m map[string]string) map[string]json.RawMessage {
+	out := make(map[string]json.RawMessage, len(m))
+	for k, v := range m {
+		b, _ := json.Marshal(v)
+		out[k] = b
+	}
+	return out
 }

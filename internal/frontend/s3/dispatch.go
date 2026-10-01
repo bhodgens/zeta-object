@@ -16,9 +16,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
-	"github.com/bhodgens/zeta-object/internal/frontend"
 )
 
 // Handlers call getBucketPath for the above-seam multipart staging paths;
@@ -84,9 +84,10 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	// Authorization (pluggable-authentication tree leaf 02): enforce the
 	// identity's bucket grants AFTER authentication, BEFORE the ACL stub
 	// and any handler. The grant decision itself lives in internal/auth
-	// (Identity.CanRead/CanWrite) via the shared frontend.AuthorizeRequest
-	// helper; this site only renders the S3 wire error.
-	if !authorizeS3Request(w, identity, bucketName, r) {
+	// (AuthorizeOp — leaf 09's single rich-grant decision) via the
+	// method+key adapter in authorizeS3Request; this site only renders the
+	// S3 wire error.
+	if !authorizeS3Request(w, identity, bucketName, objectName, r) {
 		return
 	}
 
@@ -148,31 +149,54 @@ func identityOf(r *http.Request) auth.Identity {
 // here — ListBuckets filters to granted buckets in serviceLevelDispatch
 // (a scoped identity sees its buckets, never a 403 that would leak nothing
 // anyway but break legitimate clients).
-func authorizeS3Request(w http.ResponseWriter, id auth.Identity, bucket string, r *http.Request) bool {
+//
+// Leaf 09: the decision is auth.AuthorizeOp — the method+object key are
+// passed through so prefix-scoped rich grants apply per object. The method
+// → Op mapping below is THE S3 adapter table (read/write only; list/
+// delete/create refine bucket-level semantics in the rich table itself,
+// where e.g. a list/delete/create-only entry still satisfies the v1
+// floor-mapped method check through the shared authorizeOpForMethod
+// classification).
+func authorizeS3Request(w http.ResponseWriter, id auth.Identity, bucket, key string, r *http.Request) bool {
 	if bucket == "" {
 		return true
 	}
-	write := requestWritesBucket(r)
-	if err := frontend.AuthorizeRequest(id, bucket, write); err != nil {
-		log.Printf("Authorization Denied: identity %s, bucket %s, write=%v", strconv.Quote(id.AccessKeyID), strconv.Quote(bucket), write)
+	op := opForMethod(r.Method, bucket, key)
+	if !auth.AuthorizeOp(id, op, bucket, key, time.Now().UTC()) {
+		log.Printf("Authorization Denied: identity %s, bucket %s, key %s, method %s",
+			strconv.Quote(id.AccessKeyID), strconv.Quote(bucket), strconv.Quote(key), strconv.Quote(r.Method))
 		writeAuthFailure(w, authFailureError{"AccessDenied", "Access Denied", httpStatusForbidden})
 		return false
 	}
 	return true
 }
 
-// requestWritesBucket classifies a bucket-level or object-level request as
-// a write (PUT/POST/DELETE) vs a read (GET/HEAD/OPTIONS). One function, one
-// place — the classification the grant check consumes (leaf 02: create/
-// delete bucket, versioning, actions, put, copy, multipart
-// initiate/upload/complete/abort, delete batch are all writes; GET/HEAD
-// are reads).
-func requestWritesBucket(r *http.Request) bool {
-	switch r.Method {
-	case "PUT", "POST", "DELETE":
-		return true
+// opForMethod maps the S3 method (+ level) onto the grant Op vocabulary —
+// the one adapter table for the S3 frontend. GET/HEAD are reads (object
+// data or bucket sub-resources); PUT/POST to an OBJECT path are writes;
+// PUT/POST to the BUCKET root is create (CreateBucket and bucket
+// sub-resource writes); DELETE of an OBJECT is delete; DELETE of a bucket
+// root maps to write (delete bucket sits with the v1 write family — v1
+// grants had no separate bit, and a delete-only rich entry still denies
+// the root through its own op set). POST with object key = multipart
+// initiate/completion = write.
+func opForMethod(method, bucket, key string) auth.Op {
+	switch method {
+	case "GET", "HEAD":
+		return auth.OpRead
+	case "PUT", "POST":
+		if key == "" {
+			return auth.OpCreate
+		}
+		return auth.OpWrite
+	case "DELETE":
+		if key == "" {
+			return auth.OpDelete
+		}
+		return auth.OpDelete
 	default:
-		return false
+		// OPTIONS and anything else: least-privilege read.
+		return auth.OpRead
 	}
 }
 

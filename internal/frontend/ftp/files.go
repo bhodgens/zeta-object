@@ -15,9 +15,24 @@ import (
 )
 
 // frontendAuthorize aliases the shared grant helper (leaf 05) so the
-// driver reads uniformly.
+// driver reads uniformly. Leaf 09: the decision is auth.AuthorizeOp — the
+// FTP adapter maps commands to Op (ftpOpForWrite in driver.go) and the
+// resolved object key rides through so prefix-scoped rich grants apply.
+func frontendAuthorizeKey(id auth.Identity, bucket, key string, write bool) error {
+	op := auth.OpRead
+	if write {
+		op = auth.OpWrite
+	}
+	if !auth.AuthorizeOp(id, op, bucket, key, time.Now().UTC()) {
+		return &frontend.AuthzError{Bucket: bucket, Write: write}
+	}
+	return nil
+}
+
+// frontendAuthorize is the bucket-level form (no key) kept for the
+// read-dir/stat paths whose key is not yet resolved.
 func frontendAuthorize(id auth.Identity, bucket string, write bool) error {
-	return frontend.AuthorizeRequest(id, bucket, write)
+	return frontendAuthorizeKey(id, bucket, "", write)
 }
 
 // asObjectModelError is a local errors.As wrapper for *objectmodel.Error.

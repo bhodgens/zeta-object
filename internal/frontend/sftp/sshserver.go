@@ -130,7 +130,9 @@ func renderGrants(id auth.Identity) string {
 }
 
 // identityFromPermissions reconstructs the auth.Identity the auth callback
-// resolved (round-trip through CriticalOptions is lossless for grants).
+// resolved (round-trip through CriticalOptions is lossless for grants —
+// the FLOOR map, leaf 09: the rich table is deliberately NOT serialized
+// through CriticalOptions).
 func identityFromPermissions(p *ssh.Permissions) auth.Identity {
 	id := auth.Identity{BucketGrants: map[string]auth.Grant{}}
 	if p == nil {
@@ -152,6 +154,21 @@ func identityFromPermissions(p *ssh.Permissions) auth.Identity {
 		}
 	}
 	return id
+}
+
+// RichGrantsResolver re-resolves an identity's rich grant table by access
+// key ID (leaf 09). The registry adapter implements it; tests inject fakes.
+type RichGrantsResolver interface {
+	RichGrantsFor(accessKeyID string) []auth.GrantExpr
+}
+
+// resolveRichGrants returns the rich entries stored under accessKeyID
+// (nil for legacy-only identities ⇒ identical wire behavior).
+func resolveRichGrants(id auth.Identity, resolver RichGrantsResolver) []auth.GrantExpr {
+	if resolver == nil {
+		return nil
+	}
+	return resolver.RichGrantsFor(id.AccessKeyID)
 }
 
 // handleSession serves one session channel: wait for the sftp subsystem
@@ -183,6 +200,12 @@ func (f *Frontend) handleSession(perms *ssh.Permissions, channel ssh.Channel, re
 			}
 		}
 		id := identityFromPermissions(perms)
+		// Leaf 09: re-resolve the rich grant table from the registry at
+		// session start (one lookup, cached for the session — same
+		// bounded-staleness property as today's handshake-time auth). The
+		// CriticalOptions carried only the floor; the rich entries were
+		// never serialized through them.
+		id = id.WithRichGrants(resolveRichGrants(id, f.cfg.RichGrants))
 		server := sftp.NewRequestServer(channel, f.handlers(id))
 		if err := server.Serve(); err != nil {
 			log.Printf("sftp: subsystem serve ended: %v", err)

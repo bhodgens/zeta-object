@@ -119,8 +119,18 @@ func (d *clientDriver) resolve(p string) (bucket, key string) {
 
 // authorizeBucket applies the session identity's grants (leaf 05): zero
 // Backend calls on denied paths — this runs before every storage touch.
+// Leaf 09: the decision is auth.AuthorizeOp; op comes from the command
+// adapter (opForFlag) and the resolved object key rides along so
+// prefix-scoped rich grants apply per object.
 func (d *clientDriver) authorizeBucket(bucket string, write bool) error {
 	return frontendAuthorize(d.id, bucket, write)
+}
+
+// authorizeObject is the key-aware form (leaf 09): the resolved object key
+// rides through to AuthorizeOp so prefix-scoped rich grants apply per
+// object (STOR/RETR/DELE/MKD/RMD and rename's both ends).
+func (d *clientDriver) authorizeObject(bucket, key string, write bool) error {
+	return frontendAuthorizeKey(d.id, bucket, key, write)
 }
 
 // --- afero.Fs mapping ------------------------------------------------------
@@ -138,7 +148,7 @@ func (d *clientDriver) Mkdir(name string, perm os.FileMode) error {
 	if bucket == "" || key == "" {
 		return &ftpError{code: 550, message: "Cannot create directory here (buckets are created via the S3 API)"}
 	}
-	if err := d.authorizeBucket(bucket, true); err != nil {
+	if err := d.authorizeObject(bucket, key+dirMarkerSuffix, true); err != nil {
 		return mapBackendError(err)
 	}
 	_, err := d.f.be.Put(context.Background(), bucket, key+dirMarkerSuffix,
@@ -167,7 +177,7 @@ func (d *clientDriver) OpenFile(name string, flag int, perm os.FileMode) (afero.
 		return nil, &ftpError{code: 550, message: "Not a regular file"}
 	}
 	write := flag&(os.O_WRONLY|os.O_CREATE|os.O_RDWR) != 0
-	if err := d.authorizeBucket(bucket, write); err != nil {
+	if err := d.authorizeObject(bucket, key, write); err != nil {
 		return nil, mapBackendError(err)
 	}
 	if write {
@@ -195,7 +205,7 @@ func (d *clientDriver) Remove(name string) error {
 	if bucket == "" || key == "" {
 		return &ftpError{code: 550, message: "No such file"}
 	}
-	if err := d.authorizeBucket(bucket, true); err != nil {
+	if err := d.authorizeObject(bucket, key, true); err != nil {
 		return mapBackendError(err)
 	}
 	if err := d.f.be.Delete(context.Background(), bucket, key); err != nil {
@@ -212,7 +222,7 @@ func (d *clientDriver) RemoveDir(name string) error {
 	if bucket == "" || key == "" {
 		return &ftpError{code: 550, message: "Cannot remove that directory"}
 	}
-	if err := d.authorizeBucket(bucket, true); err != nil {
+	if err := d.authorizeObject(bucket, key+dirMarkerSuffix, true); err != nil {
 		return mapBackendError(err)
 	}
 	if err := d.f.be.Delete(context.Background(), bucket, key+dirMarkerSuffix); err != nil {

@@ -106,7 +106,7 @@ func newRegistryTestServer(t *testing.T, reg auth.IdentityRegistry) *httptest.Se
 
 func TestDispatchGrantEnforcement(t *testing.T) {
 	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
-		{Name: "ro", AccessKey: "AKRO", SecretKey: "sk-ro", Grants: map[string]string{"bucket-one": "readonly"}},
+		{Name: "ro", AccessKey: "AKRO", SecretKey: "sk-ro", Grants: rawGrants(map[string]string{"bucket-one": "readonly"})},
 		{Name: "rw", AccessKey: "AKRW", SecretKey: "sk-rw"},
 	})
 	if err != nil {
@@ -198,8 +198,8 @@ func TestDispatchGrantEnforcement(t *testing.T) {
 // authenticated identity (the identityOf seam set in serveHTTP).
 func TestCopyObjectSourceGrantEnforcement(t *testing.T) {
 	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
-		{Name: "rw-two", AccessKey: "AKRW2", SecretKey: "sk-rw2", Grants: map[string]string{"copy-src": "readwrite", "copy-dst": "readwrite"}},
-		{Name: "rw-one", AccessKey: "AKRW1", SecretKey: "sk-rw1", Grants: map[string]string{"copy-dst": "readwrite"}},
+		{Name: "rw-two", AccessKey: "AKRW2", SecretKey: "sk-rw2", Grants: rawGrants(map[string]string{"copy-src": "readwrite", "copy-dst": "readwrite"})},
+		{Name: "rw-one", AccessKey: "AKRW1", SecretKey: "sk-rw1", Grants: rawGrants(map[string]string{"copy-dst": "readwrite"})},
 	})
 	if err != nil {
 		t.Fatal(err)
