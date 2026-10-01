@@ -128,7 +128,7 @@ func OCFileID(bucket, key string) string {
 		h ^= uint64(b)
 		h *= prime64
 	}
-	return formatInt(int64(h &^ (1 << 63)))
+	return formatInt(int64(h &^ (1 << 63))) //nolint:gosec // G115: the mask clears the sign bit, so the value fits int64 by construction.
 }
 
 // ocPermissions pins the ownCloud permission string for the resource under

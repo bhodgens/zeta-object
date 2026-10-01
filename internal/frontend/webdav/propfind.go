@@ -610,17 +610,3 @@ func fmtInt(n int) string {
 func encodeHref(path string) string {
 	return (&url.URL{Path: path}).EscapedPath()
 }
-
-// writeXMLDocument marshals v with the xml.Header prolog and writes it.
-func writeXMLDocument(w http.ResponseWriter, status int, v any) {
-	body, err := xml.Marshal(v)
-	if err != nil {
-		writeDavError(w, http.StatusInternalServerError, "")
-		return
-	}
-	full := append([]byte(xml.Header), body...)
-	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
-	w.Header().Set("Content-Length", fmtInt(len(full)))
-	w.WriteHeader(status)
-	_, _ = w.Write(full)
-}

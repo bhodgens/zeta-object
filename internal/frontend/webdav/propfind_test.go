@@ -317,6 +317,8 @@ func TestOCProps_FileidStableAndDistinct(t *testing.T) {
 		t.Fatalf("fileid %q is not uint63", fileID)
 	}
 	// Cross-bucket stability: the SAME bucket+key derives the same id.
+	// (Identical args are intentional here: this pins determinism.)
+	//nolint:staticcheck // SA4000: identical args are intentional - this pins determinism.
 	if OCFileID("photos", "2024/a.txt") != OCFileID("photos", "2024/a.txt") {
 		t.Fatal("OCFileID not deterministic")
 	}
@@ -329,17 +331,19 @@ func TestOCProps_FileidStableAndDistinct(t *testing.T) {
 // whose href is wantHref.
 func fileIDFromBody(t *testing.T, body, wantHref string) string {
 	t.Helper()
-	for _, block := range strings.Split(body, "<d:response>") {
+	for block := range strings.SplitSeq(body, "<d:response>") {
 		if !strings.Contains(block, "<d:href>"+wantHref+"</d:href>") {
 			continue
 		}
-		start := strings.Index(block, `<oc:fileid>`)
-		if start < 0 {
+		_, rest, found := strings.Cut(block, `<oc:fileid>`)
+		if !found {
 			t.Fatalf("response block for %s has no oc:fileid:\n%s", wantHref, block)
 		}
-		rest := block[start+len(`<oc:fileid>`):]
-		end := strings.Index(rest, "</oc:fileid>")
-		return rest[:end]
+		value, _, found := strings.Cut(rest, "</oc:fileid>")
+		if !found {
+			t.Fatalf("response block for %s has no closing oc:fileid", wantHref)
+		}
+		return value
 	}
 	t.Fatalf("no response block for %s in:\n%s", wantHref, body)
 	return ""
@@ -381,7 +385,7 @@ func TestOCProps_PermissionsAndSize(t *testing.T) {
 	if strings.Count(body, `<oc:permissions>RW</oc:permissions>`) < 1 {
 		t.Fatalf("readwrite file oc:permissions missing:\n%s", body)
 	}
-	for _, block := range strings.Split(body, "<d:response>") {
+	for block := range strings.SplitSeq(body, "<d:response>") {
 		if strings.Contains(block, "a.txt</d:href>") && strings.Contains(block, `<size xmlns=`) {
 			t.Fatalf("file carries oc:size:\n%s", block)
 		}
@@ -415,7 +419,7 @@ func assertOCDiscovery(t *testing.T, body, bucket string, _ bool) {
 		t.Fatalf("xmlns:oc missing on multistatus root:\n%s", body)
 	}
 	blocks := 0
-	for _, block := range strings.Split(body, "<d:response>") {
+	for block := range strings.SplitSeq(body, "<d:response>") {
 		if !strings.Contains(block, "</d:response>") {
 			continue
 		}
