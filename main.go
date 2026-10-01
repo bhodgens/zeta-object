@@ -24,6 +24,10 @@ import (
 	// "zfs-events" MetadataProvider; without it every ?events request
 	// 503s regardless of the host's ZFS state (bughunt C1).
 	_ "github.com/bhodgens/zeta-object/internal/metadata"
+
+	// Design-leaf 08: the ReloadableRegistry the SIGHUP loop swaps lives
+	// in internal/auth.
+	"github.com/bhodgens/zeta-object/internal/auth"
 )
 
 // main.go — server entrypoint and root request router
@@ -58,6 +62,7 @@ func newServer(addr string, handler http.Handler, certFile, keyFile string) *htt
 func main() {
 	// Load configuration (fatal on any error other than a missing file)
 	configPath := getEnvOrDefaultLegacy("ZETAOBJECT_CONFIG", defaultConfigFile)
+	serverConfigPath = configPath
 	if err := loadConfig(configPath); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
@@ -72,7 +77,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("Authentication configuration failed: %v", err)
 	}
-	identityRegistry = reg
+	// Design-leaf 08 (key rotation/revocation): the startup registry is
+	// wrapped in a ReloadableRegistry and the WRAPPER is what the rest of
+	// the process sees — the s3 identity-registry hook AND the
+	// env-fallback credential source (recommended Open Decision 1: wrap at
+	// construction so the fallback path rotates too). The SIGHUP loop
+	// below swaps the wrapper's inner registry; this pointer is fixed.
+	identityRegistry = auth.NewReloadableRegistry(reg)
 
 	// Environment override for the listen address (beats config file)
 	applyListenAddrOverride(&serverConfig)
@@ -149,6 +160,27 @@ func main() {
 		log.Printf("Starting S3 server on %s (HTTPS, cert=%s, key=%s)",
 			srv.Addr, serverConfig.CertFile, serverConfig.KeyFile)
 		serverErr <- srv.ListenAndServeTLS(serverConfig.CertFile, serverConfig.KeyFile)
+	}()
+
+	// Design-leaf 08 (key rotation/revocation): SIGHUP reloads the auth
+	// identity registry — re-running the exact startup build against the
+	// same config file and swapping it in atomically. Fail-closed: a bad
+	// edit (parse error, duplicate access key, ...) keeps the OLD registry
+	// serving and logs the validator's named-offender error. Signals are
+	// handled serially in this loop, so a reload in flight cannot race the
+	// next one. SIGHUP is POSIX: on Windows the channel simply never
+	// fires (no behavior regression vs. the pre-leaf restart-only flow).
+	sighupCh := make(chan os.Signal, 1)
+	signal.Notify(sighupCh, syscall.SIGHUP)
+	go func() {
+		for range sighupCh {
+			started := time.Now()
+			log.Printf("SIGHUP received: reloading auth identities from %s", serverConfigPath)
+			if err := reloadIdentityRegistry(); err != nil {
+				continue // already logged fail-closed; keep serving
+			}
+			log.Printf("SIGHUP auth reload complete in %s", time.Since(started).Round(time.Microsecond))
+		}
 	}()
 	for _, es := range extraServers {
 		go func() {

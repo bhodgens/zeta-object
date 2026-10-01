@@ -125,6 +125,17 @@ Semantics:
 - An access key that is not in the registry is rejected with `InvalidAccessKeyId`, unchanged.
 - Validation is fail-loud: a duplicate access key (between identities, or against the env pair) or any invalid identity aborts startup — never a silent fallback.
 
+### Key rotation and revocation
+
+Edit `identities` in `config.json`, then send the server SIGHUP (`kill -HUP <pid>`). No restart.
+
+- Rotate: add the new identity, HUP, re-point clients, remove the old identity, HUP again. Both keys work during the window.
+- Revoke: remove the identity's entry and HUP. The revoked key then gets the standard `InvalidAccessKeyId` (403). There is no revocation list — the config file is the record.
+- A bad edit fails closed. A config that will not parse or validate (torn file, duplicate access key) is rejected at reload: the old registry keeps serving and the error is logged naming the offender. The server never goes down over a bad edit.
+- Reload logs identity names only. Secret keys are never printed.
+
+Limitations: SIGHUP is a POSIX signal (on Windows, rotate by restart). The env pair (`ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY`) is read from the process environment, which cannot change at runtime — rotating the env identity still requires a restart. Use `identities` in `config.json` for keys you need to rotate.
+
 ### Zero-auth dev mode (opt-in, loud)
 
 ```jsonc
@@ -563,6 +574,7 @@ Every pull goes through the pre-commit chain (secrets scan, vet, error-pattern c
 ## Known Limitations
 
 *   No ACLs or bucket policies; authorization is per-identity bucket grants (the `identities` config block).
+*   Key rotation for `identities` is a SIGHUP reload (edit config.json → `kill -HUP`); the env pair still needs a restart. No OAuth/OIDC/token-based auth for S3 (SigV4 cannot express it).
 *   Region pinned to `us-east-1`.
 *   Object keys with `..` or `.metadata` path segments are rejected, and keys must be in canonical form (safety over S3 compatibility; no `a//b` aliasing).
 *   S3 versioning is not implemented; `?versions` lists existing objects, and the ZFS-events-derived version listing is an extension, not S3 versioning.

@@ -93,7 +93,7 @@ func TestBuildFrontends(t *testing.T) {
 			if err16 != nil {
 				t.Fatal(err16)
 			}
-			identityRegistry = reg16
+			identityRegistry = auth.NewReloadableRegistry(reg16)
 			defer func() { identityRegistry = prev }()
 			reg, _, err := buildFrontends(tt.cfg, nilBackend{}, stubCreds{})
 			if (err != nil) != tt.wantErr {
@@ -245,7 +245,7 @@ func TestStartupPlan_TwoWebdavEntriesLegal(t *testing.T) {
 	if err16 != nil {
 		t.Fatal(err16)
 	}
-	identityRegistry = reg16
+	identityRegistry = auth.NewReloadableRegistry(reg16)
 	defer func() { identityRegistry = prevReg }()
 
 	plan, err := startupPlan([]FrontendConfig{

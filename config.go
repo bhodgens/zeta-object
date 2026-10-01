@@ -382,12 +382,53 @@ func buildIdentityRegistry() (*auth.MultiRegistry, error) {
 	return reg, nil
 }
 
-// identityRegistry is the process-wide credential→identity registry built
+// identityRegistry is the process-wide credential→identity registry, built
 // by buildIdentityRegistry() after loadCredentials() resolves the env pair
-// (pluggable-authentication tree leaf 01). main() aborts on a build error,
-// so installS3Seams only ever sees a valid (or nil-for-legacy-fallback)
-// registry.
-var identityRegistry *auth.MultiRegistry
+// (pluggable-authentication tree leaf 01) and wrapped in a
+// ReloadableRegistry (design-leaf 08, recommended Open Decision 1 wiring:
+// wrap AT CONSTRUCTION so the env-fallback CredentialSource path rotates
+// too). main() aborts on a build error, so installS3Seams only ever sees a
+// valid wrapper (or nil — the pre-leaf legacy fallback). At runtime the
+// SIGHUP handler swaps the wrapper's inner registry; the identityRegistry
+// pointer itself never changes after startup.
+var identityRegistry *auth.ReloadableRegistry
+
+// serverConfigPath records the config file path main() resolved, so
+// reloadIdentityRegistry() re-reads the SAME file (an env-var override
+// must survive past startup for reload to target it).
+var serverConfigPath string
+
+// reloadIdentityRegistry re-runs the exact STARTUP sequence against the same
+// config file (loadConfig → loadCredentials → buildIdentityRegistry) and
+// swaps the freshly built registry into the installed ReloadableRegistry.
+//
+// Fail-closed: ANY error (read, parse, validate, build) leaves the OLD
+// registry serving — startup's abort semantics (main.go) intentionally do
+// NOT apply at reload, so a bad edit cannot take a running server down —
+// and one loud line carries the validator's named-offender error. On
+// success it logs the rotated-in identity NAMES only, never secrets
+// (buildIdentityRegistry re-reads the env pair from the process
+// environment, which is fixed; rotating the env identity therefore still
+// requires a restart — documented limitation, never hidden).
+func reloadIdentityRegistry() error {
+	if err := loadConfig(serverConfigPath); err != nil {
+		log.Printf("WARNING: auth identity reload failed, keeping previous registry: %v", err)
+		return err
+	}
+	// The process environment is fixed, so this re-read is a no-op in
+	// practice; it keeps the reload sequence byte-identical to startup.
+	loadCredentials()
+	reg, err := buildIdentityRegistry()
+	if err != nil {
+		log.Printf("WARNING: auth identity reload failed, keeping previous registry: %v", err)
+		return err
+	}
+	identityRegistry.Swap(reg)
+	names := reg.Names()
+	log.Printf("Reloaded auth identities from %s: now serving %v",
+		serverConfigPath, names)
+	return nil
+}
 
 // Credentials store. Package-level var remains the storage, but the values
 // are populated explicitly by loadCredentials() (called from main) so tests

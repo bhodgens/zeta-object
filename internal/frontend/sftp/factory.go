@@ -15,6 +15,19 @@ import (
 	"github.com/bhodgens/zeta-object/internal/auth"
 )
 
+// IdentityRegistries is the narrow view ConfigFromOptions needs of the
+// process identity registry: the IdentityRegistry (password seam) and the
+// PublicKeyAuthenticator (public-key seam). It exists so package main can
+// hand over its ReloadableRegistry (design-leaf 08) without this package
+// depending on a concrete wrapper type — any registry exposing both seams
+// fits.
+type IdentityRegistries interface {
+	Registry() interface {
+		LookupByBasicCredential(username, password string) (auth.Identity, bool)
+	}
+	Keys() auth.PublicKeyAuthenticator
+}
+
 // KnownOptionKeys lists every option key this frontend accepts.
 var KnownOptionKeys = map[string]bool{
 	"hostKeyFile":       true,
@@ -25,15 +38,18 @@ var KnownOptionKeys = map[string]bool{
 // hostKeyFile is REQUIRED (clients pin host keys; a random temp key per
 // boot would break pinning). The identity registry provides both auth
 // adapters (password = LookupByBasicCredential, pubkey =
-// AuthenticatePublicKey).
-func ConfigFromOptions(listenAddr string, options map[string]string, reg *auth.MultiRegistry) (Config, error) {
+// AuthenticatePublicKey). Design-leaf 08: reg is the process-wide
+// ReloadableRegistry — the adapters keep calling through it per
+// connection, so SIGHUP swaps are visible to NEW sessions without a
+// restart (existing sessions persist by design — per-connection auth).
+func ConfigFromOptions(listenAddr string, options map[string]string, reg IdentityRegistries) (Config, error) {
 	cfg := Config{
 		ListenAddr:        listenAddr,
 		AllowPasswordAuth: true, // default
 	}
-	if reg != nil {
-		cfg.Verifier = NewRegistryVerifier(reg)
-		cfg.KeyChecker = NewRegistryKeyChecker(reg)
+	if reg != nil && reg.Registry() != nil {
+		cfg.Verifier = NewRegistryVerifier(reg.Registry())
+		cfg.KeyChecker = NewRegistryKeyChecker(reg.Keys())
 	}
 	for k, v := range options {
 		if !KnownOptionKeys[k] {

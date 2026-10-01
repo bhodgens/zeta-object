@@ -43,7 +43,7 @@ func TestLoadConfig_WebdavWhitespaceBucketFailsAtConstruction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	identityRegistry = reg
+	identityRegistry = auth.NewReloadableRegistry(reg)
 	defer func() { identityRegistry = prev }()
 	if _, _, err := buildFrontends(serverConfig.Frontends, nilBackend{}, stubCreds{}); err == nil {
 		t.Fatal("whitespace-only bucket must fail the webdav constructor")
@@ -56,7 +56,7 @@ func TestBuildFrontends_WebdavAuthenticatorIsBasicAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	identityRegistry = reg
+	identityRegistry = auth.NewReloadableRegistry(reg)
 	defer func() { identityRegistry = prev }()
 
 	freg, _, err := buildFrontends([]FrontendConfig{{Type: "webdav", Bucket: "b"}}, nilBackend{}, stubCreds{})

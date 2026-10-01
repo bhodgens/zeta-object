@@ -71,9 +71,22 @@ func installS3Seams() {
 	// built from the env pair + config identities (validated fail-loud in
 	// main(); a nil here means validation already aborted startup — the
 	// frontend falls back to the legacy single-pair source above).
+	//
+	// Design-leaf 08 (key rotation/revocation): main() wraps the startup
+	// registry in an auth.ReloadableRegistry BEFORE wiring, and that
+	// wrapper is what is installed here (recommended Open Decision 1 —
+	// wrap at construction). The SIGHUP handler swaps the wrapper's INNER
+	// registry, so this hook observes every swap with no seam change.
 	if identityRegistry != nil {
 		s3.InstallIdentityRegistry(identityRegistry)
 	}
+
+	// Design-leaf 08: the reloadable wrapper ALSO serves as the legacy
+	// env-fallback CredentialSource, so the fallback signing-secret path
+	// rotates on SIGHUP too (instead of pinning the startup env pair
+	// forever via a static mainCredentialSource). ReloadableRegistry
+	// satisfies auth.CredentialSource (compile-asserted in internal/auth).
+	s3.InstallDefaultCredentialSource(identityRegistry)
 
 	// Zero-auth dev mode (leaf 05): auth.mode "none" installs the
 	// DevAuthenticator as the process authenticator source — every request
