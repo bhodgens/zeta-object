@@ -36,8 +36,7 @@ type dbHandle interface {
 	Close() error
 }
 
-// openDB is the seam tests replace (same pattern as zfsRunner /
-// resolveDatasetFn in zfs_events.go). Production opens the real
+// openDB is the seam tests replace. Production opens the real
 // read-only accessor; the handle is opened per call and closed by the
 // caller (defer Close) so readers never pin the WAL against the live
 // daemon.
@@ -47,8 +46,7 @@ var openDB = func(ctx context.Context, path string) (dbHandle, error) {
 
 // zmetadRunner is the seam tests replace for purge. Production execs
 // the zmetad binary with a 10s timeout, argv-only (the dataset name
-// comes from the DB, never from user input), stdout/stderr captured -
-// mirroring the zfsRunner discipline it replaces.
+// comes from the DB, never from user input), stdout/stderr captured.
 var zmetadRunner = func(ctx context.Context, binary string, args ...string) ([]byte, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, zmetadCmdTimeout)
 	defer cancel()
@@ -66,11 +64,11 @@ var zmetadRunner = func(ctx context.Context, binary string, args ...string) ([]b
 //
 // detail carries the HistoryDetail (dataset + recordsLost + ringSwaps)
 // of the most recent completed History call ON THIS INSTANCE, guarded by
-// detailMu (the bughunt A2/C2 pattern from zfsEventsProvider): the
-// frontend reads it via the structural detailReporter interface
-// (capability_endpoints.go historyDetailFor), so concurrent ?events on
-// different providers/buckets cannot cross-attribute. The deprecated
-// package-global setHistoryDetail is deliberately NOT updated here.
+// detailMu (the bughunt A2/C2 pattern): the frontend reads it via the
+// structural detailReporter interface (capability_endpoints.go
+// historyDetailFor), so concurrent ?events on different providers/buckets
+// cannot cross-attribute. There is no package-global last-detail record
+// (it was deleted with the CLI transport, leaf 04).
 //
 // datasets caches positive bucketPath -> dataset resolutions (mutex-
 // guarded). Only positive results are cached: a dataset can appear in
@@ -120,6 +118,19 @@ func NewZmetadEventsProvider(dbPath string) MetadataProvider {
 func (p *zmetadEventsProvider) setZmetadBinary(binary string) {
 	if binary != "" {
 		p.binary = binary
+	}
+}
+
+// SetZmetadBinary applies the config-driven purge-binary override
+// (leaf 04, Contract 4: config key `zmetad_binary`) to a provider
+// returned by NewZmetadEventsProvider. The constructor signature stays
+// frozen single-arg (Contract 3), so wiring promotes the unexported
+// setter through this exported package function. A no-op for providers
+// that are not the zmetad events provider (e.g. test fakes). Empty
+// binary keeps the "zmetad" PATH default.
+func SetZmetadBinary(p MetadataProvider, binary string) {
+	if z, ok := p.(*zmetadEventsProvider); ok {
+		z.setZmetadBinary(binary)
 	}
 }
 
@@ -199,10 +210,9 @@ func (p *zmetadEventsProvider) Probe(ctx context.Context, bucketPath string) (Pr
 	return p.probeDB(ctx, bucketPath, resolved), nil
 }
 
-// probeDB is the GOOS-independent heart of Probe (same split rationale
-// as zfsEventsProvider.probeCore: DetectZFS is statfs-bound and dev
-// hosts have no ZFS). It never fails: unavailability is a ProbeResult
-// status, not an error.
+// probeDB is the GOOS-independent heart of Probe (DetectZFS is
+// statfs-bound and dev hosts have no ZFS, so tests drive this directly).
+// It never fails: unavailability is a ProbeResult status, not an error.
 func (p *zmetadEventsProvider) probeDB(ctx context.Context, bucketPath, resolved string) ProbeResult {
 	// Warm positive cache: resolution already proved tracked+polled.
 	if ds, ok := p.cachedDataset(bucketPath); ok {
@@ -239,12 +249,12 @@ func (p *zmetadEventsProvider) probeDB(ctx context.Context, bucketPath, resolved
 // the CLI path's MaxEvents*3 hack is gone because filtering happens
 // over the full row set here.
 //
-// Filter semantics replicate zfsEventsProvider.History EXACTLY:
+// Filter semantics replicate the deleted CLI provider's History EXACTLY:
 //   - the key filter (rowsMatchKey: exact on resolved full_path keys,
 //     conservative bare-name match on PARTIAL rows) runs BEFORE the
 //     Since filter - rowsMatchKey indexes into the pristine
 //     rowEventSet, and the Since pass re-slices, which would desync the
-//     indices (zfs_events.go:642);
+//     indices (the legacy zfs_events.go index-desync rule);
 //   - Since keeps events with Timestamp.After(Since) OR a zero
 //     Timestamp: rows with NULL captured_at AND implausible hrtime map
 //     to zero time, and "unknown time" is not "older than Since";
@@ -279,7 +289,8 @@ func (p *zmetadEventsProvider) History(ctx context.Context, bucketPath, key stri
 	p.setDetail(HistoryDetail{Dataset: ds, RecordsLost: stats.KnownLost, RingSwaps: stats.RingSwaps})
 
 	events := set.events
-	// Key filter BEFORE Since filter (index-desync rule, zfs_events.go:642).
+	// Key filter BEFORE Since filter (index-desync rule from the legacy
+	// CLI provider).
 	if key != "" {
 		filtered := make([]ObjectEvent, 0, len(events))
 		for i := range events {

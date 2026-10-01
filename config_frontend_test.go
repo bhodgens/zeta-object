@@ -161,3 +161,48 @@ func TestLoadConfig_FrontendOptions(t *testing.T) {
 		t.Fatalf("absent options must decode to nil, got %+v", cfg.Frontends[1].Options)
 	}
 }
+
+// TestLoadConfig_ZmetadKeys pins the leaf-04 zmetad config contract
+// (zmetad-provider-2026-09 Contract 4): both keys parse when present,
+// and absent keys fall back to the defaults at config load - one place
+// owns the defaults, so the wiring and provider always see concrete
+// values.
+func TestLoadConfig_ZmetadKeys(t *testing.T) {
+	t.Run("absent keys get defaults", func(t *testing.T) {
+		cfg := loadConfigForTest(t, writeTempConfig(t, `{"dataDir":"./data/"}`))
+		if cfg.ZmetadDBPath != defaultZmetadDBPath {
+			t.Fatalf("ZmetadDBPath = %q, want default %q", cfg.ZmetadDBPath, defaultZmetadDBPath)
+		}
+		if cfg.ZmetadBinary != defaultZmetadBinary {
+			t.Fatalf("ZmetadBinary = %q, want default %q", cfg.ZmetadBinary, defaultZmetadBinary)
+		}
+		if defaultZmetadDBPath != "/var/lib/zfs/zmetad.db" || defaultZmetadBinary != "zmetad" {
+			t.Fatalf("defaults drifted from Contract 4: db=%q binary=%q", defaultZmetadDBPath, defaultZmetadBinary)
+		}
+	})
+	t.Run("explicit values are honored", func(t *testing.T) {
+		cfg := loadConfigForTest(t, writeTempConfig(t,
+			`{"zmetad_db_path":"/tmp/custom/zmetad.db","zmetad_binary":"/usr/local/bin/zmetad"}`))
+		if cfg.ZmetadDBPath != "/tmp/custom/zmetad.db" {
+			t.Fatalf("ZmetadDBPath = %q, want the configured path", cfg.ZmetadDBPath)
+		}
+		if cfg.ZmetadBinary != "/usr/local/bin/zmetad" {
+			t.Fatalf("ZmetadBinary = %q, want the configured binary", cfg.ZmetadBinary)
+		}
+	})
+	t.Run("empty strings fall back to defaults", func(t *testing.T) {
+		cfg := loadConfigForTest(t, writeTempConfig(t,
+			`{"zmetad_db_path":"","zmetad_binary":""}`))
+		if cfg.ZmetadDBPath != defaultZmetadDBPath || cfg.ZmetadBinary != defaultZmetadBinary {
+			t.Fatalf("empty zmetad keys must normalize to defaults, got db=%q binary=%q",
+				cfg.ZmetadDBPath, cfg.ZmetadBinary)
+		}
+	})
+	t.Run("missing config file keeps defaults", func(t *testing.T) {
+		cfg := loadConfigForTest(t, filepath.Join(t.TempDir(), "does-not-exist.json"))
+		if cfg.ZmetadDBPath != defaultZmetadDBPath || cfg.ZmetadBinary != defaultZmetadBinary {
+			t.Fatalf("defaults not applied for missing config: db=%q binary=%q",
+				cfg.ZmetadDBPath, cfg.ZmetadBinary)
+		}
+	})
+}

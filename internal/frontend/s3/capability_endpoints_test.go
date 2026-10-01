@@ -41,8 +41,9 @@ const eventsAttachMarker = ".events-provider"
 // sequentially); the mutex keeps the race detector honest if the handler
 // ever probes concurrently. History applies the MaxEvents cap the same
 // way the real provider does, so the handler's query propagation is
-// observable. LastDetail implements the optional detail seam the handler
-// consults in preference to the package-level LastHistoryDetail hook.
+// observable. LastDetail implements the structural detailReporter seam
+// the handler consults (the package-global LastHistoryDetail hook was
+// deleted with the CLI transport, zmetad-provider-2026-09 leaf 04).
 type stubEventsProvider struct {
 	mu     sync.Mutex
 	events []metadata.ObjectEvent
@@ -607,5 +608,145 @@ func TestInstallMetadataProviderHook(t *testing.T) {
 	s3.InstallMetadataProvider(nil)
 	if got := s3.MetadataProviderFor("/buckets/shim"); got != nil {
 		t.Errorf("MetadataProviderFor after nil install = %v, want nil", got)
+	}
+}
+
+// TestEventsRingSwapsWireFields pins the additive leaf-04 wire fields
+// (zmetad-provider-2026-09 Contract 5): JSON envelope carries ringSwaps,
+// XML carries RingSwaps, both from the provider's HistoryDetail, and
+// IsLossy = RecordsLost > 0 OR RingSwaps > 0 - swaps are a separate loss
+// class, never folded into RecordsLost.
+func TestEventsRingSwapsWireFields(t *testing.T) {
+	stub := eventsStubFor(t)
+	stub.configure(
+		[]metadata.ObjectEvent{{Op: "create", Key: "a.txt", Txg: 10, SizeNew: 5}},
+		metadata.HistoryDetail{Dataset: "stub/data", RecordsLost: 0, RingSwaps: 3},
+		nil,
+	)
+	srv, root := newEventsTestServer(t)
+	eventsAttachedBucket(t, srv, root, "swapbkt", "a.txt", "x")
+
+	// JSON envelope (object-level and bucket-level share the shape).
+	for _, target := range []string{"/swapbkt?events", "/swapbkt/a.txt?events"} {
+		code, _, body := eventsGet(t, srv, target)
+		if code != http.StatusOK {
+			t.Fatalf("%s = %d (body %s)", target, code, body)
+		}
+		if !strings.Contains(body, `"ringSwaps":3`) {
+			t.Fatalf("%s body missing ringSwaps:3: %s", target, body)
+		}
+		if !strings.Contains(body, `"recordsLost":0`) {
+			t.Fatalf("%s body missing recordsLost:0 (never folded): %s", target, body)
+		}
+		var env struct {
+			Dataset     string `json:"dataset"`
+			RecordsLost uint64 `json:"recordsLost"`
+			RingSwaps   uint64 `json:"ringSwaps"`
+		}
+		if err := json.Unmarshal([]byte(body), &env); err != nil {
+			t.Fatalf("unmarshal %q: %v", body, err)
+		}
+		if env.RingSwaps != 3 || env.RecordsLost != 0 || env.Dataset != "stub/data" {
+			t.Fatalf("%s envelope = %+v, want ringSwaps 3 recordsLost 0", target, env)
+		}
+	}
+
+	// XML extension: RingSwaps surfaced; IsLossy true from swaps alone.
+	code, _, body := eventsGet(t, srv, "/swapbkt?events&versions")
+	if code != http.StatusOK {
+		t.Fatalf("versions = %d (body %s)", code, body)
+	}
+	var got struct {
+		IsLossy     bool   `xml:"IsLossy"`
+		RecordsLost uint64 `xml:"RecordsLost"`
+		RingSwaps   uint64 `xml:"RingSwaps"`
+	}
+	if err := xml.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("unmarshal %q: %v", body, err)
+	}
+	if got.RingSwaps != 3 {
+		t.Fatalf("XML RingSwaps = %d, want 3 (body %s)", got.RingSwaps, body)
+	}
+	if got.RecordsLost != 0 {
+		t.Fatalf("XML RecordsLost = %d, want 0 (swaps never folded)", got.RecordsLost)
+	}
+	if !got.IsLossy {
+		t.Fatal("IsLossy must be true when RingSwaps > 0 (Contract 5)")
+	}
+
+	// No loss at all: IsLossy false, both counts zero.
+	stub.configure(
+		[]metadata.ObjectEvent{{Op: "create", Key: "a.txt", Txg: 10, SizeNew: 5}},
+		metadata.HistoryDetail{Dataset: "stub/data"},
+		nil,
+	)
+	code, _, body = eventsGet(t, srv, "/swapbkt?events&versions")
+	if code != http.StatusOK {
+		t.Fatalf("versions = %d (body %s)", code, body)
+	}
+	var clean struct {
+		IsLossy     bool   `xml:"IsLossy"`
+		RecordsLost uint64 `xml:"RecordsLost"`
+		RingSwaps   uint64 `xml:"RingSwaps"`
+	}
+	if err := xml.Unmarshal([]byte(body), &clean); err != nil {
+		t.Fatalf("unmarshal %q: %v", body, err)
+	}
+	if clean.IsLossy || clean.RecordsLost != 0 || clean.RingSwaps != 0 {
+		t.Fatalf("clean history = %+v, want zero loss fields", clean)
+	}
+}
+
+// TestHistoryDetailForZeroFallback pins the leaf-04 historyDetailFor
+// fallback change: a provider WITHOUT the LastDetail structural seam gets
+// a zero HistoryDetail (the package-global LastHistoryDetail fallback was
+// deleted with the CLI transport - a global cross-attributes concurrent
+// requests). The zero detail must render as an empty dataset and no loss
+// claims on the JSON envelope.
+type noDetailProvider struct{}
+
+func (noDetailProvider) Name() string { return "zfs-events" }
+
+func (noDetailProvider) Probe(_ context.Context, bucketPath string) (metadata.ProbeResult, error) {
+	if _, err := os.Stat(filepath.Join(bucketPath, eventsAttachMarker)); err != nil {
+		return metadata.ProbeResult{Available: false, Reason: "no provider marker"}, nil //nolint:nilerr // unavailable is a status, not a failure
+	}
+	return metadata.ProbeResult{Available: true, Dataset: "ignored/data"}, nil
+}
+
+func (noDetailProvider) History(_ context.Context, _, _ string, _ metadata.HistoryQuery) ([]metadata.ObjectEvent, error) {
+	return []metadata.ObjectEvent{{Op: "create", Key: "a.txt", Txg: 1}}, nil
+}
+
+func (noDetailProvider) Purge(_ context.Context, _ string) error { return nil }
+
+func TestHistoryDetailForZeroFallback(t *testing.T) {
+	// A provider without LastDetail: historyDetailFor must return the
+	// zero value, not stale state from another bucket's request. Drive
+	// through the installed hook so no registry surgery is needed.
+	s3.InstallMetadataProvider(func(bucketPath string) metadata.MetadataProvider {
+		if _, err := os.Stat(filepath.Join(bucketPath, eventsAttachMarker)); err != nil {
+			return nil
+		}
+		return noDetailProvider{}
+	})
+	t.Cleanup(func() { s3.InstallMetadataProvider(nil) })
+	srv, root := newEventsTestServer(t)
+	eventsAttachedBucket(t, srv, root, "nodetail", "a.txt", "x")
+
+	code, _, body := eventsGet(t, srv, "/nodetail?events")
+	if code != http.StatusOK {
+		t.Fatalf("status %d (body %s)", code, body)
+	}
+	var env struct {
+		Dataset     string `json:"dataset"`
+		RecordsLost uint64 `json:"recordsLost"`
+		RingSwaps   uint64 `json:"ringSwaps"`
+	}
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		t.Fatalf("unmarshal %q: %v", body, err)
+	}
+	if env.Dataset != "" || env.RecordsLost != 0 || env.RingSwaps != 0 {
+		t.Fatalf("no-detail provider envelope = %+v, want the zero HistoryDetail", env)
 	}
 }

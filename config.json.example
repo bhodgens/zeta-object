@@ -91,6 +91,14 @@
   // logs its own WARNING line. Any other value aborts startup.
   // "auth": { "mode": "none" },
 
+  // Optional zmetad provider settings (ZFS event history, ?events
+  // endpoints). "zmetad_db_path" is the SQLite database the zmetad daemon
+  // exports to (default "/var/lib/zfs/zmetad.db"); "zmetad_binary" is the
+  // executable used for history purge (default "zmetad" on PATH). See the
+  // README "Metadata Capability Endpoints (ZFS events)" section.
+  // "zmetad_db_path": "/var/lib/zfs/zmetad.db",
+  // "zmetad_binary": "zmetad",
+
   // Custom bucket name -> filesystem path mappings. These buckets appear in
   // ListBuckets alongside auto-discovered buckets, cannot be created or
   // deleted via the S3 API, and may point to any directory (incl. symlinks).

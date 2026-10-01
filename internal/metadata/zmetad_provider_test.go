@@ -309,15 +309,10 @@ func TestZmetadProviderProbeFailuresNotCached(t *testing.T) {
 	}
 }
 
-// TestZmetadProviderProbeNoExec: the probe path must not touch ANY exec
-// seam (zfsRunner or zmetadRunner).
+// TestZmetadProviderProbeNoExec: the probe path must not touch the
+// purge exec seam (zmetadRunner). The CLI zfsRunner seam no longer
+// exists - the zfs exec transport was deleted (leaf 04).
 func TestZmetadProviderProbeNoExec(t *testing.T) {
-	oldZfs := zfsRunner
-	zfsRunner = func(ctx context.Context, args ...string) ([]byte, string, error) {
-		t.Error("zfsRunner must never be called by the zmetad provider")
-		return nil, "", nil
-	}
-	t.Cleanup(func() { zfsRunner = oldZfs })
 	runnerCalls, runnerMu := stubZmetadRunner(t, "", nil)
 
 	dbPath := "/var/lib/zfs/zmetad.db"

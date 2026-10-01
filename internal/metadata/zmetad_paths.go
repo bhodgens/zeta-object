@@ -114,10 +114,10 @@ func rowsToEvents(rows []EventRow) *rowEventSet {
 		}
 
 		if r.UID != nil {
-			e.UID = uint32(*r.UID) //nolint:gosec // G115: uid is 32-bit on every platform zfs events reports; truncation matches zfs behavior (zfs_events.go)
+			e.UID = uint32(*r.UID) //nolint:gosec // G115: uid is 32-bit on every platform the zfs event log reports; truncation matches zfs behavior (legacy zfs_events.go)
 		}
 		if r.GID != nil {
-			e.GID = uint32(*r.GID) //nolint:gosec // G115: gid is 32-bit on every platform zfs events reports; truncation matches zfs behavior (zfs_events.go)
+			e.GID = uint32(*r.GID) //nolint:gosec // G115: gid is 32-bit on every platform the zfs event log reports; truncation matches zfs behavior (legacy zfs_events.go)
 		}
 
 		set.events = append(set.events, e)

@@ -20,6 +20,13 @@ const (
 	defaultCertFile   = "certs/cert.pem"
 	defaultKeyFile    = "certs/key.pem"
 	defaultAccessKey  = "minioadmin"
+
+	// zmetad defaults (zmetad-provider-2026-09 leaf 04, Contract 4).
+	// Config load owns these - the provider receives concrete values.
+	// DB path per zmetad SCHEMA.md / zfs_events.h:28; binary defaults
+	// to a PATH lookup per the upstream install.
+	defaultZmetadDBPath = "/var/lib/zfs/zmetad.db"
+	defaultZmetadBinary = "zmetad"
 )
 
 // authModeNone is the opt-in zero-auth dev mode value for auth.mode
@@ -58,6 +65,14 @@ type ServerConfig struct {
 	// "auth" (not omitempty): AuthConfig is a struct, so omitempty would
 	// never fire and modernize flags it; "" mode remains the default.
 	Auth AuthConfig `json:"auth"`
+
+	// ZmetadDBPath / ZmetadBinary configure the zmetad events provider
+	// (zmetad-provider-2026-09 leaf 04, Contract 4): the SQLite export
+	// database the provider reads and the zmetad executable used for
+	// `zmetad --purge`. Absent keys get defaults at config load
+	// (defaultZmetadDBPath / defaultZmetadBinary) - one place owns them.
+	ZmetadDBPath string `json:"zmetad_db_path"`
+	ZmetadBinary string `json:"zmetad_binary"`
 
 	// bucketsErr carries a buckets-map decode failure (null/empty bucket
 	// value) out of the custom UnmarshalJSON path; it is not a JSON key.
@@ -218,11 +233,13 @@ func (m bucketsRaw) apply(cfg *ServerConfig) {
 }
 
 var serverConfig = ServerConfig{
-	DataDir:    defaultDataDir,
-	Buckets:    make(map[string]string),
-	ListenAddr: defaultListenAddr,
-	CertFile:   defaultCertFile,
-	KeyFile:    defaultKeyFile,
+	DataDir:      defaultDataDir,
+	Buckets:      make(map[string]string),
+	ListenAddr:   defaultListenAddr,
+	CertFile:     defaultCertFile,
+	KeyFile:      defaultKeyFile,
+	ZmetadDBPath: defaultZmetadDBPath,
+	ZmetadBinary: defaultZmetadBinary,
 }
 
 // defaultServerConfig returns a fully-populated ServerConfig with all
@@ -230,11 +247,13 @@ var serverConfig = ServerConfig{
 // parse can never leave the global partially mutated.
 func defaultServerConfig() ServerConfig {
 	return ServerConfig{
-		DataDir:    defaultDataDir,
-		Buckets:    make(map[string]string),
-		ListenAddr: defaultListenAddr,
-		CertFile:   defaultCertFile,
-		KeyFile:    defaultKeyFile,
+		DataDir:      defaultDataDir,
+		Buckets:      make(map[string]string),
+		ListenAddr:   defaultListenAddr,
+		CertFile:     defaultCertFile,
+		KeyFile:      defaultKeyFile,
+		ZmetadDBPath: defaultZmetadDBPath,
+		ZmetadBinary: defaultZmetadBinary,
 	}
 }
 
@@ -277,6 +296,14 @@ func loadConfig(configPath string) error {
 	if cfg.KeyFile == "" {
 		cfg.KeyFile = defaultKeyFile
 	}
+	// zmetad keys: absent/empty -> defaults (config load owns the
+	// defaults; the provider receives concrete values, leaf 04).
+	if cfg.ZmetadDBPath == "" {
+		cfg.ZmetadDBPath = defaultZmetadDBPath
+	}
+	if cfg.ZmetadBinary == "" {
+		cfg.ZmetadBinary = defaultZmetadBinary
+	}
 	// Absent/empty frontends array == S3 on the default listener (leaf 03
 	// backward-compatibility rule).
 	if len(cfg.Frontends) == 0 {
@@ -300,15 +327,17 @@ func loadConfig(configPath string) error {
 // A null buckets value fails with the bucket's name in the message.
 func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	type alias struct {
-		DataDir    string                `json:"dataDir"`
-		ListenAddr string                `json:"listenAddr"`
-		CertFile   string                `json:"certFile"`
-		KeyFile    string                `json:"keyFile"`
-		Frontends  []FrontendConfig      `json:"frontends"`
-		Backends   map[string]BackendCfg `json:"backends"`
-		Buckets    bucketsRaw            `json:"buckets"`
-		Identities []auth.IdentityConfig `json:"identities"`
-		Auth       AuthConfig            `json:"auth"`
+		DataDir      string                `json:"dataDir"`
+		ListenAddr   string                `json:"listenAddr"`
+		CertFile     string                `json:"certFile"`
+		KeyFile      string                `json:"keyFile"`
+		Frontends    []FrontendConfig      `json:"frontends"`
+		Backends     map[string]BackendCfg `json:"backends"`
+		Buckets      bucketsRaw            `json:"buckets"`
+		Identities   []auth.IdentityConfig `json:"identities"`
+		Auth         AuthConfig            `json:"auth"`
+		ZmetadDBPath string                `json:"zmetad_db_path"`
+		ZmetadBinary string                `json:"zmetad_binary"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
@@ -324,6 +353,8 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	c.Backends = a.Backends
 	c.Identities = a.Identities
 	c.Auth = a.Auth
+	c.ZmetadDBPath = a.ZmetadDBPath
+	c.ZmetadBinary = a.ZmetadBinary
 	a.Buckets.apply(c)
 	return c.bucketsErr
 }

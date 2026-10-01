@@ -7,7 +7,7 @@ import (
 )
 
 // TestReplayFixtureEndToEnd parses the committed record-and-replay fixture
-// of real `zfs events -j` output and validates every event against the
+// of real zfs-events CLI output and validates every event against the
 // frozen op vocabulary (master Contract 3).
 func TestReplayFixtureEndToEnd(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("testdata", "zfs-events-sample.txt"))

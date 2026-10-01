@@ -489,3 +489,26 @@ func TestZmetadDB_HasDataset(t *testing.T) {
 		t.Error("HasDataset(pool/absent) = true, want false")
 	}
 }
+
+// TestMountpointContains pins the containment gate ResolveDatasetByPath
+// relies on (moved from the deleted zfs_cmd_test.go with leaf 04).
+func TestMountpointContains(t *testing.T) {
+	tests := []struct {
+		mountpoint, path string
+		want             bool
+	}{
+		{"/mnt/tank/data", "/mnt/tank/data", true},
+		{"/mnt/tank", "/mnt/tank/data", true},
+		{"/mnt/tank", "/mnt/tank/data/deep/k", true},
+		{"/mnt/tank", "/mnt/tankdata", false},  // prefix but not path-prefix
+		{"/mnt/tank", "/mnt/tank/datax", true}, // datax is a genuine child
+		{"/mnt/tank/data", "/mnt/tank", false},
+		{"/mnt/tank", "/opt/other", false},
+		{"", "", true}, // degenerate: equal empty strings
+	}
+	for _, tc := range tests {
+		if got := mountpointContains(tc.mountpoint, tc.path); got != tc.want {
+			t.Errorf("mountpointContains(%q, %q) = %v, want %v", tc.mountpoint, tc.path, got, tc.want)
+		}
+	}
+}

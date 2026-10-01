@@ -99,23 +99,31 @@ func installS3Seams() {
 	// Metadata provider registration + per-bucket resolver (bughunt C1).
 	// The blank import in main.go guarantees the metadata package (and its
 	// provider) is linked into the production binary; this registers the
-	// built-in zfs-events provider and installs the per-bucket resolver
-	// hook the ?events endpoints consult.
+	// built-in zfs-events provider (zmetad DB-backed since
+	// zmetad-provider-2026-09 leaf 04) and installs the per-bucket
+	// resolver hook the ?events endpoints consult.
 	//
 	// The resolver keeps the shim's per-request PROBE semantics: the
 	// provider is only returned for buckets whose path sits on a ZFS
-	// dataset with the events feature on, so registration alone never
-	// makes a non-ZFS bucket claim availability (unavailable probes
+	// dataset that zmetad tracks and has polled, so registration alone
+	// never makes a non-ZFS bucket claim availability (unavailable probes
 	// return nil → contracted 503).
-	metadata.Register(metadata.NewZFSEventsProvider())
+	//
+	// Config flow mirrors the dataDir seam above: installS3Seams reads
+	// the loaded serverConfig global directly. Defaults land at config
+	// load (config.go), so the provider always receives concrete values.
+	registered := metadata.NewZmetadEventsProvider(serverConfig.ZmetadDBPath)
+	metadata.SetZmetadBinary(registered, serverConfig.ZmetadBinary)
+	metadata.Register(registered)
 	s3.InstallMetadataProvider(func(bucketPath string) metadata.MetadataProvider {
 		// A FRESH provider instance per bucket (bughunt M1): the
 		// registry singleton is shared across buckets, and its
 		// per-instance LastDetail would cross-attribute dataset/
 		// recordsLost between concurrent ?events on different buckets.
-		// Construction is cheap (zero fields); Probe keeps the
-		// per-request availability semantics.
-		p := metadata.NewZFSEventsProvider()
+		// Construction is cheap (no I/O until Probe opens the DB);
+		// Probe keeps the per-request availability semantics.
+		p := metadata.NewZmetadEventsProvider(serverConfig.ZmetadDBPath)
+		metadata.SetZmetadBinary(p, serverConfig.ZmetadBinary)
 		res, err := p.Probe(context.Background(), bucketPath)
 		if err != nil || !res.Available {
 			return nil

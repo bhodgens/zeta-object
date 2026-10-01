@@ -95,20 +95,28 @@ type detailReporter interface {
 }
 
 // historyDetailFor reads the detail of the most recent completed History
-// call: the provider's own hook when it implements one, else the
-// metadata package's last-detail record (request-scoped read immediately
-// after History — see LastHistoryDetail's concurrency note).
+// call: the provider's own hook when it implements one. Providers that do
+// NOT implement LastDetail get a zero HistoryDetail (no dataset, no loss
+// claims) - the package-global fallback died with the CLI transport
+// (zmetad-provider-2026-09 leaf 04): a global last-detail record
+// cross-attributes between concurrent ?events on different buckets
+// (bughunt A2/C2), so the structural per-instance interface is the ONLY
+// path.
 func historyDetailFor(p metadata.MetadataProvider) metadata.HistoryDetail {
 	if d, ok := p.(detailReporter); ok {
 		return d.LastDetail()
 	}
-	return metadata.LastHistoryDetail()
+	return metadata.HistoryDetail{}
 }
 
 // ObjectEventHistory is the JSON envelope for ?events responses.
+// RingSwaps counts kernel-log identity swaps (zmetad gaps rows with the
+// lost=-1 sentinel) - a SEPARATE loss class from recordsLost, never
+// folded into it (zmetad SCHEMA.md section 4, master Contract 5).
 type ObjectEventHistory struct {
 	Dataset     string            `json:"dataset"`
 	RecordsLost uint64            `json:"recordsLost"`
+	RingSwaps   uint64            `json:"ringSwaps"`
 	Events      []objectEventJSON `json:"events"`
 }
 
@@ -129,11 +137,14 @@ type objectEventJSON struct {
 
 // ListObjectVersionsExt is the ?events&versions XML document — a
 // DERIVED, LOSSY, NON-STANDARD extension (never real S3 versioning).
+// IsLossy = RecordsLost > 0 OR RingSwaps > 0 (Contract 5: swaps are a
+// separate loss class and never folded into RecordsLost).
 type ListObjectVersionsExt struct {
 	XMLName     xml.Name           `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListObjectVersionsExt"`
 	Name        string             `xml:"Name"`
 	IsLossy     bool               `xml:"IsLossy"`
 	RecordsLost uint64             `xml:"RecordsLost"`
+	RingSwaps   uint64             `xml:"RingSwaps"`
 	Version     []ObjectVersionExt `xml:"Version"`
 }
 
@@ -170,6 +181,7 @@ func handleObjectEvents(w http.ResponseWriter, r *http.Request, bucketName, obje
 	writeEventsJSON(w, ObjectEventHistory{
 		Dataset:     detail.Dataset,
 		RecordsLost: detail.RecordsLost,
+		RingSwaps:   detail.RingSwaps,
 		Events:      toEventJSON(events),
 	})
 }
@@ -205,6 +217,7 @@ func handleBucketEvents(w http.ResponseWriter, r *http.Request, bucketName strin
 	writeEventsJSON(w, ObjectEventHistory{
 		Dataset:     detail.Dataset,
 		RecordsLost: detail.RecordsLost,
+		RingSwaps:   detail.RingSwaps,
 		Events:      toEventJSON(events),
 	})
 }
@@ -283,8 +296,9 @@ func toEventJSON(events []metadata.ObjectEvent) []objectEventJSON {
 func versionsFromEvents(events []metadata.ObjectEvent, detail metadata.HistoryDetail, prefix string) ListObjectVersionsExt {
 	out := ListObjectVersionsExt{
 		Name:        detail.Dataset,
-		IsLossy:     detail.RecordsLost > 0,
+		IsLossy:     detail.RecordsLost > 0 || detail.RingSwaps > 0,
 		RecordsLost: detail.RecordsLost,
+		RingSwaps:   detail.RingSwaps,
 	}
 	latest := map[string]bool{}
 	for i, e := range events { // newest-first (stream order)

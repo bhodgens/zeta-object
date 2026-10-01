@@ -381,3 +381,14 @@ func nullStringPtr(n sql.NullString) *string {
 	v := n.String
 	return &v
 }
+
+// mountpointContains reports whether the bucket path is the mountpoint or
+// lies beneath it. Containment is filepath-compatible: mountpoint == path,
+// or strings.HasPrefix(path, mountpoint+"/") - the separator guard stops
+// /mnt/tank from claiming /mnt/tankdata. Moved here from zfs_cmd.go with
+// the CLI transport deletion (zmetad-provider-2026-09 leaf 04): the
+// datasets-table longest-prefix resolution in ResolveDatasetByPath is its
+// only production consumer.
+func mountpointContains(mountpoint, path string) bool {
+	return mountpoint == path || strings.HasPrefix(path, mountpoint+"/")
+}

@@ -26,7 +26,7 @@ Most "S3-compatible" servers are the same idea restated: a service that owns a b
 
 1. **Your data is never held hostage.** Every object is a file you own, at a path you chose. Back up with rsync, replicate with ZFS send, grep it, migrate away by copying a directory. There is no export step because there is nothing to export.
 2. **Existing directories become S3 buckets with zero migration.** Bucket `logs` at `/var/log` means the decade of log files already on disk is immediately listable, downloadable, and presign-able over S3 - byte-for-byte, no import, no copy. Symlinks are followed, so a bucket can live anywhere.
-3. **Filesystem capabilities become S3 capabilities.** When a bucket sits on a ZFS dataset with the `org.openzfs:events` feature (per-dataset file-op history), zeta-object detects it at startup and serves `GET /<bucket>?events` and `GET /<bucket>?versions` derived from the kernel's own record of what happened to each file - create, rename, truncate, delete - with loss indicators. No hosted S3 offers object history; no opaque object server can borrow it from the filesystem. When the filesystem does not support it, the capability is simply absent (a clean 503), never faked.
+3. **Filesystem capabilities become S3 capabilities.** When a bucket sits on a ZFS dataset polled by the zmetad daemon (per-dataset file-op history exported to SQLite), zeta-object serves `GET /<bucket>?events` and `GET /<bucket>?versions` derived from the kernel's own record of what happened to each file - create, rename, truncate, delete - with loss indicators. No hosted S3 offers object history; no opaque object server can borrow it from the filesystem. When the filesystem does not support it, the capability is simply absent (a clean 503), never faked.
 4. **Pluggable on both axes, honest about semantics.** Frontends (client protocols) and backends (storage) plug into one neutral object model, and the seams reject what a protocol cannot express instead of silently emulating it. A parity gate proves an enabled metadata provider changes nothing about core S3 responses.
 5. **Small enough to read, hardened enough to trust.** One Go binary, a tiny audited dependency set (all licenses in docs/licenses/), and a gate wall: 200+ unit tests, 349-assert e2e suite, race detector, fuzzing, ceph/s3-tests conformance ratchet, staticcheck/gosec, and a pre-commit chain that enforces all of it. The codebase is small enough that an afternoon of reading covers every line that touches your data.
 
@@ -162,6 +162,8 @@ zeta-object uses a JSON configuration file (see `config.json.example` for a comm
 | `frontends` | - | Optional frontend list (default: one S3 frontend on `listenAddr`). Each entry may set its own `listenAddr` for a dedicated TLS listener. |
 | `identities` | `[]` | Optional additional auth identities (name, accessKey, secretKey, optional per-bucket `grants`, optional `sshPublicKeys`). See [Multiple identities](#multiple-identities-and-per-bucket-grants). |
 | `auth` | - | Optional auth settings; `auth.mode: "none"` enables the loud zero-auth dev mode. |
+| `zmetad_db_path` | `/var/lib/zfs/zmetad.db` | Path to the zmetad SQLite export database the ZFS-events provider reads. See [Metadata Capability Endpoints](#metadata-capability-endpoints-zfs-events). |
+| `zmetad_binary` | `zmetad` | zmetad executable used for history purge (`--purge`). Defaults to a `PATH` lookup. |
 
 Credentials are **not** set in the config file - environment variables only.
 
@@ -400,13 +402,67 @@ The FTP/FTPS and SFTP frontends are the first linked third-party Go dependencies
 
 ## Metadata Capability Endpoints (ZFS events)
 
-If a bucket's backing dataset is ZFS with the `org.openzfs:events` pool feature enabled (file-level operation history per dataset), zeta-object detects it and exposes the log over S3-style subresources:
+When a bucket's backing filesystem is ZFS, zeta-object serves the dataset's
+file-operation history (create, rename, truncate, delete, link, symlink,
+setattr) over S3-style subresources:
 
-- `GET /<bucket>/<key>?events` - the key's event history as JSON (op, txg, old/new name for renames, sizes for truncates)
+- `GET /<bucket>/<key>?events` - the key's event history as JSON (op, txg, old/new name for renames, sizes for truncates), envelope keys `dataset`, `recordsLost`, `ringSwaps`, `events`
 - `GET /<bucket>?events` - bucket-level recent history
-- `GET /<bucket>?events&versions` - a versions-style XML listing derived from the log: newest-first, per-key `IsLatest`, delete markers for removes, `IsLossy`/`RecordsLost` if the ring buffer wrapped
+- `GET /<bucket>?events&versions` - a versions-style XML listing derived from the log: newest-first, per-key `IsLatest`, delete markers for removes, `IsLossy`/`RecordsLost`/`RingSwaps` loss indicators
 
-The capability is probed per bucket (filesystem type + feature check). Non-ZFS buckets get a clean `503 NotImplemented`; nothing is emulated. `uid`/`gid` are not exposed. Requires a host with the `zfs` binary in `PATH`.
+### Prerequisite: zmetad
+
+The events come from the **zmetad** daemon (zfs-metadata
+`extended-metadata` branch), which durably exports the kernel event log to
+a SQLite database. zeta-object reads that database exclusively - it never
+execs `zfs events` itself:
+
+- zmetad must be running on the ZFS host with **DB layout version 5**
+  (events carry insert-time-resolved `full_path`; the consumer contract is
+  zmetad's `SCHEMA.md`). Newer layouts are refused until zeta-object
+  catches up; older ones are refused with an upgrade hint (zmetad migrates
+  in place).
+- The bucket's dataset must be tracked and polled by zmetad. Buckets that
+  are not on ZFS, or not tracked/polled yet, get a clean
+  `503 NotImplemented`; nothing is emulated. `uid`/`gid` are not exposed.
+- **Freshness:** events appear within one zmetad poll interval (default
+  30 s). Sending zmetad `SIGUSR1` forces an immediate out-of-band collect.
+
+### Configuration
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `zmetad_db_path` | `/var/lib/zfs/zmetad.db` | SQLite database zmetad exports to; opened read-only per request. |
+| `zmetad_binary` | `zmetad` | Executable invoked for purge (`zmetad --purge <dataset>`). |
+
+### Loss semantics
+
+The kernel event log is a bounded ring buffer, and zmetad records every
+loss it can observe. The wire surfaces two SEPARATE loss classes (never
+folded into one number):
+
+- `recordsLost` / `RecordsLost` - lifetime count of known-lost records
+  (rows the kernel dropped before zmetad could collect them). This is a
+  lifetime figure: it survives retention and is never rewritten.
+- `ringSwaps` / `RingSwaps` - count of kernel-log identity swaps (the
+  ring was replaced, e.g. after a crash or module reload). History from
+  before a swap is still served - it is real file history - and the
+  boundary is bounded by the swap record itself.
+- `IsLossy` (XML) is true when EITHER count is nonzero.
+
+**Retention:** zmetad expires event rows at its `--retention` (default 90
+days), so listing depth is bounded by that window; the gap/swap counts are
+lifetime and are never retention-deleted.
+
+### Purge
+
+The provider's purge operation execs `zmetad --purge <dataset>`: the
+coordinated wipe clears BOTH the database rows (events, gaps, sync_state)
+AND the kernel ring buffer, and resets the loss history
+(`recordsLost`/`ringSwaps` start over). zeta-object never purges via SQL
+itself - a hand-rolled delete would leave the kernel ring uncleared and
+cause a full re-import. Purge is destructive, is reachable only through
+authenticated request paths, and never runs at server startup.
 
 ## Event Actions
 
