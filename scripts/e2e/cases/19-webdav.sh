@@ -169,7 +169,7 @@ rm -f "$W19_HDRS"
 # PROPFIND / Depth 1: the seeded bucket appears as a collection.
 w19_req PROPFIND / -H 'Depth: 1' --data-binary ''
 assert_eq 'PROPFIND / Depth 1' 207 "$W19_STATUS"
-assert_contains 'root lists the bucket as a collection' "$W19_BODY" "<href xmlns=\"DAV:\">/$W19_BKT/</href>"
+assert_contains 'root lists the bucket as a collection' "$W19_BODY" "<d:href>/$W19_BKT/</d:href>"
 assert_contains 'root response carries resourcetype' "$W19_BODY" 'resourcetype'
 
 # PROPFIND of the bucket: the seeded object with its properties.
@@ -343,5 +343,17 @@ launch_expect_fail "$W19_WORK/config-bad.json" "$W19_FAILOG" 10
 assert_eq 'unknown webdav key aborts startup (process exits)' 0 "$FAILSTART_EXIT"
 assert_contains 'startup log names the unknown key' "$(cat "$W19_FAILOG")" 'bogus'
 W19_FAILOG=''
+
+# --- part 19f: chunked PUT (issue #6) ---------------------------------------
+# curl -T - streams with Transfer-Encoding: chunked (no Content-Length).
+# Direct curl (the w19 helpers buffer bodies, which would defeat chunking).
+W19_CHUNK=$(printf 'chunked by curl')
+W19_CSTATUS=$(printf 'chunked by curl' | curl -sk -o /dev/null -w '%{http_code}' \
+	--user "${W19_USER}:${W19_PASS}" -T - \
+	"https://127.0.0.1:$W19_PORT_B/chunked.txt" 2>/dev/null)
+assert_eq 'chunked PUT accepted (201)' 201 "$W19_CSTATUS"
+W19_CDOWN=$(curl -sk --user "${W19_USER}:${W19_PASS}" \
+	"https://127.0.0.1:$W19_PORT_B/chunked.txt" 2>/dev/null)
+assert_contains 'chunked PUT round-trip body' "$W19_CDOWN" 'chunked by curl'
 
 e2e_finish

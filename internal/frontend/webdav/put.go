@@ -55,14 +55,13 @@ func (f *Frontend) handlePUT(w http.ResponseWriter, r *http.Request, res resourc
 		IfNoneMatch: r.Header.Get("If-None-Match"),
 	}
 
-	// Size strategy (leaf 03 Task 2): stream with the declared length;
-	// a body without a declared length (chunked) is rejected 400 rather
-	// than buffered unboundedly.
+	// Size strategy (issue #6): stream with the declared length when
+	// present; chunked bodies (Transfer-Encoding, ContentLength < 0) are
+	// accepted and capped by the backend's maxPutBytes LimitReader —
+	// rejecting chunked PUT broke real clients (curl -T -, some Windows
+	// Explorer configs). No unbounded buffering: the backend reads at
+	// most maxPutBytes+1 before rejecting.
 	size := r.ContentLength
-	if size < 0 {
-		writeDavError(w, http.StatusBadRequest, "")
-		return
-	}
 
 	obj, err := f.be.Put(r.Context(), res.bucket, res.key, r.Body, size, opts)
 	if err != nil {

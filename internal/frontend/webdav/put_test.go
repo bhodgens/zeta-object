@@ -215,16 +215,24 @@ func TestPUT_ModeB_Rooting(t *testing.T) {
 	}
 }
 
-func TestPUT_ChunkedWithoutLength400(t *testing.T) {
+// Issue #6: chunked PUT (Transfer-Encoding, ContentLength < 0) is ACCEPTED
+// — real clients (curl -T -, some Windows Explorer configs) send it. The
+// backend caps the body at maxPutBytes via LimitReader; no unbounded
+// buffering. Replaces the old reject-400 pin.
+func TestPUT_ChunkedWithoutLengthAccepted(t *testing.T) {
 	f, be := newTestFrontend(Config{})
 	req := httptest.NewRequest("PUT", "/photos/a.txt", strings.NewReader("chunked body"))
 	req.ContentLength = -1 // chunked: no declared length
 	rec := httptest.NewRecorder()
 	f.Handler().ServeHTTP(rec, req)
-	if rec.Code != 400 {
-		t.Fatalf("status = %d, want 400 (reject chunked-without-length)", rec.Code)
+	if rec.Code != 201 {
+		t.Fatalf("status = %d, want 201 (chunked PUT accepted)", rec.Code)
 	}
-	if len(be.putCalls) != 0 {
-		t.Fatal("chunked PUT must not reach the backend")
+	if len(be.putCalls) != 1 {
+		t.Fatal("chunked PUT must reach the backend exactly once")
+	}
+	got := string(be.putCalls[0].body)
+	if got != "chunked body" {
+		t.Fatalf("backend read %q, want the full chunked body", got)
 	}
 }

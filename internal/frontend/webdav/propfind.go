@@ -42,8 +42,8 @@ type multistatus struct {
 	// client's csync property parser matches prefixed qnames literally);
 	// the root declares both bindings. XMLName is empty so Go does not
 	// re-declare namespaces per element.
-	XmlnsD    string   `xml:"xmlns:d,attr"`
-	XmlnsOc   string   `xml:"xmlns:oc,attr"`
+	XmlnsD    string `xml:"xmlns:d,attr"`
+	XmlnsOc   string `xml:"xmlns:oc,attr"`
 	Responses []response
 }
 

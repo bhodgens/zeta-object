@@ -117,28 +117,28 @@ assert_eq 'PUT reports/q2.txt' 201 "$OC25_STATUS"
 oc25_req PROPFIND "$OC25_DAV/reports" -H 'Depth: 1' --data-binary ''
 assert_eq 'slash-less discovery PROPFIND 207' 207 "$OC25_STATUS"
 assert_contains 'xmlns:oc declared on multistatus root' "$OC25_BODY" "xmlns:oc=\"$OC25_NS\""
-assert_contains 'oc:fileid present (collection)' "$OC25_BODY" "<fileid xmlns=\"$OC25_NS\">"
-assert_contains 'oc:permissions present' "$OC25_BODY" "<permissions xmlns=\"$OC25_NS\">RDNVCK</permissions>"
-assert_contains 'oc:size present on collection' "$OC25_BODY" "<size xmlns=\"$OC25_NS\">21</size>"
+assert_contains 'oc:fileid present (collection)' "$OC25_BODY" "<oc:fileid>"
+assert_contains 'oc:permissions present' "$OC25_BODY" "<oc:permissions>RDNVCK</oc:permissions>"
+assert_contains 'oc:size present on collection' "$OC25_BODY" "<oc:size>21</oc:size>"
 
 # --- 25b: oc:fileid is stable across two requests --------------------------------
 oc25_req PROPFIND "$OC25_DAV/reports" -H 'Depth: 1' --data-binary ''
 assert_eq 'second discovery PROPFIND 207' 207 "$OC25_STATUS"
-OC25_ID_1=$(printf '%s' "$OC25_BODY" | grep -o "<fileid xmlns=\"$OC25_NS\">[0-9]*</fileid>" | head -1)
+OC25_ID_1=$(printf '%s' "$OC25_BODY" | grep -o "<oc:fileid>[0-9]*</oc:fileid>" | head -1)
 oc25_req PROPFIND "$OC25_DAV/reports" -H 'Depth: 1' --data-binary ''
-OC25_ID_2=$(printf '%s' "$OC25_BODY" | grep -o "<fileid xmlns=\"$OC25_NS\">[0-9]*</fileid>" | head -1)
+OC25_ID_2=$(printf '%s' "$OC25_BODY" | grep -o "<oc:fileid>[0-9]*</oc:fileid>" | head -1)
 assert_eq 'oc:fileid stable across requests' "$OC25_ID_1" "$OC25_ID_2"
 
 # --- 25c: file fileid differs from its parent collection's ------------------------
 # Discovery Depth 0 on the collection vs Depth 0 on the file: the fileids
 # must differ (derived from bucket+key).
 oc25_req PROPFIND "$OC25_DAV/reports" -H 'Depth: 0' --data-binary ''
-OC25_DIR_ID=$(printf '%s' "$OC25_BODY" | grep -o "<fileid xmlns=\"$OC25_NS\">[0-9]*</fileid>" | head -1 | grep -o '[0-9]*')
+OC25_DIR_ID=$(printf '%s' "$OC25_BODY" | grep -o "<oc:fileid>[0-9]*</oc:fileid>" | head -1 | grep -o '[0-9]*')
 assert_eq 'collection Depth 0 PROPFIND 207' 207 "$OC25_STATUS"
 oc25_req PROPFIND "$OC25_DAV/reports/q1.txt" -H 'Depth: 0' --data-binary ''
-OC25_FILE_ID=$(printf '%s' "$OC25_BODY" | grep -o "<fileid xmlns=\"$OC25_NS\">[0-9]*</fileid>" | head -1 | grep -o '[0-9]*')
+OC25_FILE_ID=$(printf '%s' "$OC25_BODY" | grep -o "<oc:fileid>[0-9]*</oc:fileid>" | head -1 | grep -o '[0-9]*')
 assert_eq 'file Depth 0 PROPFIND 207' 207 "$OC25_STATUS"
-assert_contains 'file carries readwrite RW permissions' "$OC25_BODY" "<permissions xmlns=\"$OC25_NS\">RW</permissions>"
+assert_contains 'file carries readwrite RW permissions' "$OC25_BODY" "<oc:permissions>RW</oc:permissions>"
 if [ "$OC25_DIR_ID" != "$OC25_FILE_ID" ] && [ -n "$OC25_DIR_ID" ] && [ -n "$OC25_FILE_ID" ]; then
 	assert_eq 'file fileid differs from parent collection' differ differ
 else
@@ -149,17 +149,17 @@ fi
 oc25_req PROPFIND "$OC25_DAV/reports/" -H 'Depth: 1' --data-binary ''
 assert_eq 'trailing-slash PROPFIND 207' 207 "$OC25_STATUS"
 assert_contains 'trailing-slash: xmlns:oc present' "$OC25_BODY" "xmlns:oc=\"$OC25_NS\""
-assert_contains 'trailing-slash: oc:fileid present' "$OC25_BODY" "<fileid xmlns=\"$OC25_NS\">"
+assert_contains 'trailing-slash: oc:fileid present' "$OC25_BODY" "<oc:fileid>"
 # oc:size aggregates the whole subtree (7 + 14 = 21).
-assert_contains 'oc:size subtree aggregate (7+14=21)' "$OC25_BODY" "<size xmlns=\"$OC25_NS\">21</size>"
+assert_contains 'oc:size subtree aggregate (7+14=21)' "$OC25_BODY" "<oc:size>21</oc:size>"
 
 # --- 25e: allprop body naming oc: props (the named-prop discovery form) -------------
 OC25_PROP_BODY="<?xml version=\"1.0\"?><D:propfind xmlns:D=\"DAV:\" xmlns:oc=\"$OC25_NS\"><D:prop><oc:fileid/><oc:permissions/><oc:size/></D:prop></D:propfind>"
 oc25_req PROPFIND "$OC25_DAV/reports" -H 'Depth: 1' --data-raw "$OC25_PROP_BODY"
 assert_eq 'named oc: prop PROPFIND 207' 207 "$OC25_STATUS"
-assert_contains 'named prop: fileid returned' "$OC25_BODY" "<fileid xmlns=\"$OC25_NS\">"
-assert_contains 'named prop: permissions returned' "$OC25_BODY" "<permissions xmlns=\"$OC25_NS\">"
-assert_contains 'named prop: size returned' "$OC25_BODY" "<size xmlns=\"$OC25_NS\">"
+assert_contains 'named prop: fileid returned' "$OC25_BODY" "<oc:fileid>"
+assert_contains 'named prop: permissions returned' "$OC25_BODY" "<oc:permissions>"
+assert_contains 'named prop: size returned' "$OC25_BODY" "<oc:size>"
 
 # --- cleanup -------------------------------------------------------------------------
 oc25_req DELETE "$OC25_DAV/reports/q1.txt"
