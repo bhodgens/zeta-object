@@ -77,6 +77,11 @@ func LastHistoryDetail() HistoryDetail {
 type HistoryDetail struct {
 	Dataset     string
 	RecordsLost uint64 // nonzero = history is lossy; surfaces records_lost
+	// RingSwaps counts kernel-log identity swaps (zmetad gaps rows with
+	// the lost=-1 sentinel). Per SCHEMA.md section 4, swaps are epoch-
+	// boundary COUNTS, not lost records: they MUST never be folded into
+	// RecordsLost.
+	RingSwaps uint64
 }
 
 var (
