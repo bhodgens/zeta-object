@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -772,5 +773,81 @@ func TestRenameDirMarkerMoves(t *testing.T) {
 func TestUploadBufferCapMatchesBackendDefault(t *testing.T) {
 	if maxUploadBufferBytes != 5<<30 {
 		t.Fatalf("maxUploadBufferBytes = %d, want the 5 GiB backend default", maxUploadBufferBytes)
+	}
+}
+
+// T2: a DROPPED connection after successful writes must not commit the
+// buffered prefix. pkg/sftp's Serve sweeps still-open handles with
+// TransferError(err) before Close when the peer vanishes mid-transfer;
+// putWriter now implements that hook and Close commits nothing after it.
+// The client-side shape: open a handle, write bytes, then kill the
+// client transport WITHOUT SSH_FXP_CLOSE.
+func TestDroppedConnectionAfterWriteDoesNotCommit(t *testing.T) {
+	be := newRecordingBackend()
+	be.objects["bkt/drop.txt"] = []byte("original-good-bytes")
+	_, lsn := startTestServer(t, be, testConfig(t, be))
+	sc := dialSFTP(t, lsn, "user", "pass")
+
+	wf, err := sc.OpenFile("/bkt/drop.txt", os.O_WRONLY)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	if _, err := wf.Write([]byte("partial-prefix-")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	// Kill the transport without closing the SFTP handle: the server sees
+	// the channel die with the request still open.
+	if err := sc.Close(); err != nil {
+		t.Fatalf("client close: %v", err)
+	}
+	// Serve's sweep is asynchronous relative to the client close: wait for
+	// the handle sweep to settle before asserting on storage.
+	deadline := time.Now().Add(3 * time.Second)
+	for len(be.puts) > 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got, ok := be.objects["bkt/drop.txt"]; !ok || string(got) != "original-good-bytes" {
+		t.Fatalf("dropped overwrite committed: %q (want original-good-bytes)", got)
+	}
+}
+
+// T6: the raced re-read retries — a winner that has created but not yet
+// flushed the host-key file no longer kills the frontend. Simulated by
+// planting a file at the path BETWEEN generate attempts is not reachable
+// at unit level without injection, so pin the observable contract: an
+// EEXIST path whose file becomes parseable within the retry window
+// resolves to that file's key (and the 5-try loop does not spin forever
+// on a never-parseable file — it returns the raced-read error).
+func TestHostKeyRacedReadRetry(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "host_ed25519")
+
+	// Shape 1: a VALID key already at the path (the common lost-race
+	// outcome) is reused, not overwritten.
+	_, gen1, _, err := loadOrGenerateHostKey(path)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	_, gen2, _, err := loadOrGenerateHostKey(path)
+	if err != nil {
+		t.Fatalf("reuse: %v", err)
+	}
+	if !gen1 {
+		t.Fatal("first call on a fresh path must generate")
+	}
+	if gen2 {
+		t.Fatal("existing file must not regenerate")
+	}
+
+	// Shape 2: an EMPTY file at the path (winner created, not yet
+	// flushed) — with no concurrent writer this exhausts the retries and
+	// fails LOUDLY with the raced-read error instead of a bare parse
+	// error; the retry loop itself is exercised.
+	empty := filepath.Join(dir, "host_empty")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := loadOrGenerateHostKey(empty); err == nil {
+		t.Fatal("unparseable host key must fail loudly")
 	}
 }

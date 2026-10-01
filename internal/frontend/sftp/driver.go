@@ -110,23 +110,37 @@ func (p *filePut) Filewrite(req *sftp.Request) (io.WriterAt, error) {
 
 // putWriter buffers an upload; Close commits one Put.
 //
-// Commit guard: Close only Puts when at least one WriteAt SUCCEEDED. A
-// zero-write close (aborted APPE / new upload — the client opened the
-// handle and closed it without transferring) must NOT store an empty
-// object or clobber the previous one, so it is a silent no-op.
+// Commit guard: Close only Puts when at least one WriteAt SUCCEEDED and the
+// transfer was NOT aborted. A zero-write close (aborted APPE / new upload —
+// the client opened the handle and closed it without transferring) must NOT
+// store an empty object or clobber the previous one, so it is a silent no-op.
 //
-// RESIDUAL (known, unfixable at this layer): pkg/sftp's RequestServer has
-// no transfer-error hook — it calls Close the same way on a clean EOF and
-// on a dropped connection. Once ANY write succeeded we cannot distinguish
-// "client finished" from "connection dropped mid-transfer", so a dropped
-// connection after a partial write still commits the buffered prefix.
-// Fixing that needs an upstream hook (or a temp-key + rename commit).
+// Abort detection (T2, closes the partial-commit residual): the writer
+// implements sftp.TransferError. pkg/sftp v1.13.11 RequestServer.Serve
+// (request-server.go:204-217) sweeps every still-open handle when the
+// connection drops: it calls TransferError(err) — io.ErrUnexpectedEOF for a
+// dropped peer, the underlying transport error otherwise — BEFORE calling
+// Close. A CLEAN close (SSH_FXP_CLOSE) removes the handle from the open
+// table first (closeRequest), so TransferError never fires on the success
+// path. Abort → Close commits NOTHING: the previous object keeps its bytes.
 type putWriter struct {
-	f      *Frontend
-	bucket string
-	key    string
-	buf    bytes.Buffer
-	writes bool // at least one WriteAt succeeded
+	f       *Frontend
+	bucket  string
+	key     string
+	buf     bytes.Buffer
+	writes  bool  // at least one WriteAt succeeded
+	aborted error // non-nil once TransferError fired (nil = clean)
+}
+
+// compile-time: the writer receives pkg/sftp's transfer-error notification.
+var _ sftp.TransferError = (*putWriter)(nil)
+
+// TransferError records the connection-drop cause. pkg/sftp calls this
+// exactly once per open handle during Serve's end-of-stream sweep, before
+// Close, with all worker goroutines already joined (wg.Wait precedes the
+// sweep), so no extra synchronization against WriteAt is needed.
+func (w *putWriter) TransferError(err error) {
+	w.aborted = err
 }
 
 func (w *putWriter) WriteAt(p []byte, off int64) (int, error) {
@@ -147,6 +161,12 @@ func (w *putWriter) WriteAt(p []byte, off int64) (int, error) {
 }
 
 func (w *putWriter) Close() error {
+	if w.aborted != nil {
+		// T2: the connection dropped mid-transfer. Commit NOTHING —
+		// an existing object keeps its exact bytes (a dropped overwrite
+		// no longer stores the buffered prefix).
+		return mapBackendError(w.aborted)
+	}
 	if !w.writes {
 		// Abort semantics: no write ever succeeded, so commit nothing —
 		// an existing object keeps its exact bytes and no empty object
