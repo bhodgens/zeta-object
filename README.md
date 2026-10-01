@@ -125,6 +125,31 @@ Semantics:
 - An access key that is not in the registry is rejected with `InvalidAccessKeyId`, unchanged.
 - Validation is fail-loud: a duplicate access key (between identities, or against the env pair) or any invalid identity aborts startup — never a silent fallback.
 
+#### Rich grants: prefix, op, and time scoping
+
+A grant value can also be an object. The string form stays valid — it is the legacy shorthand.
+
+```jsonc
+"grants": {
+  "*": "readwrite",                        // legacy form, unchanged
+  "photos": "readonly",                    // legacy form, unchanged
+  "photos/2024/*": {                       // rich form
+    "ops": ["read", "write", "list"],      // required, non-empty
+    "not-before": "2026-09-01T00:00:00Z",  // optional, RFC 3339
+    "not-after": "2026-12-31T23:59:59Z"    // optional, RFC 3339
+  }
+}
+```
+
+Semantics:
+
+- Pattern grammar: `*` (every bucket), `<bucket>` (whole bucket), or `<bucket>/<prefix>*`. The trailing `*` is the only wildcard. The boundary is `/`: `photos/2024/*` matches `photos/2024/a.jpg` but not `photos/20240/x` and not `photos/2024`.
+- Op vocabulary: `read` (GET/HEAD), `write` (PUT/POST object data), `list`, `delete`, `create`. Unknown ops abort startup.
+- Time windows are RFC 3339, both ends inclusive, UTC. Expired or not-yet-active grants deny — they are legal config, never stripped at load. Only `not-after <= not-before` and unparsable timestamps abort startup.
+- Interplay with v1: the registry derives a safe floor into the v1 grant map (read/write unions into the bucket key). Time-scoped or non-read/write entries contribute nothing grantable at the v1 level — a time-scoped bucket shows no v1 access, so wildcard fall-through cannot leak. Object enforcement always consults the full rich expression.
+- ListBuckets shows the floor (bucket-level). A prefix-scoped identity appears to have bucket-level read for listings; object operations outside its prefix still deny. Key-level visibility inside listings is out of scope.
+- Config validation is fail-loud: unknown op, empty `ops`, unknown JSON keys, bad RFC 3339, or an inverted window aborts startup naming the offender.
+
 ### Key rotation and revocation
 
 Edit `identities` in `config.json`, then send the server SIGHUP (`kill -HUP <pid>`). No restart.
@@ -573,7 +598,7 @@ Every pull goes through the pre-commit chain (secrets scan, vet, error-pattern c
 
 ## Known Limitations
 
-*   No ACLs or bucket policies; authorization is per-identity bucket grants (the `identities` config block).
+*   No ACLs or bucket policies; authorization is per-identity grants (the `identities` config block — bucket-level and prefix/op/time-scoped rich expressions).
 *   Key rotation for `identities` is a SIGHUP reload (edit config.json → `kill -HUP`); the env pair still needs a restart. No OAuth/OIDC/token-based auth for S3 (SigV4 cannot express it).
 *   Region pinned to `us-east-1`.
 *   Object keys with `..` or `.metadata` path segments are rejected, and keys must be in canonical form (safety over S3 compatibility; no `a//b` aliasing).

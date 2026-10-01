@@ -68,8 +68,8 @@ func TestConfigIdentitiesParse(t *testing.T) {
 	if ci.Name != "ci-bot" || ci.AccessKey != "AKCI" || ci.SecretKey != "sk-ci" {
 		t.Errorf("identity 0 = %+v", ci)
 	}
-	if cfg.Identities[1].Grants["photos"] != "readonly" {
-		t.Errorf("grants lost: %+v", cfg.Identities[1].Grants)
+	if raw := cfg.Identities[1].Grants["photos"]; string(raw) != `"readonly"` {
+		t.Errorf("grants lost: %s", raw)
 	}
 	if len(cfg.Identities[2].SSHPublicKeys) != 1 {
 		t.Errorf("sshPublicKeys lost: %+v", cfg.Identities[2])
@@ -86,7 +86,7 @@ func TestBuildIdentityRegistryEnvMerge(t *testing.T) {
 	serverConfig = defaultServerConfig()
 	serverConfig.Identities = []auth.IdentityConfig{
 		{Name: "ci-bot", AccessKey: "AKCI", SecretKey: "sk-ci"},
-		{Name: "scraper", AccessKey: "AKRO", SecretKey: "sk-ro", Grants: map[string]string{"photos": "readonly"}},
+		{Name: "scraper", AccessKey: "AKRO", SecretKey: "sk-ro", Grants: rawGrants(map[string]string{"photos": "readonly"})},
 	}
 	reg, err := buildIdentityRegistry()
 	if err != nil {
@@ -179,7 +179,7 @@ func TestBuildIdentityRegistryValidation(t *testing.T) {
 		wantErr    string
 	}{
 		{"empty required field", []auth.IdentityConfig{{Name: "x", AccessKey: "", SecretKey: "s"}}, "", "accessKey is required"},
-		{"invalid grant value", []auth.IdentityConfig{{Name: "x", AccessKey: "AK", SecretKey: "s", Grants: map[string]string{"b": "admin"}}}, "", "unknown grant value"},
+		{"invalid grant value", []auth.IdentityConfig{{Name: "x", AccessKey: "AK", SecretKey: "s", Grants: rawGrants(map[string]string{"b": "admin"})}}, "", "unknown grant value"},
 		{"bad auth.mode", nil, "off", "invalid auth.mode"},
 	}
 	for _, tc := range cases {
@@ -221,4 +221,15 @@ func TestEnvPairLegacyPrefixes(t *testing.T) {
 			t.Fatalf("ZETAOBJECT should win: %q", serverCredentials.AccessKeyID)
 		}
 	})
+}
+
+// rawGrants adapts the legacy string-literal grant map to the dual-form
+// config type (leaf 09): semantics identical, fewer literal bytes.
+func rawGrants(m map[string]string) map[string]json.RawMessage {
+	out := make(map[string]json.RawMessage, len(m))
+	for k, v := range m {
+		b, _ := json.Marshal(v)
+		out[k] = b
+	}
+	return out
 }
