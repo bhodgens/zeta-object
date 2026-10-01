@@ -109,6 +109,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # gitleaks scans a commit RANGE on push events (last-scanned..HEAD);
+          # a depth-1 clone lacks the base commit and the scan dies with
+          # "ambiguous argument ... unknown revision". Full history required.
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

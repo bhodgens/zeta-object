@@ -140,13 +140,13 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if idx := strings.LastIndex(r.URL.Path, "/ocs/"); idx >= 0 {
 		if v, ok := ocsVersionOf(r.URL.Path[idx:]); ok {
-			f.routeOCS(w, r, v)
-			return
-		}
-	}
-	if idx := strings.LastIndex(r.URL.Path, "/ocs/"); idx >= 0 {
-		if v, ok := ocsVersionOf(r.URL.Path[idx:]); ok {
-			f.routeOCS(w, r, v)
+			// Re-root the request at the OCS segment: routeOCS derives the
+			// endpoint subpath from r.URL.Path, so the sync-root prefix must
+			// be stripped or every nested OCS endpoint 404s (the subpath
+			// would carry the prefix, e.g. "/syncroot/ocs/v2.php/config").
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = r.URL.Path[idx:]
+			f.routeOCS(w, r2, v)
 			return
 		}
 	}
@@ -211,7 +211,8 @@ func ocsVersionOf(urlPath string) (int, bool) {
 }
 
 // ocsSubpath is the endpoint path inside the version prefix:
-// "/ocs/v2.php/cloud/user" → "/cloud/user" (always slash-led).
+// "/ocs/v2.php/cloud/user" → "/cloud/user" (always slash-led; the bare
+// version prefix maps to "/").
 func ocsSubpath(urlPath string, version int) string {
 	var prefix string
 	if version == 1 {
@@ -219,7 +220,11 @@ func ocsSubpath(urlPath string, version int) string {
 	} else {
 		prefix = "/ocs/v2.php"
 	}
-	return strings.TrimPrefix(urlPath, prefix)
+	sub := strings.TrimPrefix(urlPath, prefix)
+	if sub == "" {
+		return "/"
+	}
+	return sub
 }
 
 // routeOCS dispatches an OCS request by (method, subpath). Implemented
