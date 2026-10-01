@@ -83,6 +83,19 @@ func (r *ReloadableRegistry) Keys() PublicKeyAuthenticator {
 	return reloadablePublicKey{r}
 }
 
+// RichGrantsFor re-resolves an identity's rich grant table by access key ID
+// through the current inner registry (design-leaf 09: the SFTP session
+// handler's one lookup at session start — the CriticalOptions round-trip
+// carries only the floor map). A registry whose entries carry no rich
+// grants returns nil ⇒ identical pre-leaf behavior.
+func (r *ReloadableRegistry) RichGrantsFor(accessKeyID string) []GrantExpr {
+	cur, ok := r.current().(interface{ RichGrantsFor(string) []GrantExpr })
+	if !ok {
+		return nil
+	}
+	return cur.RichGrantsFor(accessKeyID)
+}
+
 // reloadablePublicKey forwards AuthenticatePublicKey through the wrapper's
 // single read path, so public-key resolution rotates with the rest.
 type reloadablePublicKey struct{ r *ReloadableRegistry }

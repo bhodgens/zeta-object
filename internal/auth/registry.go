@@ -12,6 +12,7 @@ package auth
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -21,12 +22,18 @@ import (
 // frozen JSON keys). Name is for logs only; AccessKey is also the Basic-auth
 // username (one credential namespace, one registry); SSHPublicKeys are
 // authorized_keys-format lines consumed by the future SFTP frontend.
+//
+// Grants is the DUAL-FORM grant map (leaf 09): a string value is the
+// legacy frozen shorthand ("readonly"/"readwrite"); an object value is a
+// rich grant expression (prefix/op/time-scoped — see richgrants.go). The
+// Go field type is the raw-JSON carrier so both forms decode; every
+// legacy document parses to identical semantics (golden-tested).
 type IdentityConfig struct {
-	Name          string            `json:"name"`
-	AccessKey     string            `json:"accessKey"`
-	SecretKey     string            `json:"secretKey"`
-	Grants        map[string]string `json:"grants,omitempty"`
-	SSHPublicKeys []string          `json:"sshPublicKeys,omitempty"`
+	Name          string                     `json:"name"`
+	AccessKey     string                     `json:"accessKey"`
+	SecretKey     string                     `json:"secretKey"`
+	Grants        map[string]json.RawMessage `json:"grants,omitempty"`
+	SSHPublicKeys []string                   `json:"sshPublicKeys,omitempty"`
 }
 
 // IdentityRegistry resolves wire credentials to identities. An OAuth/OIDC
@@ -112,7 +119,7 @@ func NewMultiRegistry(identities []IdentityConfig) (*MultiRegistry, error) {
 		if _, dup := reg.byAccessKey[cfg.AccessKey]; dup {
 			return nil, fmt.Errorf("access key of identity %q is configured more than once", cfg.Name)
 		}
-		grants, err := parseGrants(cfg)
+		grants, rich, err := parseGrants(cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -125,6 +132,11 @@ func NewMultiRegistry(identities []IdentityConfig) (*MultiRegistry, error) {
 			secretHash: secretHash(cfg.SecretKey),
 			publicKeys: make(map[string]string),
 		}
+		// Rich grants (leaf 09): register the parsed expressions beside the
+		// frozen floor map. Registered unconditionally — even when empty — so
+		// a reload fully replaces any table a previous build left under this
+		// access key (a downgraded/revoked identity never keeps rich grants).
+		st.identity = st.identity.WithRichGrants(rich)
 		// Public keys: canonicalized (leaf 04) and deduplicated across the
 		// whole registry — one key must resolve to exactly one identity.
 		for _, keyLine := range cfg.SSHPublicKeys {
@@ -144,35 +156,82 @@ func NewMultiRegistry(identities []IdentityConfig) (*MultiRegistry, error) {
 	return reg, nil
 }
 
-// parseGrants translates the JSON string grants into Grant values. Absent
-// grants ⇒ wildcard readwrite (the historical single-pair semantic).
-func parseGrants(cfg IdentityConfig) (map[string]Grant, error) {
+// parseGrants translates the DUAL-FORM grants map into the frozen floor
+// map plus the rich expressions (leaf 09). Absent grants ⇒ wildcard
+// readwrite (the historical single-pair semantic) — but ONLY when there are
+// no rich entries either.
+//
+// Floor rules (leaf 09 Contract 3):
+//   - legacy string entries build the frozen map exactly as before;
+//   - every rich entry is parsed fail-loud and derives its implied v1 floor
+//     via applyFloorUnion (read/write bits for unbounded entries; a
+//     zero-bit marker for time-scoped entries; nothing for non-read/write
+//     entries).
+func parseGrants(cfg IdentityConfig) (map[string]Grant, []GrantExpr, error) {
 	if len(cfg.Grants) == 0 {
-		return map[string]Grant{"*": {Read: true, Write: true}}, nil
+		return map[string]Grant{"*": {Read: true, Write: true}}, nil, nil
 	}
-	grants := make(map[string]Grant, len(cfg.Grants))
+	// Pass 1: parse every entry fail-loud (pattern grammar + value form).
+	type parsedEntry struct {
+		legacy  *Grant
+		rich    GrantExpr
+		hasRich bool
+	}
+	parsed := make(map[string]parsedEntry, len(cfg.Grants))
+	richOrder := make([]string, 0, len(cfg.Grants))
 	for bucket, value := range cfg.Grants {
 		if bucket == "" {
-			return nil, fmt.Errorf("identity %q: grant bucket name must not be empty", cfg.Name)
+			return nil, nil, fmt.Errorf("identity %q: grant bucket name must not be empty", cfg.Name)
 		}
 		// The SFTP frontend serializes grants into CriticalOptions as
 		// comma-separated key=value pairs; a bucket name containing "," or
 		// "=" would round-trip as a wider grant. Reject at config load.
-		if strings.ContainsAny(bucket, ",=") {
-			return nil, fmt.Errorf("identity %q: grant bucket name %q must not contain %q or %q",
-				cfg.Name, bucket, ",", "=")
+		// (The BUCKET COMPONENT only — the full pattern key, including any
+		// prefix form, stays intact for ParseGrantValue and the rich table.)
+		bucketComp := bucket
+		if bucketComp != "*" {
+			if i := strings.IndexByte(bucketComp, '/'); i >= 0 {
+				bucketComp = bucketComp[:i]
+			}
 		}
-		switch value {
-		case GrantReadOnly:
-			grants[bucket] = Grant{Read: true}
-		case GrantReadWrite:
-			grants[bucket] = Grant{Read: true, Write: true}
-		default:
-			return nil, fmt.Errorf("identity %q: unknown grant value %q for bucket %q (want %q or %q)",
-				cfg.Name, value, bucket, GrantReadOnly, GrantReadWrite)
+		if strings.ContainsAny(bucketComp, ",=") {
+			return nil, nil, fmt.Errorf("identity %q: grant bucket name %q must not contain %q or %q",
+				cfg.Name, bucketComp, ",", "=")
+		}
+		expr, err := ParseGrantValue(cfg.Name, bucket, value)
+		if err != nil {
+			return nil, nil, err
+		}
+		entry := parsedEntry{}
+		trimmed := strings.TrimSpace(string(value))
+		if strings.HasPrefix(trimmed, "\"") {
+			// Legacy string form: translate through the frozen two-bit map
+			// by reading the parsed expression's ops (readonly = read,
+			// readwrite = read+write) — same frozen vocabulary, same error
+			// messages, same map values.
+			g := Grant{Read: expr.Allows(OpRead), Write: expr.Allows(OpWrite)}
+			entry.legacy = &g
+		} else {
+			entry.rich, entry.hasRich = expr, true
+			richOrder = append(richOrder, bucket)
+		}
+		parsed[bucket] = entry
+	}
+	// Pass 2: build the frozen floor. Legacy entries first (exact v1
+	// values), then the rich entries' floor union.
+	grants := make(map[string]Grant, len(parsed))
+	var rich []GrantExpr
+	for bucket, entry := range parsed {
+		if entry.legacy != nil {
+			grants[bucket] = *entry.legacy
 		}
 	}
-	return grants, nil
+	for _, bucket := range richOrder {
+		entry := parsed[bucket]
+		rich = append(rich, entry.rich)
+		applyFloorUnion(grants, entry.rich)
+	}
+	return grants, rich, nil
 }
 
 // LookupByAccessKey resolves a SigV4 access key ID.
@@ -227,6 +286,18 @@ func (r *MultiRegistry) SecretKey(accessKeyID string) (string, bool) {
 		return "", false
 	}
 	return st.secret, true
+}
+
+// RichGrantsFor returns the parsed rich expressions registered under
+// accessKeyID (leaf 09 — the SFTP session handler's one re-resolution
+// lookup at session start). Unknown keys and legacy-only identities return
+// nil ⇒ pure v1 behavior.
+func (r *MultiRegistry) RichGrantsFor(accessKeyID string) []GrantExpr {
+	st, ok := r.byAccessKey[accessKeyID]
+	if !ok {
+		return nil
+	}
+	return st.identity.RichGrants()
 }
 
 // Names returns the configured identity names in sorted order (log-safe

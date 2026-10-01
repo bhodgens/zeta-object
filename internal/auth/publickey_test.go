@@ -209,7 +209,7 @@ func TestMultiRegistryAuthenticatePublicKey(t *testing.T) {
 	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
 		{
 			Name: "sftp-user", AccessKey: "AKSFTP", SecretKey: "sk",
-			Grants:        map[string]string{"dropbox": "readwrite"},
+			Grants:        rawGrants(map[string]string{"dropbox": "readwrite"}),
 			SSHPublicKeys: []string{withComment},
 		},
 	})

@@ -5,6 +5,7 @@ package auth_test
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http/httptest"
 	"testing"
@@ -16,7 +17,7 @@ func newTestRegistry(t *testing.T) *auth.MultiRegistry {
 	t.Helper()
 	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
 		{Name: "env", AccessKey: "AKRW", SecretKey: "sk-rw"},
-		{Name: "ro", AccessKey: "AKRO", SecretKey: "sk-ro", Grants: map[string]string{"neuro": "readonly"}},
+		{Name: "ro", AccessKey: "AKRO", SecretKey: "sk-ro", Grants: rawGrants(map[string]string{"neuro": "readonly"})},
 	})
 	if err != nil {
 		t.Fatalf("NewMultiRegistry: %v", err)
@@ -135,3 +136,14 @@ func TestBasicBadUserBadPasswordIndistinguishable(t *testing.T) {
 
 // Compile-time: satisfies the frozen v1 Authenticator seam.
 var _ auth.Authenticator = (*auth.BasicAuthenticator)(nil)
+
+// rawGrants adapts the legacy string-literal grant map to the dual-form
+// config type (leaf 09): semantics identical, fewer literal bytes.
+func rawGrants(m map[string]string) map[string]json.RawMessage {
+	out := make(map[string]json.RawMessage, len(m))
+	for k, v := range m {
+		b, _ := json.Marshal(v)
+		out[k] = b
+	}
+	return out
+}

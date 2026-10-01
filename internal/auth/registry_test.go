@@ -15,9 +15,9 @@ import (
 // two configured identities (one scoped readonly).
 func testIdentities() []auth.IdentityConfig {
 	return []auth.IdentityConfig{
-		{Name: "env", AccessKey: "AKENV", SecretKey: "sk-env", Grants: map[string]string{"*": "readwrite"}},
+		{Name: "env", AccessKey: "AKENV", SecretKey: "sk-env", Grants: rawGrants(map[string]string{"*": "readwrite"})},
 		{Name: "ci-bot", AccessKey: "AKCI", SecretKey: "sk-ci"},
-		{Name: "scraper", AccessKey: "AKRO", SecretKey: "sk-ro", Grants: map[string]string{"photos": "readonly"}},
+		{Name: "scraper", AccessKey: "AKRO", SecretKey: "sk-ro", Grants: rawGrants(map[string]string{"photos": "readonly"})},
 	}
 }
 
@@ -76,19 +76,19 @@ func TestMultiRegistryValidationFailures(t *testing.T) {
 			{Name: "y", AccessKey: "a1", SecretKey: "s"},
 		}, "more than once"},
 		{"bad grant value", []auth.IdentityConfig{
-			{Name: "x", AccessKey: "a", SecretKey: "s", Grants: map[string]string{"b": "admin"}},
+			{Name: "x", AccessKey: "a", SecretKey: "s", Grants: rawGrants(map[string]string{"b": "admin"})},
 		}, "unknown grant value"},
 		{"empty grant key", []auth.IdentityConfig{
-			{Name: "x", AccessKey: "a", SecretKey: "s", Grants: map[string]string{"": "readonly"}},
+			{Name: "x", AccessKey: "a", SecretKey: "s", Grants: rawGrants(map[string]string{"": "readonly"})},
 		}, "must not be empty"},
 		// T5 pin: a grant key containing "," or "=" would widen when
 		// round-tripped through the SFTP CriticalOptions serialization
 		// (comma-separated key=value pairs); reject at config load.
 		{"grant key with comma", []auth.IdentityConfig{
-			{Name: "x", AccessKey: "a", SecretKey: "s", Grants: map[string]string{"a,b": "readonly"}},
+			{Name: "x", AccessKey: "a", SecretKey: "s", Grants: rawGrants(map[string]string{"a,b": "readonly"})},
 		}, `grant bucket name "a,b" must not contain`},
 		{"grant key with equals", []auth.IdentityConfig{
-			{Name: "x", AccessKey: "a", SecretKey: "s", Grants: map[string]string{"b=c": "readwrite"}},
+			{Name: "x", AccessKey: "a", SecretKey: "s", Grants: rawGrants(map[string]string{"b=c": "readwrite"})},
 		}, `grant bucket name "b=c" must not contain`},
 		{"duplicate ssh key", []auth.IdentityConfig{
 			{Name: "x", AccessKey: "a1", SecretKey: "s", SSHPublicKeys: []string{"ssh-ed25519 AAAA"}},
@@ -112,7 +112,7 @@ func TestMultiRegistryValidationFailures(t *testing.T) {
 // value "readonly" is valid (scope-wide readonly identity).
 func TestMultiRegistryWildcardReadonlyGrantLegal(t *testing.T) {
 	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
-		{Name: "ro", AccessKey: "AK", SecretKey: "sk", Grants: map[string]string{"*": "readonly"}},
+		{Name: "ro", AccessKey: "AK", SecretKey: "sk", Grants: rawGrants(map[string]string{"*": "readonly"})},
 	})
 	if err != nil {
 		t.Fatalf("wildcard readonly rejected: %v", err)
@@ -225,7 +225,7 @@ func TestEnvPairShape(t *testing.T) {
 	if pair.AccessKey != "minioadmin" || pair.SecretKey != "minioadmin" {
 		t.Errorf("pair = %+v", pair)
 	}
-	if pair.Grants["*"] != auth.GrantReadWrite {
+	if string(pair.Grants["*"]) != `"readwrite"` {
 		t.Errorf("grants = %+v, want wildcard readwrite", pair.Grants)
 	}
 	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{pair})

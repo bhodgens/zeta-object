@@ -10,6 +10,8 @@
 // drive every branch deterministically).
 package auth
 
+import "encoding/json"
+
 // EnvPair returns the env-derived identity config: name "env", wildcard
 // readwrite grants. accessKey/secretKey are the values package main's
 // loadCredentials resolved (including its default and warn-on-empty rules,
@@ -19,6 +21,6 @@ func EnvPair(accessKey, secretKey string) IdentityConfig {
 		Name:      "env",
 		AccessKey: accessKey,
 		SecretKey: secretKey,
-		Grants:    map[string]string{"*": GrantReadWrite},
+		Grants:    map[string]json.RawMessage{"*": json.RawMessage(`"` + GrantReadWrite + `"`)},
 	}
 }
