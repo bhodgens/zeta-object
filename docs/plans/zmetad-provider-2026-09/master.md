@@ -332,11 +332,11 @@ dependency's review passes.
 
 | Leaf | State | Review | Commit | Notes |
 |------|-------|--------|--------|-------|
-| 01-db-accessor.md | pending | - | - | |
-| 02-row-mapping.md | pending | - | - | |
-| 03-provider.md | pending | - | - | |
-| 04-wiring-config.md | pending | - | - | |
-| 05-parity-e2e.md | pending | - | - | |
+| 01-db-accessor.md | done | pass | b58309b | 9/9 tests; make test green; lint NEW_FROM_REV 0 issues; metadata cov 87.9%; SCHEMA.md v5 nits reported upstream-pending |
+| 02-row-mapping.md | done | pass | 0d72654 | 35 subtests pass; drift guard green on 4 fixtures; make test green (metadata 89.0%); lint NEW_FROM_REV 0; SCHEMA.md TEXT-typo drift = upstream #12 |
+| 03-provider.md | done | pass | c0ff5ea | 36 tests pass incl -race; single permitted zfs_events.go edit (HistoryDetail.RingSwaps) verified by diff; make test 83.1%; lint NEW_FROM_REV 0; deviations 1-5 accepted (cache fast-path, probeDB split) |
+| 04-wiring-config.md | done | pass | 1e2c992 | make test/lint/build green (82.8%); CLI transport fully deleted (rg 'zfs events' internal/ = 0); parser kept test-only for drift guard; ResolveDataset deleted; DEVIATION: no purge HTTP endpoint exists (pre-existing) - leaf 05 e2e purge task adjusted |
+| 05-parity-e2e.md | done | pass | 4f7e8c9 | parity zmetad scenario + wire-shape pin PASS; e2e case 18 PASS 20/20; suite 428/11 (11 pre-existing webdav/owncloud failures proven); metadata cov 90.3%, total 82.4%, COVER_MIN unchanged (47); ZETAOBJECT_ASSUME_ZFS env gate added (statfs hint bypass only, unit-pinned + README) |
 
 States: pending / dispatched / in-review / done / re-dispatched.
 
