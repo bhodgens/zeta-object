@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -61,16 +62,26 @@ func loadOrGenerateHostKey(hostKeyPath string) (signer ssh.Signer, generated boo
 		}
 		// Lost the race: a file appeared (or a symlink dangled) at the
 		// path between our ReadFile and here. Re-read and parse the file
-		// that won — reuse its identity, never overwrite it.
-		again, rereadErr := os.ReadFile(hostKeyPath)
-		if rereadErr != nil {
-			return nil, false, "", fmt.Errorf("sftp: re-reading host key %s after create race: %w", hostKeyPath, rereadErr)
+		// that won — reuse its identity, never overwrite it. The winner
+		// may have created the file but not yet flushed it, so the first
+		// read can come back empty/unparseable: retry briefly before
+		// failing (T6 — a transient startup race must not kill the
+		// frontend).
+		var parsed ssh.Signer
+		var parseErr error
+		for range 5 {
+			again, rereadErr := os.ReadFile(hostKeyPath)
+			if rereadErr == nil {
+				parsed, parseErr = ssh.ParsePrivateKey(again)
+				if parseErr == nil {
+					return parsed, false, fingerprintOf(parsed), nil
+				}
+			} else {
+				parseErr = rereadErr
+			}
+			time.Sleep(100 * time.Millisecond)
 		}
-		parsed, parseErr := ssh.ParsePrivateKey(again)
-		if parseErr != nil {
-			return nil, false, "", fmt.Errorf("sftp: parsing raced host key %s: %w", hostKeyPath, parseErr)
-		}
-		return parsed, false, fingerprintOf(parsed), nil
+		return nil, false, "", fmt.Errorf("sftp: re-reading host key %s after create race: %w", hostKeyPath, parseErr)
 	}
 	if _, writeErr = wf.Write(pemBytes); writeErr != nil {
 		closeErr := wf.Close()
