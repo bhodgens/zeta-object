@@ -235,10 +235,10 @@ fixers with disjoint file ownership, then parent-verified and gated:
   Close never Puts) — pins + e2e 20e (ABOR-based, deterministic).
 - T1 fixed (same-key rename no-op; existing destination refused) —
   pins + e2e 21d.
-- T2 partially fixed (zero-write close commits nothing). Residual:
-  a dropped connection after >=1 successful write still commits the
-  prefix — pkg/sftp has no transfer-error hook. Documented in the
-  putWriter comment.
+- T2 fixed (zero-write close commits nothing AND a dropped connection
+  after >=1 successful write commits nothing — putWriter implements
+  pkg/sftp's TransferError hook, which v1.13.11 DOES have; the
+  "no hook" claim in the original audit was wrong).
 - W1 fixed (parseResource rejects dot-segment buckets and keys; 403) —
   pins + e2e 19 (PUT/DELETE/PROPFIND /%2e%2e → 403, no file above
   dataDir).
@@ -273,10 +273,10 @@ cases 20/21; case 21 never created its bucket (S3-side seed now follows
 a create-bucket); case 19's stale DELETE-dir expectation corrected to
 404 per Contract 3; case 19 header asserts made case-insensitive.
 
-Deliberately not fixed (documented residuals): A3 (authorized_keys
-quoted-option parsing — config-load hardening, not wire-reachable),
-W4 (PROPFIND Depth:1 unbounded page), F2 (FTP directory RNFR/RNTO
-marker rename), T5's SFTP-side serialization (config load now rejects
-the dangerous grant keys; the serializer is untouched), T6's true
-two-process host-key race (loser re-reads the winner's file), T7
-(SFTP whole-object buffering cap), T2's partial-write residual above.
+Deliberately not fixed (documented residuals): A3, W4, F2, T5's
+serializer, T6's true two-process host-key race, T7 — ALL subsequently
+fixed in the follow-up wave (851d6fc, 685b9ee, e304ffd, 03e186d).
+T2's partial-write residual was also closed (03e186d + the TransferError
+fix): pkg/sftp v1.13.11 has a TransferError hook; the original
+"no hook" claim was wrong. Remaining truly-unfixable-at-this-layer:
+none.
