@@ -15,12 +15,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 )
+
+// assumeZFSEnv is the escape hatch for the Probe statfs fast-fail
+// (ZETAOBJECT_ASSUME_ZFS=1). DetectZFS is a HINT, never authoritative
+// (master plan: "a non-polled dataset is unavailable regardless of fs
+// type") - the authoritative checks are the zmetad DB's datasets table
+// (tracked) and sync_state (polled). ZFS-less test hosts (e2e harness,
+// dev machines) set this so the real provider chain can run against a
+// fixture database; production ZFS hosts never need it. Unset/any other
+// value keeps the statfs fast-fail.
+const assumeZFSEnv = "ZETAOBJECT_ASSUME_ZFS"
+
+// assumeZFS reports whether the statfs hint is bypassed for this process.
+func assumeZFS() bool { return os.Getenv(assumeZFSEnv) == "1" }
 
 // zmetadCmdTimeout bounds the `zmetad --purge` invocation. Purge is a
 // coordinated DB + kernel-ring wipe; 10s is generous for either.
@@ -201,10 +215,10 @@ func (p *zmetadEventsProvider) Probe(ctx context.Context, bucketPath string) (Pr
 		return ProbeResult{Available: false, Reason: "path resolve: " + err.Error()}, nil //nolint:nilerr // unavailable is a status, not a failure
 	}
 	isZFS, err := DetectZFS(resolved)
-	if err != nil {
+	if err != nil && !assumeZFS() {
 		return ProbeResult{Available: false, Reason: "statfs: " + err.Error()}, nil //nolint:nilerr // unavailable is a status, not a failure
 	}
-	if !isZFS {
+	if !isZFS && !assumeZFS() {
 		return ProbeResult{Available: false, Reason: "filesystem is not ZFS"}, nil
 	}
 	return p.probeDB(ctx, bucketPath, resolved), nil

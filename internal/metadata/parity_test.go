@@ -521,3 +521,123 @@ func parityBytesEqual(a, b []byte) bool {
 	}
 	return true
 }
+
+// ---------------------------------------------------------------------------
+// zmetad-provider scenario (zmetad-provider-2026-09 leaf 05, Task 1)
+// ---------------------------------------------------------------------------
+
+// parityZmetadStub is a path-aware dbHandle stub for the parity gate:
+// ONLY the provider bucket's (symlink-resolved) root resolves to the
+// canned dataset; every other path gets DatasetNotTrackedError - the
+// exact seam the frontend's 503-vs-200 decision rides on
+// (metadataProviderFor returns nil when Probe reports unavailable).
+type parityZmetadStub struct {
+	stubZmetadDB
+	providerRoot string // resolved bucket root that IS tracked
+	dataset      string
+}
+
+func (s *parityZmetadStub) ResolveDatasetByPath(path string) (string, error) {
+	s.resolveCalls.Add(1)
+	if path != s.providerRoot {
+		return "", &DatasetNotTrackedError{Path: path}
+	}
+	return s.dataset, nil
+}
+
+// TestParityZmetadProviderBucket pins leaf-05 Task 1: a bucket served by
+// the REAL zmetad provider (openDB stubbed via leaf 03's seam; no ZFS
+// host needed) produces BYTE-IDENTICAL core S3 metadata state as a plain
+// bucket running the same matrix, while ?events availability is
+// asymmetric: the plain bucket probes untracked (the frontend's 503
+// seam), the provider bucket probes available and serves history with
+// the Contract 5 loss detail (recordsLost=7, ringSwaps=1, never folded).
+func TestParityZmetadProviderBucket(t *testing.T) {
+	ctx := context.Background()
+
+	plainRoot := t.TempDir()
+	providerRoot := t.TempDir()
+	// The provider EvalSymlinks before resolution; the stub keys on the
+	// resolved form (macOS tempdirs live behind /var -> /private/var).
+	resolvedProvider, err := filepath.EvalSymlinks(providerRoot)
+	if err != nil {
+		t.Fatalf("resolve provider root: %v", err)
+	}
+
+	const dbPath = "/parity/zmetad.db"
+	stub := &parityZmetadStub{providerRoot: resolvedProvider, dataset: "tank/parity"}
+	stub.hasDS = true
+	stub.events = []EventRow{
+		{Dataset: "tank/parity", Txg: 10, Op: "CREATE",
+			Path: new("a.txt"), FullPath: new("a.txt")},
+	}
+	stub.gaps = GapStats{KnownLost: 7, Regressions: 0, RingSwaps: 1}
+	oldOpenDB := openDB
+	openDB = func(context.Context, string) (dbHandle, error) { return stub, nil }
+	t.Cleanup(func() { openDB = oldOpenDB })
+	// Bypass ONLY the statfs hint (dev hosts have no ZFS); dataset
+	// resolution + poll checks still run against the stub DB.
+	t.Setenv("ZETAOBJECT_ASSUME_ZFS", "1")
+
+	p := NewZmetadEventsProvider(dbPath)
+
+	// --- attach asymmetry: the exact seam behind 503 (plain) vs 200 ---
+	resPlain, err := p.Probe(ctx, plainRoot)
+	if err != nil {
+		t.Fatalf("plain Probe error = %v, want nil (unavailable is a status)", err)
+	}
+	if resPlain.Available || resPlain.Reason != "not tracked by zmetad" {
+		t.Fatalf("plain Probe = %+v, want unavailable 'not tracked by zmetad' (frontend serves 503)", resPlain)
+	}
+	resProvider, err := p.Probe(ctx, providerRoot)
+	if err != nil {
+		t.Fatalf("provider Probe error = %v, want nil", err)
+	}
+	if !resProvider.Available || resProvider.Dataset != "tank/parity" {
+		t.Fatalf("provider Probe = %+v, want available on tank/parity (frontend serves 200)", resProvider)
+	}
+
+	// --- same matrix, byte-identical core metadata state --------------
+	plain := &parityBucket{name: "plain", root: plainRoot,
+		sidecars: map[string][]byte{}, surface: map[string]objectmodel.HeaderSnapshot{}}
+	provider := &parityBucket{name: "zmetad-provider", root: providerRoot,
+		sidecars: map[string][]byte{}, surface: map[string]objectmodel.HeaderSnapshot{}}
+	applyParityMatrix(t, plain)
+	applyParityMatrix(t, provider)
+
+	for _, label := range sortedParityLabels(plain.surface) {
+		a, b := plain.surface[label], provider.surface[label]
+		if diff := parityCompareSnapshots(a, b); diff != "" {
+			t.Errorf("zmetad parity break on %q:\n%s", label, diff)
+		}
+	}
+	if !parityStringsEqual(plain.list, provider.list) {
+		t.Errorf("zmetad list surface diverged: plain=%v provider=%v", plain.list, provider.list)
+	}
+	for _, key := range sortedParityKeyList(plain.sidecars) {
+		if !parityBytesEqual(sidecarComparable(t, plain.sidecars[key]),
+			sidecarComparable(t, provider.sidecars[key])) {
+			t.Errorf("zmetad sidecar %q diverged modulo storagePath:\nplain:    %s\nprovider: %s",
+				key, plain.sidecars[key], provider.sidecars[key])
+		}
+	}
+
+	// --- ?events exists only on the provider side ---------------------
+	events, err := p.History(ctx, providerRoot, "", HistoryQuery{})
+	if err != nil {
+		t.Fatalf("provider History = %v, want success", err)
+	}
+	if len(events) != 1 || events[0].Key != "a.txt" || events[0].Op != "create" {
+		t.Fatalf("provider History = %+v, want the canned create", events)
+	}
+	d, ok := p.(interface{ LastDetail() HistoryDetail })
+	if !ok {
+		t.Fatal("zmetad provider must implement the LastDetail detailReporter seam")
+	}
+	if got := d.LastDetail(); got.Dataset != "tank/parity" || got.RecordsLost != 7 || got.RingSwaps != 1 {
+		t.Fatalf("LastDetail = %+v, want {tank/parity 7 1} (Contract 5: swaps never folded)", got)
+	}
+	if _, err := p.History(ctx, plainRoot, "", HistoryQuery{}); err == nil {
+		t.Fatal("plain-bucket History succeeded, want resolution failure (the 503 side)")
+	}
+}

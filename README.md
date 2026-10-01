@@ -435,6 +435,13 @@ execs `zfs events` itself:
 | `zmetad_db_path` | `/var/lib/zfs/zmetad.db` | SQLite database zmetad exports to; opened read-only per request. |
 | `zmetad_binary` | `zmetad` | Executable invoked for purge (`zmetad --purge <dataset>`). |
 
+Testing escape hatch: the env var `ZETAOBJECT_ASSUME_ZFS=1` bypasses ONLY
+the statfs ZFS-type hint in the per-bucket probe, so the provider can
+attach against a fixture zmetad database on ZFS-less hosts (used by e2e
+case `18-zmetad-events.sh`). Dataset tracking and poll state remain
+authoritative: a bucket whose path is not in the database's `datasets`
+table still gets the clean 503. Production ZFS hosts never need it.
+
 ### Loss semantics
 
 The kernel event log is a bounded ring buffer, and zmetad records every
