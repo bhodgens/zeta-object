@@ -6,6 +6,7 @@
 package webdav
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"io"
@@ -37,22 +38,28 @@ const propfindPageKeys = 1000
 // ownCloud namespace is declared once on the root (xmlns:oc) and referenced
 // by the oc: property elements (issue #5).
 type multistatus struct {
-	XMLName   xml.Name `xml:"DAV: multistatus"`
+	// Elements render with literal "d:"/"oc:" prefixes (the ownCloud
+	// client's csync property parser matches prefixed qnames literally);
+	// the root declares both bindings. XMLName is empty so Go does not
+	// re-declare namespaces per element.
+	XmlnsD    string   `xml:"xmlns:d,attr"`
 	XmlnsOc   string   `xml:"xmlns:oc,attr"`
 	Responses []response
 }
 
 // response is one <D:response>: href + propstat blocks.
 type response struct {
-	XMLName   xml.Name   `xml:"DAV: response"`
-	Href      string     `xml:"DAV: href"`
-	Propstats []propstat `xml:"DAV: propstat"`
+	// Local names carry the literal "d:" prefix; the root's xmlns:d
+	// declaration binds it (csync matches prefixed qnames literally).
+	XMLName   xml.Name   `xml:"d:response"`
+	Href      string     `xml:"d:href"`
+	Propstats []propstat `xml:"d:propstat"`
 }
 
 // propstat groups properties by their status.
 type propstat struct {
-	Props  []activeProp `xml:"DAV: prop"`
-	Status string       `xml:"DAV: status"`
+	Props  []activeProp `xml:"d:prop"`
+	Status string       `xml:"d:status"`
 }
 
 // propfindRequest is the parsed request body. Go's xml unmarshaller does
@@ -141,11 +148,49 @@ func (f *Frontend) handlePROPFIND(w http.ResponseWriter, r *http.Request, res re
 		return
 	}
 
-	ms := multistatus{XmlnsOc: OCNamespace}
+	ms := multistatus{XmlnsD: "DAV:", XmlnsOc: OCNamespace}
 	for _, e := range entries {
 		ms.Responses = append(ms.Responses, buildResponse(e, pf))
 	}
-	writeXMLDocument(w, http.StatusMultiStatus, ms)
+	writeXMLDocumentFixup(w, http.StatusMultiStatus, ms)
+}
+
+// writeXMLDocumentFixup marshals the 207 and repairs Go encoder closing
+// tags: elements whose Local name carries a literal "d:"/"oc:" prefix are
+// opened prefixed but closed unprefixed by encoding/xml. The ownCloud
+// client's strict XML parser rejects mismatched tags.
+func writeXMLDocumentFixup(w http.ResponseWriter, status int, v any) {
+	body, err := xml.Marshal(v)
+	if err != nil {
+		writeDavError(w, http.StatusInternalServerError, "")
+		return
+	}
+	fixed := fixupPrefixedClosers(body)
+	full := append([]byte(xml.Header), fixed...)
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	w.Header().Set("Content-Length", fmtInt(len(full)))
+	w.WriteHeader(status)
+	_, _ = w.Write(full)
+}
+
+// fixupPrefixedClosers rewrites closing tags of prefixed elements: for
+// every <pre:name ...> opened with a literal prefix, the matching
+// </name> closer becomes </pre:name>. Only the documented property and
+// response element names are rewritten.
+func fixupPrefixedClosers(body []byte) []byte {
+	dNames := []string{
+		"multistatus", "response", "href", "propstat", "prop", "status",
+		"resourcetype", "collection", "getcontenttype", "getlastmodified",
+		"getcontentlength", "getetag",
+	}
+	out := body
+	for _, n := range dNames {
+		out = bytes.ReplaceAll(out, []byte("</"+n+">"), []byte("</d:"+n+">"))
+	}
+	for _, n := range []string{"fileid", "permissions", "size"} {
+		out = bytes.ReplaceAll(out, []byte("</"+n+">"), []byte("</oc:"+n+">"))
+	}
+	return out
 }
 
 // propfindEntry is one resource row of the 207 body.
@@ -442,11 +487,10 @@ func buildResponse(e propfindEntry, pf *propfindRequest) response {
 // propstats) in the right namespace: ownCloud for the oc: discovery names,
 // DAV: for everything else.
 func emptyProp(_ propfindEntry, name string) activeProp {
-	ns := Namespace
 	if ocLocalNames[name] {
-		ns = OCNamespace
+		return activeProp{XMLName: xml.Name{Local: "oc:" + name}}
 	}
-	return activeProp{XMLName: xml.Name{Space: ns, Local: name}}
+	return activeProp{XMLName: xml.Name{Local: "d:" + name}}
 }
 
 // ocLocalNames is the set of ownCloud-namespace property local names.
@@ -480,15 +524,21 @@ func liveEntry(e propfindEntry, name string) activeProp {
 		if p.Name != name {
 			continue
 		}
-		ns := Namespace
+		// The ownCloud client's csync property parser matches the
+		// PREFIXED qname literally ("oc:fileid", "d:getlastmodified");
+		// the root declares both bindings, so render with literal
+		// prefixes and no per-element xmlns redeclaration.
 		if p.OC {
-			ns = OCNamespace
+			if p.Collection {
+				return activeProp{XMLName: xml.Name{Local: "oc:" + p.Name}, Inner: collectionInner}
+			}
+			return activeProp{XMLName: xml.Name{Local: "oc:" + p.Name}, Value: p.Chardata}
 		}
 		switch {
 		case p.Collection:
-			return activeProp{XMLName: xml.Name{Space: ns, Local: p.Name}, Inner: collectionInner}
+			return activeProp{XMLName: xml.Name{Local: "d:" + p.Name}, Inner: collectionInner}
 		default:
-			return activeProp{XMLName: xml.Name{Space: ns, Local: p.Name}, Value: p.Chardata}
+			return activeProp{XMLName: xml.Name{Local: "d:" + p.Name}, Value: p.Chardata}
 		}
 	}
 	return emptyProp(e, name)

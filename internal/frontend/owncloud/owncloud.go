@@ -23,6 +23,7 @@
 package owncloud
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -112,9 +113,75 @@ func (f *Frontend) Capabilities() frontend.ProtocolCaps {
 
 // serveHTTP is the routing entry (master Contract 3 path-prefix switch).
 func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	// /status.php: the classic-server capability ping (issue #5 acceptance
+	// — the 6.x client probes it before anything else and aborts on 404).
+	// The 6.x client probes <sync-root>/status.php, so any path ENDING in
+	// /status.php answers. It is unauthenticated by design (the real
+	// server's status.php is too).
+	if strings.HasSuffix(r.URL.Path, "/status.php") {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"installed":      true,
+			"maintenance":    false,
+			"needsDbUpgrade": false,
+			"version":        "10.11.0",
+			"versionstring":  "10.11.0",
+			"productname":    "zeta-object",
+			"edition":        "",
+		})
+		return
+	}
+	// The 6.x client resolves OCS/status endpoints relative to the sync
+	// root (<root>/ocs/v1.php/..., <root>/status.php), so match them at
+	// ANY path depth, not just the server root.
 	if v, ok := ocsVersionOf(r.URL.Path); ok {
 		f.routeOCS(w, r, v)
 		return
+	}
+	if idx := strings.LastIndex(r.URL.Path, "/ocs/"); idx >= 0 {
+		if v, ok := ocsVersionOf(r.URL.Path[idx:]); ok {
+			f.routeOCS(w, r, v)
+			return
+		}
+	}
+	if idx := strings.LastIndex(r.URL.Path, "/ocs/"); idx >= 0 {
+		if v, ok := ocsVersionOf(r.URL.Path[idx:]); ok {
+			f.routeOCS(w, r, v)
+			return
+		}
+	}
+	// oCIS-style data path: /remote.php/dav/files/<user>/... where <user>
+	// is the authenticated identity's accessKey (the client derives the
+	// dav root from its login user). The bucket-pinned frontend exposes
+	// exactly one bucket, so strip the static dav/files prefix at its
+	// FIRST occurrence and re-root at the bucket root; repeated
+	// occurrences (the client re-appends its derived dav root to an
+	// already-prefixed path) collapse into the same bucket root, matching
+	// the /remote.php/webdav/ mapping.
+	// Classic OC10 dav root: /remote.php/webdav/** - strip the prefix so
+	// the sync root resolves to the bucket root even when its virtual
+	// collection is empty (an empty-prefix 404 breaks every real client's
+	// first sync).
+	if strings.Contains(r.URL.Path, "/remote.php/webdav") {
+		idx := strings.Index(r.URL.Path, "/remote.php/webdav")
+		stripped := r.URL.Path[idx+len("/remote.php/webdav"):]
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/" + strings.TrimPrefix(stripped, "/")
+		r = r2
+	}
+	if idx := strings.Index(r.URL.Path, "/remote.php/dav/files/"); idx >= 0 {
+		// Strip "/remote.php/dav/files/<user>" (the dav root is the
+		// authenticated user's bucket root) - the remaining segment after
+		// the prefix is the user name; drop it along with the prefix.
+		rest := r.URL.Path[idx+len("/remote.php/dav/files/"):]
+		if slash := strings.Index(rest, "/"); slash >= 0 {
+			rest = rest[slash:] // keep "/<key...>"
+		} else {
+			rest = "/" // the dav root itself
+		}
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = rest
+		r = r2
 	}
 	if f.pathPrefix != "" && strings.HasPrefix(r.URL.Path, f.pathPrefix) {
 		stripped := strings.TrimPrefix(r.URL.Path, f.pathPrefix)

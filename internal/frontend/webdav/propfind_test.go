@@ -44,15 +44,15 @@ func TestPROPFIND_Depth0_File_Golden(t *testing.T) {
 	// compliant — davfs2/Finder accept it (deviation from the leaf's
 	// prefixed-form sketch, noted in the implementation record).
 	for _, want := range []string{
-		`<multistatus xmlns="DAV:" xmlns:oc="http://owncloud.org/ns">`,
-		`<href xmlns="DAV:">/photos/a.txt</href>`,
-		`<getcontentlength xmlns="DAV:">5</getcontentlength>`,
-		`<getcontenttype xmlns="DAV:">text/plain</getcontenttype>`,
-		`<getetag xmlns="DAV:">&#34;abc123&#34;</getetag>`,
-		`<getlastmodified xmlns="DAV:">Tue, 29 Sep 2026 12:00:00 GMT</getlastmodified>`,
-		`<resourcetype xmlns="DAV:"></resourcetype>`,
-		`<fileid xmlns="http://owncloud.org/ns">7919420764097676869</fileid>`,
-		`<permissions xmlns="http://owncloud.org/ns">RW</permissions>`,
+		`<multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">`,
+		`<d:href>/photos/a.txt</d:href>`,
+		`<d:getcontentlength>5</d:getcontentlength>`,
+		`<d:getcontenttype>text/plain</d:getcontenttype>`,
+		`<d:getetag>&#34;abc123&#34;</d:getetag>`,
+		`<d:getlastmodified>Tue, 29 Sep 2026 12:00:00 GMT</d:getlastmodified>`,
+		`<d:resourcetype></d:resourcetype>`,
+		`<oc:fileid>7919420764097676869</oc:fileid>`,
+		`<oc:permissions>RW</oc:permissions>`,
 		"HTTP/1.1 200 OK",
 	} {
 		if !strings.Contains(body, want) {
@@ -60,7 +60,7 @@ func TestPROPFIND_Depth0_File_Golden(t *testing.T) {
 		}
 	}
 	// Exactly one response block.
-	if n := strings.Count(body, "<response ") + strings.Count(body, "<response>"); n != 1 {
+	if n := strings.Count(body, "<d:response ") + strings.Count(body, "<d:response>"); n != 1 {
 		t.Fatalf("response blocks = %d, want 1", n)
 	}
 }
@@ -72,14 +72,19 @@ func TestPROPFIND_Depth0_Collection(t *testing.T) {
 	if code != 207 {
 		t.Fatalf("status = %d; body=%.400s", code, body)
 	}
-	if !strings.Contains(body, `<collection xmlns="DAV:"></collection>`) {
-		t.Fatalf("missing <collection/> in:\n%s", body)
+	if !strings.Contains(body, `<d:collection></d:collection>`) {
+		t.Fatalf("missing <d:collection/> in:\n%s", body)
 	}
 	if !strings.Contains(body, "httpd/unix-directory") {
 		t.Fatalf("missing directory content type in:\n%s", body)
 	}
-	if strings.Contains(body, "getcontentlength") || strings.Contains(body, "getetag") {
-		t.Fatalf("collections must not carry getcontentlength/getetag:\n%s", body)
+	if strings.Contains(body, "getcontentlength") {
+		t.Fatalf("collections must not carry getcontentlength:\n%s", body)
+	}
+	// getetag IS expected on collections (real OC10 behavior; the ownCloud
+	// 6.x discovery job treats its absence as an invalid reply).
+	if !strings.Contains(body, "getetag") {
+		t.Fatalf("collection missing getetag:\n%s", body)
 	}
 }
 
@@ -94,9 +99,9 @@ func TestPROPFIND_Depth1_Listing(t *testing.T) {
 	}
 	// Parent + a.txt + 2024/ (grandchildren must NOT leak).
 	for _, want := range []string{
-		`<href xmlns="DAV:">/photos/</href>`,
-		`<href xmlns="DAV:">/photos/a.txt</href>`,
-		`<href xmlns="DAV:">/photos/2024/</href>`,
+		`<d:href>/photos/</d:href>`,
+		`<d:href>/photos/a.txt</d:href>`,
+		`<d:href>/photos/2024/</d:href>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in:\n%s", want, body)
@@ -105,7 +110,7 @@ func TestPROPFIND_Depth1_Listing(t *testing.T) {
 	if strings.Contains(body, "deep") {
 		t.Fatalf("grandchildren leaked:\n%s", body)
 	}
-	if n := strings.Count(body, "<response ") + strings.Count(body, "<response>"); n != 3 {
+	if n := strings.Count(body, "<d:response ") + strings.Count(body, "<d:response>"); n != 3 {
 		t.Fatalf("response blocks = %d, want 3:\n%s", n, body)
 	}
 }
@@ -119,9 +124,9 @@ func TestPROPFIND_Root_ModeA_Buckets(t *testing.T) {
 		t.Fatalf("status = %d; body=%.400s", code, body)
 	}
 	for _, want := range []string{
-		`<href xmlns="DAV:">/</href>`,
-		`<href xmlns="DAV:">/alpha/</href>`,
-		`<href xmlns="DAV:">/beta/</href>`,
+		`<d:href>/</d:href>`,
+		`<d:href>/alpha/</d:href>`,
+		`<d:href>/beta/</d:href>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in:\n%s", want, body)
@@ -137,7 +142,7 @@ func TestPROPFIND_Root_ModeB(t *testing.T) {
 		t.Fatalf("status = %d; body=%.400s", code, body)
 	}
 	// The root lists the bucket's CONTENTS, not the bucket itself.
-	if !strings.Contains(body, `<href xmlns="DAV:">/top.txt</href>`) {
+	if !strings.Contains(body, `<d:href>/top.txt</d:href>`) {
 		t.Fatalf("missing /top.txt in:\n%s", body)
 	}
 	// No bucket-level hrefs: the bucket name must not appear as a
@@ -145,7 +150,7 @@ func TestPROPFIND_Root_ModeB(t *testing.T) {
 	// scope the check to hrefs).
 	for b := range strings.SplitSeq(body, "<href ") {
 		if idx := strings.Index(b, ">"); idx >= 0 {
-			end := strings.Index(b[idx:], "</href>")
+			end := strings.Index(b[idx:], "</d:href>")
 			if end >= 0 && strings.Contains(b[idx:idx+end], "/photos") {
 				t.Fatalf("mode-B root exposed the bucket in an href: %s", b[idx:idx+end])
 			}
@@ -217,7 +222,7 @@ func TestPROPFIND_NamedProp_UnknownGoes404Propstat(t *testing.T) {
 	if !strings.Contains(respBody, "HTTP/1.1 404 Not Found") {
 		t.Fatalf("unknown property must land in a 404 propstat:\n%s", respBody)
 	}
-	if !strings.Contains(respBody, `<getetag xmlns="DAV:">`) {
+	if !strings.Contains(respBody, `<d:getetag>`) {
 		t.Fatalf("known property missing:\n%s", respBody)
 	}
 }
@@ -230,10 +235,10 @@ func TestPROPFIND_Propname(t *testing.T) {
 	if code != 207 {
 		t.Fatalf("status = %d", code)
 	}
-	if strings.Contains(respBody, `<getetag xmlns="DAV:">&#34;`) {
+	if strings.Contains(respBody, `<d:getetag>&#34;`) {
 		t.Fatalf("propname must not carry values:\n%s", respBody)
 	}
-	if !strings.Contains(respBody, `<getetag xmlns="DAV:"></getetag>`) {
+	if !strings.Contains(respBody, `<d:getetag></d:getetag>`) {
 		t.Fatalf("propname missing getetag name:\n%s", respBody)
 	}
 }
@@ -324,16 +329,16 @@ func TestOCProps_FileidStableAndDistinct(t *testing.T) {
 // whose href is wantHref.
 func fileIDFromBody(t *testing.T, body, wantHref string) string {
 	t.Helper()
-	for _, block := range strings.Split(body, "<response ") {
-		if !strings.Contains(block, ">"+wantHref+"</href>") && !strings.Contains(block, wantHref+"</href>") {
+	for _, block := range strings.Split(body, "<d:response>") {
+		if !strings.Contains(block, "<d:href>"+wantHref+"</d:href>") {
 			continue
 		}
-		start := strings.Index(block, `<fileid xmlns="http://owncloud.org/ns">`)
+		start := strings.Index(block, `<oc:fileid>`)
 		if start < 0 {
 			t.Fatalf("response block for %s has no oc:fileid:\n%s", wantHref, block)
 		}
-		rest := block[start+len(`<fileid xmlns="http://owncloud.org/ns">`):]
-		end := strings.Index(rest, "</fileid>")
+		rest := block[start+len(`<oc:fileid>`):]
+		end := strings.Index(rest, "</oc:fileid>")
 		return rest[:end]
 	}
 	t.Fatalf("no response block for %s in:\n%s", wantHref, body)
@@ -364,20 +369,20 @@ func TestOCProps_PermissionsAndSize(t *testing.T) {
 	assertOCDiscovery(t, body, "photos", true)
 
 	// oc:size aggregates the whole subtree (5 + 2 + 3 = 10) on the parent.
-	if !strings.Contains(body, `<size xmlns="http://owncloud.org/ns">10</size>`) {
+	if !strings.Contains(body, `<oc:size>10</oc:size>`) {
 		t.Fatalf("oc:size not the subtree aggregate (want 10):\n%s", body)
 	}
 	// deep/ sums to 5.
-	if !strings.Contains(body, `<size xmlns="http://owncloud.org/ns">5</size>`) {
+	if !strings.Contains(body, `<oc:size>5</oc:size>`) {
 		t.Fatalf("oc:size for deep/ not 5:\n%s", body)
 	}
 	// Files carry permissions RW (readwrite) but NO oc:size (that is a
 	// collection aggregate; files have getcontentlength).
-	if strings.Count(body, `<permissions xmlns="http://owncloud.org/ns">RW</permissions>`) < 1 {
+	if strings.Count(body, `<oc:permissions>RW</oc:permissions>`) < 1 {
 		t.Fatalf("readwrite file oc:permissions missing:\n%s", body)
 	}
-	for _, block := range strings.Split(body, "<response ") {
-		if strings.Contains(block, "a.txt</href>") && strings.Contains(block, `<size xmlns=`) {
+	for _, block := range strings.Split(body, "<d:response>") {
+		if strings.Contains(block, "a.txt</d:href>") && strings.Contains(block, `<size xmlns=`) {
 			t.Fatalf("file carries oc:size:\n%s", block)
 		}
 	}
@@ -397,7 +402,7 @@ func TestOCProps_PermissionsReadonly(t *testing.T) {
 	if code != 207 {
 		t.Fatalf("status = %d, want 207; body=%.300s", code, body)
 	}
-	if !strings.Contains(body, `<permissions xmlns="http://owncloud.org/ns">RG</permissions>`) {
+	if !strings.Contains(body, `<oc:permissions>RG</oc:permissions>`) {
 		t.Fatalf("readonly collection must advertise RG:\n%s", body)
 	}
 }
@@ -410,15 +415,15 @@ func assertOCDiscovery(t *testing.T, body, bucket string, _ bool) {
 		t.Fatalf("xmlns:oc missing on multistatus root:\n%s", body)
 	}
 	blocks := 0
-	for _, block := range strings.Split(body, "<response ") {
-		if !strings.Contains(block, "</response>") {
+	for _, block := range strings.Split(body, "<d:response>") {
+		if !strings.Contains(block, "</d:response>") {
 			continue
 		}
 		blocks++
-		if !strings.Contains(block, `<fileid xmlns="http://owncloud.org/ns">`) {
+		if !strings.Contains(block, `<oc:fileid>`) {
 			t.Fatalf("response block missing oc:fileid:\n%s", block)
 		}
-		if !strings.Contains(block, `<permissions xmlns="http://owncloud.org/ns">`) {
+		if !strings.Contains(block, `<oc:permissions>`) {
 			t.Fatalf("response block missing oc:permissions:\n%s", block)
 		}
 	}

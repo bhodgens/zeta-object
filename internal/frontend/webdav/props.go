@@ -31,9 +31,10 @@ type innerElement struct {
 	XMLName xml.Name
 }
 
-// CollectionInner is the <D:collection/> child of resourcetype for
-// collections.
-var collectionInner = []innerElement{{XMLName: xml.Name{Space: Namespace, Local: "collection"}}}
+// CollectionInner is the <d:collection/> child of resourcetype for
+// collections (literal prefixed name — the root declares xmlns:d; the
+// ownCloud client's parser matches prefixed qnames literally).
+var collectionInner = []innerElement{{XMLName: xml.Name{Local: "d:collection"}}}
 
 // PropEntry is one property for objectProps: name plus whether it is
 // present, plus its rendering pieces. Kept exported and side-effect-free
@@ -92,9 +93,13 @@ func ObjectProps(o objectmodel.Object, isCollection bool, bucket string, write b
 	if !isCollection {
 		props = append(props,
 			PropEntry{Name: "getcontentlength", Present: true, Chardata: formatInt(o.Size)},
-			PropEntry{Name: "getetag", Present: true, Chardata: objectmodel.QuotedETag(o.ETag)},
 		)
 	}
+	// getetag on EVERY resource (real OC10 collections return one; the
+	// ownCloud 6.x discovery job treats its absence as an invalid reply).
+	props = append(props,
+		PropEntry{Name: "getetag", Present: true, Chardata: objectmodel.QuotedETag(o.ETag)},
+	)
 	// ownCloud namespace (issue #5): the real client's discovery job
 	// requires fileid + permissions on EVERY resource, and size on
 	// collections.

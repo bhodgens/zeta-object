@@ -100,3 +100,31 @@ above and file sync proceeds to wire-level verification (e2e case 25 pins
 the oc: properties). The README's ownCloud
 section already frames real-client compatibility as unverified - that was
 accurate; #5 is the concrete gap.
+
+
+---
+
+## Live acceptance re-run (2026-10-01, zfs-meta host, zeta-server @ 685b9ee + oc: props)
+
+Setup: owncloud frontend single-bucket (bucket: zval), S3 frontend :9707, owncloud on :9603.
+
+PASSED (wire-level, curl through the owncloud listener):
+- PUT /remote.php/webdav/<key> -> 201 (auto-creates prefixes)
+- GET byte-exact round-trip
+- DELETE -> 204, subsequent GET -> 404
+- PROPFIND collections (trailing slash and slash-less, F-oc-1 fix)
+- oc:fileid / oc:permissions / oc:size present on allprop and named-prop
+- status.php (any depth) answers the classic JSON - the 6.x client's first probe
+
+REAL CLIENT (owncloudcmd):
+- 2.5.4 (docker owncloud/client): negotiation OK, discovery LsColJob fails
+  "Unknown error 207" parsing our prefixed d:/oc: 207 form (2.5.4-era csync
+  parser limitation under investigation; the oc: props themselves are
+  namespace-correct).
+- 6.0.3 (official AppImage): status.php probe accepted; discovery OK; sync
+  run blocked by an owncloudcmd 6.x CLI regression (owncloudcmd was removed
+  in 7.x and the 6.x binary hangs in offscreen mode under docker).
+
+REMAINING WORK (tracked): validate the 207 against a reference server 207
+byte-for-byte (property set + structure) to close the 2.5.4 parse gap; the
+charter's ZFS-validation rule applies to any follow-up.
