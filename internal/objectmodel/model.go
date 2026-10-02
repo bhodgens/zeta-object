@@ -17,6 +17,10 @@ type Object struct {
 	LastModified time.Time
 	ContentType  string
 	Metadata     map[string]string // user metadata; lower-case keys, NO x-amz-meta- prefix
+	// Tags is the S3 object-tagging map (x-amz-tagging / ?tagging).
+	// Nil or empty means untagged; sidecar serialization omits it when
+	// empty for byte-compatibility with pre-tagging sidecars.
+	Tags map[string]string
 }
 
 type BucketInfo struct {

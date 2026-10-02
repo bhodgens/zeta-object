@@ -86,14 +86,23 @@ func ObjectToMetadataHeaders(o Object) map[string][]string {
 }
 
 // LegacyObjectMetadata mirrors package main's ObjectMetadata (types.go:48)
-// without importing it (that would create a main-dependency cycle).
+// without importing it (that would create a main-dependency cycle). The
+// JSON tags are the frozen on-disk sidecar wire form (identical to
+// fsbackend's legacyMeta and the frontend's ObjectMetadata): the keys are
+// exactly contentType, contentLength, eTag, customMetadata, lastModified,
+// storagePath, plus the optional tags field added by the tagging tree.
 type LegacyObjectMetadata struct {
-	ContentType    string
-	ContentLength  int64
-	ETag           string
-	CustomMetadata map[string]string // keys may carry the x-amz-meta- prefix (legacy on-disk form)
-	LastModified   time.Time
-	StoragePath    string // filesystem-internal; NEVER surfaced on the neutral model
+	ContentType    string            `json:"contentType"`
+	ContentLength  int64             `json:"contentLength"`
+	ETag           string            `json:"eTag"`
+	CustomMetadata map[string]string `json:"customMetadata"` // keys may carry the x-amz-meta- prefix (legacy on-disk form)
+	LastModified   time.Time         `json:"lastModified"`
+	StoragePath    string            `json:"storagePath"` // filesystem-internal; NEVER surfaced on the neutral model
+	// Tags is the S3 object-tagging map, serialized as the optional
+	// "tags" JSON field of the sidecar. omitempty is a HARD requirement:
+	// pre-tagging sidecars have no tags field, and new sidecars must stay
+	// byte-identical to the old form when no tags exist.
+	Tags map[string]string `json:"tags,omitempty"`
 }
 
 // FromLegacy converts a legacy metadata value into the neutral model.
@@ -113,6 +122,7 @@ func FromLegacy(key string, m LegacyObjectMetadata) Object {
 		LastModified: m.LastModified,
 		ContentType:  m.ContentType,
 		Metadata:     meta,
+		Tags:         m.Tags,
 	}
 }
 
@@ -131,5 +141,47 @@ func ToLegacy(o Object) LegacyObjectMetadata {
 		ETag:           o.ETag,
 		CustomMetadata: custom,
 		LastModified:   o.LastModified,
+		Tags:           o.Tags,
 	}
+}
+
+// TaggingDirective values for x-amz-tagging-directive on COPY.
+const (
+	TaggingDirectiveCopy    = "COPY"
+	TaggingDirectiveReplace = "REPLACE"
+)
+
+// ResolveCopyTags applies the x-amz-tagging-directive COPY/REPLACE
+// semantics to a COPY source's tags. An empty directive means COPY (the
+// S3 default): the source's tags are carried over and the replacement
+// (from any x-amz-tagging header) is ignored. REPLACE uses the
+// replacement map and drops the source tags. The directive comparison is
+// case-insensitive, matching header-value handling elsewhere in the S3
+// surface.
+//
+// The returned map never aliases source or replacement, so callers may
+// mutate it (e.g. to stamp per-object tags) without corrupting shared
+// state. Copying a nil source yields nil; replacing with a nil
+// replacement yields nil. No validation is applied here — callers
+// validate replacement tags via ValidateTags at the request boundary.
+func ResolveCopyTags(directive string, source, replacement map[string]string) map[string]string {
+	switch strings.ToUpper(strings.TrimSpace(directive)) {
+	case TaggingDirectiveReplace:
+		return cloneTags(replacement)
+	default: // COPY (explicit or the S3 default when the header is absent)
+		return cloneTags(source)
+	}
+}
+
+// cloneTags copies tags into a fresh map, preserving nil-ness (a nil map
+// clones to nil; an empty map clones to a distinct empty map).
+func cloneTags(tags map[string]string) map[string]string {
+	if tags == nil {
+		return nil
+	}
+	out := make(map[string]string, len(tags))
+	for k, v := range tags {
+		out[k] = v
+	}
+	return out
 }
