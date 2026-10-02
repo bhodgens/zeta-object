@@ -27,6 +27,11 @@ const (
 	// to a PATH lookup per the upstream install.
 	defaultZmetadDBPath = "/var/lib/zfs/zmetad.db"
 	defaultZmetadBinary = "zmetad"
+
+	// SigV4 verification region (region-config-2026-10 leaf 01).
+	// Config load owns the default - the s3 frontend receives a
+	// concrete value.
+	defaultS3Region = "us-east-1"
 )
 
 // authModeNone is the opt-in zero-auth dev mode value for auth.mode
@@ -79,6 +84,12 @@ type ServerConfig struct {
 	// (defaultZmetadDBPath / defaultZmetadBinary) - one place owns them.
 	ZmetadDBPath string `json:"zmetad_db_path"`
 	ZmetadBinary string `json:"zmetad_binary"`
+
+	// Region is the SigV4 verification region (region-config-2026-10
+	// leaf 01). Absent/empty -> defaultRegion ("us-east-1") at config
+	// load - one place owns the default; values are lowercased at load
+	// (SigV4 regions are lowercase).
+	Region string `json:"region"`
 
 	// AuditLog configures the append-only request audit log (charter
 	// exception, decided 2026-10-02). nil/absent = disabled (default off).
@@ -279,6 +290,7 @@ func defaultServerConfig() ServerConfig {
 		KeyFile:      defaultKeyFile,
 		ZmetadDBPath: defaultZmetadDBPath,
 		ZmetadBinary: defaultZmetadBinary,
+		Region:       defaultS3Region,
 	}
 }
 
@@ -329,6 +341,12 @@ func loadConfig(configPath string) error {
 	if cfg.ZmetadBinary == "" {
 		cfg.ZmetadBinary = defaultZmetadBinary
 	}
+	// Region: absent/empty -> default; lowercased (SigV4 regions are
+	// lowercase; region-config-2026-10 leaf 01).
+	cfg.Region = strings.ToLower(cfg.Region)
+	if cfg.Region == "" {
+		cfg.Region = defaultS3Region
+	}
 	// Absent/empty frontends array == S3 on the default listener (leaf 03
 	// backward-compatibility rule).
 	if len(cfg.Frontends) == 0 {
@@ -364,6 +382,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 		Auth         AuthConfig            `json:"auth"`
 		ZmetadDBPath string                `json:"zmetad_db_path"`
 		ZmetadBinary string                `json:"zmetad_binary"`
+		Region       string                `json:"region"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
@@ -381,6 +400,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	c.Auth = a.Auth
 	c.ZmetadDBPath = a.ZmetadDBPath
 	c.ZmetadBinary = a.ZmetadBinary
+	c.Region = a.Region
 	c.AuditLog = a.AuditLog
 	a.Buckets.apply(c)
 	return c.bucketsErr

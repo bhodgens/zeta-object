@@ -201,6 +201,7 @@ zeta-object uses a JSON configuration file (see `config.json.example` for a comm
 | `auth` | - | Optional auth settings; `auth.mode: "none"` enables the loud zero-auth dev mode. |
 | `zmetad_db_path` | `/var/lib/zfs/zmetad.db` | Path to the zmetad SQLite export database the ZFS-events provider reads. See [Metadata Capability Endpoints](#metadata-capability-endpoints-zfs-events). |
 | `zmetad_binary` | `zmetad` | zmetad executable reserved for the provider-level purge operation (`--purge`); purge is not exposed over HTTP (see Purge below). Defaults to a `PATH` lookup. |
+| `region` | `us-east-1` | SigV4 verification region; values are lowercased at load. See [Auth](#feature-highlights). |
 
 Credentials are **not** set in the config file - environment variables only.
 

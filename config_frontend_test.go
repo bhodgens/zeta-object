@@ -206,3 +206,30 @@ func TestLoadConfig_ZmetadKeys(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadConfig_RegionKey(t *testing.T) {
+	t.Run("absent key gets default", func(t *testing.T) {
+		cfg := loadConfigForTest(t, writeTempConfig(t, `{"dataDir":"./data/"}`))
+		if cfg.Region != defaultS3Region {
+			t.Fatalf("Region = %q, want default %q", cfg.Region, defaultS3Region)
+		}
+	})
+	t.Run("explicit value is honored", func(t *testing.T) {
+		cfg := loadConfigForTest(t, writeTempConfig(t, `{"region":"eu-west-1"}`))
+		if cfg.Region != "eu-west-1" {
+			t.Fatalf("Region = %q, want the configured value", cfg.Region)
+		}
+	})
+	t.Run("value is lowercased at load", func(t *testing.T) {
+		cfg := loadConfigForTest(t, writeTempConfig(t, `{"region":"EU-West-1"}`))
+		if cfg.Region != "eu-west-1" {
+			t.Fatalf("Region = %q, want normalized %q (SigV4 regions are lowercase)", cfg.Region, "eu-west-1")
+		}
+	})
+	t.Run("empty string falls back to default", func(t *testing.T) {
+		cfg := loadConfigForTest(t, writeTempConfig(t, `{"region":""}`))
+		if cfg.Region != defaultS3Region {
+			t.Fatalf("Region = %q, want default %q", cfg.Region, defaultS3Region)
+		}
+	})
+}
