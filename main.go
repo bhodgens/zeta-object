@@ -5,7 +5,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
+
+	s3 "github.com/bhodgens/zeta-object/internal/frontend/s3"
 
 	// Blank imports register the built-in storage backends with the
 	// internal/backend registry (each package's init() calls
@@ -79,6 +82,26 @@ func main() {
 	// below swaps the wrapper's inner registry; this pointer is fixed.
 	identityRegistry = auth.NewReloadableRegistry(reg)
 
+	// Audit log (auth extensions leaf 10, charter-exception layer): open
+	// the append-only sink BEFORE the listener opens — an unwritable path
+	// is FATAL (fail-loud config contract). Absent = disabled (default
+	// off). The writer-only charter discipline lives in the s3 frontend's
+	// audit_log.go: nothing ever reads the file back.
+	var auditWriter *s3.AuditWriter
+	if serverConfig.AuditLog != nil && serverConfig.AuditLog.Path != "" {
+		if dir := filepath.Dir(serverConfig.AuditLog.Path); dir != "" {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				log.Fatalf("Audit log directory creation failed for %s: %v", serverConfig.AuditLog.Path, err)
+			}
+		}
+		aw, err := s3.NewAuditWriter(serverConfig.AuditLog.Path)
+		if err != nil {
+			log.Fatalf("Audit log initialization failed for %s: %v", serverConfig.AuditLog.Path, err)
+		}
+		auditWriter = aw
+		log.Printf("Audit log enabled: %s (append-only, writer-only)", serverConfig.AuditLog.Path)
+	}
+
 	// Environment override for the listen address (beats config file)
 	applyListenAddrOverride(&serverConfig)
 
@@ -119,6 +142,9 @@ func main() {
 	if err := initBackendLookup(); err != nil {
 		log.Fatalf("Backend initialization failed: %v", err)
 	}
+
+	// Audit sink install (before the listener opens; nil = disabled).
+	s3.InstallAuditWriter(auditWriter)
 
 	// Leaf 03 frontend registry: construct the configured frontends via the
 	// factory map, register them, and mount: handlers without their own

@@ -33,6 +33,12 @@ func backendRootFor(bucket string) string {
 
 // serveHTTP is the former rootHandler: parse path → authenticate →
 // route by method+query. Order of checks preserved exactly.
+//
+// Audit log (auth extensions leaf 10, charter-exception layer): when an
+// audit writer is installed, every request that reaches AUTHENTICATION is
+// recorded exactly once — after auth and after the authorization decision
+// (denials are forensically interesting: denied=true). Best-effort: the
+// audit write can never break the request.
 func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	// Basic path parsing to differentiate between service-level and bucket-level requests
 	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -58,6 +64,7 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("Authentication Error: dev authenticator rejected request: %v", err)
 			writeAuthFailure(w, authFailureError{"AccessDenied", "Access Denied", httpStatusForbidden})
+			recordAudit("", r.Method, bucketName, objectName, string(opForMethod(r.Method, bucketName, objectName)), httpStatusForbidden, true)
 			return
 		}
 		identity = id
@@ -68,6 +75,7 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			if failure != nil {
 				writeAuthFailure(w, *failure)
 			}
+			recordAudit(presentedAccessKey(r), r.Method, bucketName, objectName, string(opForMethod(r.Method, bucketName, objectName)), authFailureStatus(failure), true)
 			return
 		}
 		identity = id
@@ -76,6 +84,7 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		if failure != nil {
 			writeAuthFailure(w, *failure)
 		}
+		recordAudit(presentedAccessKey(r), r.Method, bucketName, objectName, string(opForMethod(r.Method, bucketName, objectName)), authFailureStatus(failure), true)
 		return
 	} else {
 		identity = id
@@ -88,9 +97,30 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	// method+key adapter in authorizeS3Request; this site only renders the
 	// S3 wire error.
 	if !authorizeS3Request(w, identity, bucketName, objectName, r) {
+		recordAudit(identity.AccessKeyID, r.Method, bucketName, objectName, string(opForMethod(r.Method, bucketName, objectName)), httpStatusForbidden, true)
 		return
 	}
 
+	// Authenticated + authorized: wrap the writer so the dispatched
+	// handler's response status lands in the audit record, then route.
+	aw := auditWriterFor()
+	if aw == nil {
+		f.routeAuthorized(w, r, identity, bucketName, objectName)
+		return
+	}
+	rec := &statusRecorder{ResponseWriter: w, status: 0}
+	f.routeAuthorized(rec, r, identity, bucketName, objectName)
+	if rec.status == 0 {
+		rec.status = http.StatusOK
+	}
+	recordAudit(identity.AccessKeyID, r.Method, bucketName, objectName, string(opForMethod(r.Method, bucketName, objectName)), rec.status, false)
+}
+
+// routeAuthorized is the post-auth/post-authz dispatch switch (extracted
+// so the audit wrapping in serveHTTP stays one branch): ACL stub, then the
+// service/bucket/object level routing. Identical order to the pre-audit
+// pipeline.
+func (f *Frontend) routeAuthorized(w http.ResponseWriter, r *http.Request, identity auth.Identity, bucketName, objectName string) {
 	// Publish the authenticated identity into the request context so
 	// handlers needing a grant check BEYOND the URL-path bucket can reach
 	// it (bughunt S1: CopyObject's source bucket). The dispatch switch does
@@ -111,6 +141,35 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		f.objectLevelDispatch(w, r, bucketName, objectName)
 	}
+}
+
+// presentedAccessKey extracts the access key ID the client PRESENTED (from
+// the Authorization header's Credential scope, or the presigned
+// X-Amz-Credential) for audit attribution of AUTH failures. Unknown or
+// unparseable keys are still recorded (as presented) — forensic value;
+// the value is log-safe by the same rule the dispatch log uses.
+func presentedAccessKey(r *http.Request) string {
+	if cred := r.URL.Query().Get("X-Amz-Credential"); cred != "" {
+		if key, _, found := strings.Cut(cred, "/"); found {
+			return key
+		}
+		return cred
+	}
+	if authHeader := r.Header.Get("Authorization"); authHeader != "" {
+		if matches := authHeaderRegexTolerant.FindStringSubmatch(authHeader); len(matches) == 6 {
+			return matches[1]
+		}
+	}
+	return ""
+}
+
+// authFailureStatus maps an auth failure to its wire status for the audit
+// record (0/failure = generic forbidden).
+func authFailureStatus(failure *authFailureError) int {
+	if failure != nil {
+		return failure.status
+	}
+	return httpStatusForbidden
 }
 
 // authenticatedIdentityContextKey is the request-context key under which

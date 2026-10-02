@@ -175,3 +175,30 @@ func TestBucketAuditReadsParsing(t *testing.T) {
 		t.Fatalf("type error does not name the bucket: %v", err)
 	}
 }
+
+// TestAuditLogConfigParsing (auth extensions leaf 10): the top-level
+// "auditLog" object parses; unknown keys inside it fail loud.
+func TestAuditLogConfigParsing(t *testing.T) {
+	raw := []byte(`{"dataDir": "d/", "auditLog": {"path": "/var/log/zeta/audit.jsonl"}}`)
+	var cfg ServerConfig
+	if err := json.Unmarshal(stripJSON5Comments(raw), &cfg); err != nil {
+		t.Fatalf("auditLog config rejected: %v", err)
+	}
+	if cfg.AuditLog == nil || cfg.AuditLog.Path != "/var/log/zeta/audit.jsonl" {
+		t.Fatalf("auditLog not parsed: %+v", cfg.AuditLog)
+	}
+	// Absent = disabled.
+	var cfg2 ServerConfig
+	if err := json.Unmarshal(stripJSON5Comments([]byte(`{}`)), &cfg2); err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.AuditLog != nil {
+		t.Fatal("absent auditLog should be nil (disabled)")
+	}
+	// Unknown key inside auditLog: fail loud.
+	bad := []byte(`{"auditLog": {"path": "/x", "bogus": 1}}`)
+	var cfg3 ServerConfig
+	if err := json.Unmarshal(stripJSON5Comments(bad), &cfg3); err == nil {
+		t.Fatal("unknown auditLog key accepted")
+	}
+}

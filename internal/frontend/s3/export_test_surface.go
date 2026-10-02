@@ -453,3 +453,11 @@ var testFrontendSingleton *Frontend
 func MetadataProviderFor(bucketPath string) metadata.MetadataProvider {
 	return metadataProviderFor(bucketPath)
 }
+
+// ---------- Audit log (audit_log.go, auth extensions leaf 10) ----------
+
+// AuditRecordForTest constructs an auditRecord (the s3_test package pins
+// the best-effort append contract against a closed writer).
+func AuditRecordForTest(ts, principal, method, bucket, key, op string, status int, denied bool) auditRecord {
+	return auditRecord{TS: ts, Principal: principal, Method: method, Bucket: bucket, Key: key, Op: op, Status: status, Denied: denied}
+}
