@@ -20,7 +20,7 @@ func TestParseMultiRange(t *testing.T) {
 		{name: "single closed span", header: "bytes=0-99", size: 1000,
 			want: []Span{{Start: 0, End: 100}}, wantOK: true},
 		{name: "three spans in order", header: "bytes=0-99,200-299,400-499", size: 1000,
-			want: []Span{{Start: 0, End: 100}, {Start: 200, End: 300}, {Start: 400, End: 500}},
+			want:   []Span{{Start: 0, End: 100}, {Start: 200, End: 300}, {Start: 400, End: 500}},
 			wantOK: true},
 		{name: "whitespace around specs", header: "bytes= 0-99 , 200-299 ", size: 1000,
 			want: []Span{{Start: 0, End: 100}, {Start: 200, End: 300}}, wantOK: true},

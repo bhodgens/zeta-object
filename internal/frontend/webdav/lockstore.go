@@ -23,10 +23,10 @@ import (
 // opaquelocktoken:UUID scheme; UUID bytes come from crypto/rand (no
 // external uuid dependency).
 type LockInfo struct {
-	Token   string    // opaquelocktoken:UUID
-	Owner   string    // href from the LOCK body (may be empty)
-	Depth   string    // "0" (only depth supported in v1)
-	Timeout int64     // seconds remaining at LastRefresh
+	Token   string // opaquelocktoken:UUID
+	Owner   string // href from the LOCK body (may be empty)
+	Depth   string // "0" (only depth supported in v1)
+	Timeout int64  // seconds remaining at LastRefresh
 	Created time.Time
 	Key     string // resource path, slash-led, no trailing slash
 }

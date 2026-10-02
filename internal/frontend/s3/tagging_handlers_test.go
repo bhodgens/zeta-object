@@ -288,9 +288,9 @@ func TestCopyObject_ReplaceDirectiveUsesHeader(t *testing.T) {
 
 	// REPLACE + a new header tag set.
 	w := serveTagging(t, "PUT", "/tag-bucket/dst.txt", "", map[string]string{
-		"x-amz-copy-source":        "tag-bucket/src.txt",
-		"x-amz-tagging-directive":  "REPLACE",
-		"x-amz-tagging":            "fresh=1",
+		"x-amz-copy-source":       "tag-bucket/src.txt",
+		"x-amz-tagging-directive": "REPLACE",
+		"x-amz-tagging":           "fresh=1",
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("COPY: %d %s", w.Code, w.Body.String())
