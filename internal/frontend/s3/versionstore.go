@@ -88,8 +88,7 @@ func versionStoreFor(bucketPath string, zdb *metadata.ZmetadDB, mode string) ver
 	case "sidecar", "":
 		return sidecarVersionStore{bucketPath: bucketPath}
 	case "snapshots":
-		// Leaf 02: zfsSnapshotVersionStore{bucketPath, zdb}.
-		return unimplementedVersionStore{mode: mode}
+		return zfsSnapshotVersionStore{bucketPath: bucketPath, zdb: zdb}
 	case "both":
 		// Leaf 03: mergeStore{sidecarVersionStore{...},
 		// zfsSnapshotVersionStore{...}}.

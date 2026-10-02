@@ -354,6 +354,46 @@ func (db *ZmetadDB) ResolveDatasetByPath(path string) (string, error) {
 	return bestDataset, nil
 }
 
+// ResolveMountpointByPath returns the longest "/"-rooted mountpoint in
+// the `datasets` table that is the path or an ancestor of it (the
+// mirror of ResolveDatasetByPath's selection rule: same rows, same
+// containment, same longest-prefix winner, and DatasetNotTrackedError
+// when nothing matches). Consumers needing the dataset AND its
+// mountpoint must call both — two queries over the same snapshot of the
+// table is the accepted v1 shape (a combined resolve API would break
+// the dbHandle seam's minimalism).
+func (db *ZmetadDB) ResolveMountpointByPath(path string) (string, error) {
+	rows, err := db.conn.Query("SELECT mountpoint, dataset FROM datasets")
+	if err != nil {
+		return "", fmt.Errorf("metadata: query datasets table: %w", err)
+	}
+	defer rows.Close()
+
+	best := ""
+	for rows.Next() {
+		var mountpoint, dataset string
+		if err := rows.Scan(&mountpoint, &dataset); err != nil {
+			return "", fmt.Errorf("metadata: scan datasets row: %w", err)
+		}
+		if !strings.HasPrefix(mountpoint, "/") {
+			continue // verbatim "none"/"legacy" entries never match
+		}
+		if !mountpointContains(mountpoint, path) {
+			continue // separator guard: /testpool never claims /testpoolx
+		}
+		if len(mountpoint) > len(best) {
+			best = mountpoint
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("metadata: iterate datasets rows: %w", err)
+	}
+	if best == "" {
+		return "", &DatasetNotTrackedError{Path: path}
+	}
+	return best, nil
+}
+
 // HasDataset reports whether sync_state has a row for the dataset.
 func (db *ZmetadDB) HasDataset(dataset string) (bool, error) {
 	var one int

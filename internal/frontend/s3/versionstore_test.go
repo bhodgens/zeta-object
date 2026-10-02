@@ -485,7 +485,9 @@ func TestVersionStoreFor_ModeDispatch(t *testing.T) {
 		t.Error("empty mode must default to sidecarVersionStore")
 	}
 
-	for _, mode := range []string{"snapshots", "both"} {
+	// "snapshots" is wired to zfsSnapshotVersionStore as of leaf 02 —
+	// covered by TestVersionStoreFor_SnapshotsModeYieldsZfsSnapshotStore.
+	for _, mode := range []string{"both"} {
 		s := versionStoreFor(bp, nil, mode)
 		if _, ok := s.(unimplementedVersionStore); !ok {
 			t.Errorf("mode %s: expected unimplementedVersionStore placeholder, got %T", mode, s)
