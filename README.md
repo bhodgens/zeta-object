@@ -39,13 +39,15 @@ Most "S3-compatible" servers are the same idea restated: a service that owns a b
 
 ## Feature highlights
 
-**S3 core** - buckets, objects, multipart (parts 1-10000, expiry sweeper), ListObjectsV2 (prefix/delimiter/continuation/`encoding-type=url`), CopyObject (COPY/REPLACE directives), batch DeleteObjects, `?versions` listing, Range requests (206/416), conditional GET (If-Match/If-None-Match/If-(Un)Modified-Since), presigned URLs, verified `aws-chunked` streaming signatures.
+**S3 core** - buckets, objects, multipart (parts 1-10000, expiry sweeper), ListObjectsV2 (prefix/delimiter/continuation/`encoding-type=url`), CopyObject (COPY/REPLACE directives), object tagging (`x-amz-tagging` on PUT/COPY with COPY/REPLACE directives, the `?tagging` GET/PUT/DELETE sub-resource, `TagCount` on GET/HEAD), batch DeleteObjects, `?versions` listing, Range requests (206/416), conditional GET (If-Match/If-None-Match/If-(Un)Modified-Since), presigned URLs, verified `aws-chunked` streaming signatures.
 
 **Auth** - AWS Signature Version 4 (header and presigned), 15-minute clock-skew window, configurable verification region (default `us-east-1`).
 
 **Event Actions** - run shell commands on upload/download/delete with glob matching, per-subdirectory merge/override/disable inheritance, inactivity triggers (e.g. `zfs snapshot` after 30 quiet minutes), safe single-quote shell-quoting of all variables, timeouts with process-group kill. See [Event Actions](#event-actions).
 
 **Metadata capability endpoints** - when a bucket's filesystem provides an event log (ZFS `org.openzfs:events`): object and bucket event history as JSON, a versions-style XML listing derived from the log (delete markers included, `IsLossy`/`RecordsLost` flags when the ring buffer wrapped), probed lazily per bucket. Absent capability = clean 503, zero overhead.
+
+**Object tagging** - `x-amz-tagging` on PUT, the `?tagging` GET/PUT/DELETE sub-resource, `TagCount` on GET/HEAD, and tag COPY/REPLACE directives on CopyObject, with S3 validation limits (10 tags, 128-byte keys, 256-byte values, reserved `aws:` prefix → `InvalidTag`). Tags live in the per-object `.metadata/` JSON sidecar (the charter-sanctioned metadata path) for both bucket kinds today; ZFS-native tag storage lands with upstream zfs-metadata#13 behind the `tagStore` seam — until then the sidecar is the v1 store for ZFS buckets too.
 
 **Operations** - HTTPS-only (TLS 1.2 minimum), graceful 30s shutdown drain, per-key write serialization, atomic writes (temp + fsync + rename) so a crash never truncates an object, path-traversal rejection, optional `max_put_bytes` per backend (default 5 GiB, the S3 single-PUT limit).
 
@@ -268,7 +270,7 @@ Presigned URLs and `mc`/`rclone` work the same way - see the interop e2e cases (
 
 ## WebDAV frontend
 
-zeta-object speaks WebDAV (RFC 4918, class 1 subset) so macOS Finder, Linux davfs2/gvfs, and Windows can mount it as a drive. The frontend implements exactly: `OPTIONS`, `PROPFIND` (Depth 0/1), `GET`, `HEAD`, `PUT`, `DELETE`, `MKCOL`, `COPY`, `MOVE`. Every storage touch goes through the same neutral object model the S3 frontend uses — an object written over WebDAV is byte-identical to the S3 view of the same key.
+zeta-object speaks WebDAV (RFC 4918, class 1 subset) so macOS Finder, Linux davfs2/gvfs, and Windows can mount it as a drive. The frontend implements exactly: `OPTIONS`, `PROPFIND` (Depth 0/1), `GET`, `HEAD`, `PUT`, `DELETE`, `MKCOL`, `COPY`, `MOVE`, `LOCK`, `UNLOCK`. Every storage touch goes through the same neutral object model the S3 frontend uses — an object written over WebDAV is byte-identical to the S3 view of the same key.
 
 ### Enabling
 
@@ -305,7 +307,15 @@ zeta-object speaks WebDAV (RFC 4918, class 1 subset) so macOS Finder, Linux davf
 
 | Request | Response |
 |---|---|
-| `LOCK` / `UNLOCK` / `PROPPATCH` / any unimplemented method | `405` + `Allow` header (no locking in v1) |
+| `LOCK` on a collection (trailing slash) or the root | `405` + `Allow` (v1 locks files only — davfs2 issues directory locks, see the mounting note below) |
+| `LOCK` with `Depth: infinity` (or any non-`0` Depth) | `400` (Depth 0 is the only supported lock depth) |
+| `LOCK` with `<shared/>` lockscope | `400` (exclusive write locks only in v1) |
+| `LOCK` on an already-locked resource | `423 Locked` with an RFC 4918 `<D:error>` body |
+| `LOCK` refresh (empty body + `If` token) on a missing/expired or non-matching lock | `412` |
+| `UNLOCK` with a wrong token, or on a resource holding no live lock | `409 Conflict` |
+| `UNLOCK` without a `Lock-Token` header | `400` |
+| `PUT`/`DELETE`/`MOVE`/`COPY` (destination)/`PROPPATCH` on a locked resource without its token in the `If` header | `423 Locked` |
+| `PROPPATCH` / any other unimplemented method | `405` + `Allow` header |
 | `PROPFIND` with `Depth: infinity` (or no `Depth`) | `403` with `<propfind-finite-depth/>` |
 | `COPY`/`MOVE` of a collection (any Depth) | `403` (a recursive collection copy cannot be expressed without risking a partial fake copy) |
 | PROPFIND naming an unknown property | `404` propstat for that property (no synthesized values) |
@@ -318,12 +328,12 @@ zeta-object speaks WebDAV (RFC 4918, class 1 subset) so macOS Finder, Linux davf
 
 *   **macOS Finder**: `Cmd+K` → `https://localhost:8444/` → accept the self-signed cert → enter the access key/secret key.
 *   **macOS CLI**: `mkdir /tmp/webdav && mount_webdav -v webdav https://localhost:8444/ /tmp/webdav`.
-*   **Linux davfs2**: `mount -t davfs2 https://localhost:8444/ /mnt/webdav` — set `use_locks 0` in the davfs2 config (v1 has no LOCK and rejects it with 405).
+*   **Linux davfs2**: `mount -t davfs2 https://localhost:8444/ /mnt/webdav` — the default config works: exclusive write locks on files are served (`use_locks 1` is fine). Directory LOCKs are still refused with `405`; if your davfs2 build refuses to mount without them, set `use_locks 0` as before and report it — directory-lock support is tracked as a possible follow-up.
 *   **Windows**: `net use W: https://localhost:8444/ /user:ACCESSKEY SECRETKEY` (self-signed certs require trusting the cert first).
 
 ### Limitations
 
-No locking (davfs2 needs `use_locks 0`), no versioning, no quotas, no dead properties, no collection COPY/MOVE, no Depth-infinity PROPFIND. Wire-level coverage lives in e2e case `scripts/e2e/cases/19-webdav.sh`; the mount-level checks above are manual by design (they need a kernel filesystem and interactive cert trust).
+Locking is exclusive write locks on files only: Depth 0, `Timeout: Second-N` capped at 3600s, tokens are `opaquelocktoken:` UUIDs, and locks are server-side advisory coordination state under the bucket's `.metadata/.locks/` (the file backend is the contract; a kernel/ZFS-enforced fence stays an open question upstream — zfs-metadata#14). Shared locks, Depth-infinity locks, and locks on collections remain unsupported. Otherwise: no versioning, no quotas, no dead properties, no collection COPY/MOVE, no Depth-infinity PROPFIND. Wire-level coverage lives in e2e case `scripts/e2e/cases/19-webdav.sh` (plus the locking e2e case); the mount-level checks above are manual by design (they need a kernel filesystem and interactive cert trust).
 
 ## ownCloud frontend
 
@@ -688,7 +698,7 @@ Every pull goes through the pre-commit chain (secrets scan, vet, error-pattern c
 
 *   No ACLs or bucket policies; authorization is per-identity grants (the `identities` config block — bucket-level and prefix/op/time-scoped rich expressions).
 *   Key rotation for `identities` is a SIGHUP reload (edit config.json → `kill -HUP`); the env pair still needs a restart. No OAuth/OIDC/token-based auth for S3 (SigV4 cannot express it).
-*   Region pinned to `us-east-1`.
+*   Region: defaults to `us-east-1`; set `region` in config.json to pin another region (strict credential-scope compare — a mismatch fails with `SignatureDoesNotMatch` naming the expected region). When `region` is left unset, default mode accepts any well-formed client region permissively with a log notice — a dev escape hatch; set `region` for a strict production posture.
 *   Object keys with `..` or `.metadata` path segments are rejected, and keys must be in canonical form (safety over S3 compatibility; no `a//b` aliasing).
 *   S3 versioning is not implemented; `?versions` lists existing objects, and the ZFS-events-derived version listing is an extension, not S3 versioning.
 

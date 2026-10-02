@@ -212,14 +212,16 @@ func TestGetObject_RangeMalformedIgnored(t *testing.T) {
 	}
 }
 
-func TestGetObject_RangeMultiRangeFallsBack200(t *testing.T) {
-	_, content, _ := setupRangeObject(t)
+func TestGetObject_RangeMultiRangeServes206(t *testing.T) {
+	_, _, _ = setupRangeObject(t)
+	// Multi-range now serves multipart/byteranges (issue #9); the old
+	// 200-full-body fallback applies only past the 100-part cap.
 	w := doGet(t, map[string]string{"Range": "bytes=0-1,3-4"})
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 for multi-range fallback, got %d", w.Code)
+	if w.Code != http.StatusPartialContent {
+		t.Fatalf("expected 206 for multi-range, got %d", w.Code)
 	}
-	if got := w.Body.String(); got != content {
-		t.Errorf("expected full body, got %q", got)
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "multipart/byteranges") {
+		t.Fatalf("expected multipart/byteranges, got %q", ct)
 	}
 }
 
