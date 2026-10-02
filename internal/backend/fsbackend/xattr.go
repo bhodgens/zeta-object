@@ -86,6 +86,29 @@ func stampWriterBreadcrumb(path, principal, op string) {
 	}
 }
 
+// StampReaderFirstRead stamps user.zeta.reader.<principal> with the
+// last-read RFC3339 timestamp, FIRST READ PER PRINCIPAL ONLY: the presence
+// check (fgetxattr) skips principals already stamped, keeping GET write
+// amplification at one xattr write per reader per object — never per read
+// (design 2a read path, gated by the per-bucket auditReads tunable).
+// Fail-open: on read-only mounts or any xattr error the GET still
+// succeeds — the stamp is silently skipped after one WARN.
+func StampReaderFirstRead(path, principal string) {
+	if principal == "" {
+		return
+	}
+	name := xattrReaderPrefix + principal
+	if _, err := getXattr(path, name); err == nil {
+		return // already stamped: one write per reader per object
+	} else if !isErrXattrNotFound(err) {
+		log.Printf("WARNING: fsbackend: xattr read-stamp skipped (%s): %v", name, err)
+		return
+	}
+	if err := setXattr(path, name, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		log.Printf("WARNING: fsbackend: xattr read-stamp skipped (%s): %v", name, err)
+	}
+}
+
 // stampOwnerCarried implements the set-once owner rule on the atomic
 // write path: the previous object version's owner (carryOwner, read
 // before the atomic replace destroyed the old inode) rides onto the new

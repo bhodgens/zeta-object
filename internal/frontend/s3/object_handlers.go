@@ -22,6 +22,7 @@ import (
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/backend/fsbackend"
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
@@ -141,6 +142,27 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 		ETag:         eTag,
 		Size:         obj.Size,
 	})
+}
+
+// auditReadsFor reports the bucket's auditReads tunable (auth extensions
+// leaf 10): when the installed config view marks the bucket true, GETs
+// stamp a first-read-per-principal reader breadcrumb. Default false —
+// zero read-path overhead.
+func auditReadsFor(bucket string) bool {
+	return currentServerConfig().AuditReads[bucket]
+}
+
+// stampReaderBreadcrumb applies the auditReads read stamp handler-side:
+// the object's shadow-aware data path is resolved exactly like the action
+// context resolves it (path math only); the stamp itself is fsbackend's
+// fail-open first-read-per-principal helper. Called AFTER a successful
+// backend Get so a stamp failure can never affect the served response.
+func stampReaderBreadcrumb(r *http.Request, bucket, key string) {
+	if !auditReadsFor(bucket) {
+		return
+	}
+	bucketPath := getBucketPath(bucket)
+	fsbackend.StampReaderFirstRead(objectDataPathFor(bucketPath, key), principalOfRequest(r))
 }
 
 // rawMetaHeaders enumerates the request's x-amz-meta-* header names and
@@ -400,6 +422,9 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	}
 	defer srcRC.Close()
 	actualSize := meta.Size
+	// auditReads read stamp (leaf 10): after the open succeeded, before
+	// serving — first read per principal only, fail-open.
+	stampReaderBreadcrumb(r, bucketName, objectName)
 
 	// Set headers from metadata (leaf 2.4 fix 4: default Content-Type).
 	// Custom metadata rides the neutral model in canonical key form; the

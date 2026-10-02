@@ -23,6 +23,10 @@ import (
 type serverConfigView struct {
 	Buckets map[string]string
 	DataDir string
+	// AuditReads carries the per-bucket auditReads tunable (auth
+	// extensions leaf 10). Absent bucket ⇒ false (off = zero read-path
+	// overhead, design 2b).
+	AuditReads map[string]bool
 }
 
 // installedServerConfig is the injected config view; nil falls back to an
@@ -44,9 +48,13 @@ func installServerConfigView(cfg serverConfigView) {
 	if buckets == nil {
 		buckets = map[string]string{}
 	}
+	auditReads := cfg.AuditReads
+	if auditReads == nil {
+		auditReads = map[string]bool{}
+	}
 	configViewMu.Lock()
 	defer configViewMu.Unlock()
-	installedServerConfig = &serverConfigView{Buckets: buckets, DataDir: cfg.DataDir}
+	installedServerConfig = &serverConfigView{Buckets: buckets, DataDir: cfg.DataDir, AuditReads: auditReads}
 }
 
 // currentServerConfig returns the installed view (never nil), re-mirroring

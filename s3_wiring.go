@@ -48,8 +48,9 @@ func (mainCredentialSource) SecretKey(accessKeyID string) (string, bool) {
 func installS3Seams() {
 	// Configuration view.
 	s3.InstallServerConfigView(s3.ServerConfigView{
-		Buckets: serverConfig.Buckets,
-		DataDir: serverConfig.DataDir,
+		Buckets:    serverConfig.Buckets,
+		DataDir:    serverConfig.DataDir,
+		AuditReads: serverConfig.BucketAuditReads,
 	})
 
 	// Data plane: install the SAME backendFor resolver the handlers used

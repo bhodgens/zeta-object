@@ -55,6 +55,12 @@ type ServerConfig struct {
 	// object form of the buckets value). Absent/empty ⇒ default backend.
 	BucketBackends map[string]string `json:"-"`
 
+	// BucketAuditReads records each bucket's auditReads tunable (auth
+	// extensions leaf 10): when true, GETs stamp a per-principal
+	// user.zeta.reader.<key> breadcrumb, first read only. Absent ⇒ false
+	// (zero read-path overhead — design 2b phase 1).
+	BucketAuditReads map[string]bool `json:"-"`
+
 	// Identities is the multi-identity auth config (pluggable-
 	// authentication tree leaf 01). Absent ⇒ only the env-pair identity
 	// exists (exact pre-tree behavior).
@@ -74,9 +80,21 @@ type ServerConfig struct {
 	ZmetadDBPath string `json:"zmetad_db_path"`
 	ZmetadBinary string `json:"zmetad_binary"`
 
+	// AuditLog configures the append-only request audit log (charter
+	// exception, decided 2026-10-02). nil/absent = disabled (default off).
+	AuditLog *AuditLogConfig `json:"auditLog,omitempty"`
+
 	// bucketsErr carries a buckets-map decode failure (null/empty bucket
 	// value) out of the custom UnmarshalJSON path; it is not a JSON key.
 	bucketsErr error
+}
+
+// AuditLogConfig is the config.json "auditLog" block (auth extensions leaf
+// 10): the append-only SigV4 request audit trail. Path empty/absent =
+// disabled (default off). The writer-ONLY contract (AGENTS.md charter): no
+// code path ever reads the file.
+type AuditLogConfig struct {
+	Path string `json:"path"`
 }
 
 // AuthConfig is the config.json "auth" block (pluggable-authentication tree
@@ -135,8 +153,9 @@ type BackendCfg struct {
 // legacy bare string ("photos": "/mnt/photos") or the object form
 // ("photos": {"path": ..., "backend": ...}).
 type bucketCfg struct {
-	Path    string `json:"path"`
-	Backend string `json:"backend"`
+	Path       string `json:"path"`
+	Backend    string `json:"backend"`
+	AuditReads bool   `json:"auditReads,omitempty"`
 }
 
 // UnmarshalJSON accepts both encodings. The legacy string form decodes to
@@ -162,7 +181,7 @@ func (b *bucketCfg) UnmarshalJSON(data []byte) error {
 	if err := dec.Decode(&p); err != nil {
 		return err
 	}
-	b.Path, b.Backend = p.Path, p.Backend
+	b.Path, b.Backend, b.AuditReads = p.Path, p.Backend, p.AuditReads
 	return nil
 }
 
@@ -217,6 +236,9 @@ func (m bucketsRaw) apply(cfg *ServerConfig) {
 	if cfg.BucketBackends == nil {
 		cfg.BucketBackends = make(map[string]string)
 	}
+	if cfg.BucketAuditReads == nil {
+		cfg.BucketAuditReads = make(map[string]bool)
+	}
 	for name, bc := range m {
 		if bc.Path == "" && bc.Backend == "" {
 			// The bucket's UnmarshalJSON already rejected a literal null;
@@ -228,6 +250,9 @@ func (m bucketsRaw) apply(cfg *ServerConfig) {
 		cfg.Buckets[name] = bc.Path
 		if bc.Backend != "" {
 			cfg.BucketBackends[name] = bc.Backend
+		}
+		if bc.AuditReads {
+			cfg.BucketAuditReads[name] = true
 		}
 	}
 }
@@ -334,6 +359,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 		Frontends    []FrontendConfig      `json:"frontends"`
 		Backends     map[string]BackendCfg `json:"backends"`
 		Buckets      bucketsRaw            `json:"buckets"`
+		AuditLog     *AuditLogConfig       `json:"auditLog"`
 		Identities   []auth.IdentityConfig `json:"identities"`
 		Auth         AuthConfig            `json:"auth"`
 		ZmetadDBPath string                `json:"zmetad_db_path"`
@@ -355,6 +381,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	c.Auth = a.Auth
 	c.ZmetadDBPath = a.ZmetadDBPath
 	c.ZmetadBinary = a.ZmetadBinary
+	c.AuditLog = a.AuditLog
 	a.Buckets.apply(c)
 	return c.bucketsErr
 }

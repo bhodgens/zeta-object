@@ -150,3 +150,28 @@ func TestLoadConfigEmptyBucketObjectFails(t *testing.T) {
 		t.Fatal("UnmarshalJSON accepted an empty bucket object; want error")
 	}
 }
+
+// TestBucketAuditReadsParsing (auth extensions leaf 10): the buckets
+// object form accepts "auditReads" (bool); a wrong type fails loud naming
+// the bucket.
+func TestBucketAuditReadsParsing(t *testing.T) {
+	raw := []byte(`{"dataDir": "d/", "buckets": {"plain": "/tmp/plain", "watched": {"path": "/tmp/watched", "auditReads": true}}}`)
+	var cfg ServerConfig
+	if err := json.Unmarshal(stripJSON5Comments(raw), &cfg); err != nil {
+		t.Fatalf("valid auditReads config rejected: %v", err)
+	}
+	if !cfg.BucketAuditReads["watched"] {
+		t.Fatal("auditReads=true did not fan out to BucketAuditReads")
+	}
+	if cfg.BucketAuditReads["plain"] {
+		t.Fatal("plain bucket erroneously marked auditReads")
+	}
+	// Wrong type: fail-loud (JSON decode error naming the bucket).
+	bad := []byte(`{"buckets": {"oops": {"path": "/tmp/x", "auditReads": "yes"}}}`)
+	var cfg2 ServerConfig
+	if err := json.Unmarshal(stripJSON5Comments(bad), &cfg2); err == nil {
+		t.Fatal("non-bool auditReads accepted")
+	} else if !strings.Contains(err.Error(), "oops") {
+		t.Fatalf("type error does not name the bucket: %v", err)
+	}
+}
