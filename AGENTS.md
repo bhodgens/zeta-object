@@ -17,7 +17,17 @@ describes - except:
   is not ZFS (ZFS-backed buckets get their history from the dataset event log
   instead - never duplicate that into sidecars);
 - transient upload staging under the bucket's own `.metadata/.uploads/`,
-  cleaned by the expiry sweeper.
+  cleaned by the expiry sweeper;
+- the append-only per-request audit log (charter exception, decided
+  2026-10-02): an append-only record of authenticated requests (principal,
+  operation, object, timestamp) written by the gateway for forensic
+  attribution. Allowed ONLY as write-once at the auth boundary - the data
+  path and enforcement never read it, so the gateway never acts on stored
+  audit state and the backing filesystem remains the sole source of truth
+  for data. It must live on a ZFS dataset (or the bucket's own storage) and
+  be protected by ZFS snapshot plus scheduled off-box `zfs send`. Treating
+  the audit log as queryable server state, or letting any request path
+  consult it, violates this charter and requires a new decision.
 
 Any feature that wants persistent per-object or per-bucket bookkeeping must
 either (a) derive it from the backing filesystem (the MetadataProvider seam),
