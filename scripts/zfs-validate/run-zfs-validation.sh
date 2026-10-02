@@ -261,8 +261,15 @@ force_collect()
 meta = db_query("SELECT key, value FROM meta")
 check("zmetad DB reachable + meta rows", isinstance(meta, list) and len(meta) >= 1, str(meta)[:200])
 ver = {r["key"]: r["value"] for r in (meta or [])}
-check("db_schema_version in supported range (5..6)",
-      ver.get("db_schema_version") in ("5", "6"), str(ver))
+check("db_schema_version in supported range (5..8)",
+      ver.get("db_schema_version") in ("5", "6", "7", "8"), str(ver))
+# events_schema_version moves in LOCKSTEP with the layout upstream
+# (layout 5/6 == wire 2; layout 7/8 == wire 3). The server accepts both.
+ev_wire = ver.get("events_schema_version")
+dbv = ver.get("db_schema_version")
+consistent = (dbv in ("5", "6") and ev_wire in ("2", None)) or \
+             (dbv in ("7", "8") and ev_wire == "3")
+check("events_schema_version consistent with layout", bool(consistent), str(ver))
 ds_rows = db_query(f"SELECT dataset, mountpoint FROM datasets WHERE dataset = '{DATASET}'")
 check("datasets table tracks scratch dataset", bool(ds_rows), str(ds_rows)[:200])
 
