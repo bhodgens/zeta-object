@@ -8,13 +8,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/frontend"
 )
 
 // allowHeader is the Allow value advertised on OPTIONS and on 405s.
-const allowHeader = "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, MKCOL, COPY, MOVE"
+const allowHeader = "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, MKCOL, COPY, MOVE, LOCK, UNLOCK"
 
 // realm is the frozen Basic-auth realm string (leaf 04 note: changing it
 // breaks saved client credentials).
@@ -54,22 +55,54 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case "PROPFIND":
 		f.handlePROPFIND(w, r.WithContext(ctx), res)
 	case "PUT":
+		if !f.enforceWriteLock(w, r, res) {
+			return
+		}
 		f.handlePUT(w, r.WithContext(ctx), res)
 	case "DELETE":
+		if !f.enforceWriteLock(w, r, res) {
+			return
+		}
 		f.handleDELETE(w, r.WithContext(ctx), res)
 	case "MKCOL":
 		f.handleMKCOL(w, r.WithContext(ctx), res)
 	case "COPY":
-		f.handleCopyMove(w, r.WithContext(ctx), res, false)
+		f.handleCopyMoveDispatch(w, r.WithContext(ctx), res, false)
 	case "MOVE":
-		f.handleCopyMove(w, r.WithContext(ctx), res, true)
+		f.handleCopyMoveDispatch(w, r.WithContext(ctx), res, true)
+	case "LOCK":
+		f.handleLOCK(w, r.WithContext(ctx), res)
+	case "UNLOCK":
+		f.handleUNLOCK(w, r.WithContext(ctx), res)
 	default:
-		// LOCK, UNLOCK, PROPPATCH, VERSION-CONTROL, gibberish: a
-		// rejection, not emulation (master Contract 4). Allow comes only
-		// after successful auth.
+		// PROPPATCH, VERSION-CONTROL, gibberish: a rejection, not
+		// emulation (master Contract 4). Allow comes only after
+		// successful auth.
 		w.Header().Set("Allow", allowHeader)
 		writeDavError(w, http.StatusMethodNotAllowed, "")
 	}
+}
+
+// handleCopyMoveDispatch gates COPY/MOVE on lock keys before any
+// delegation: the destination (both verbs write it) always; the source
+// only for MOVE, whose delete half is a write on the source (RFC 4918
+// §7.1). COPY reads the source and is never lock-gated on it (the brief:
+// "COPY-dest"). The Destination header is re-parsed here only for the
+// lock key; the authoritative Destination validation stays in
+// handleCopyMove's own resolver. LOCK/UNLOCK never reach enforcement —
+// lock management is exempt (master brief).
+func (f *Frontend) handleCopyMoveDispatch(w http.ResponseWriter, r *http.Request, src resource, isMove bool) {
+	if u, err := url.Parse(r.Header.Get("Destination")); err == nil && u.Path != "" {
+		if dst, ok := f.parseResource(u.Path); ok && dst.key != "" {
+			if !f.enforceWriteLock(w, r, dst) {
+				return
+			}
+		}
+	}
+	if isMove && !f.enforceWriteLock(w, r, src) {
+		return
+	}
+	f.handleCopyMove(w, r, src, isMove)
 }
 
 // authenticate runs the injected authenticator. Missing or invalid

@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/backend"
@@ -48,6 +49,28 @@ type Frontend struct {
 	be     backend.Backend
 	authnr auth.Authenticator
 	bucket string // non-empty => single-bucket mode (mode B)
+
+	// lockRoot, when non-nil, maps a bucket onto its on-disk directory;
+	// lock stores live under <dir>/.metadata/.locks/ (webdav-locking
+	// leaf 01). Constructed lazily per bucket under locksMu. nil keeps
+	// the pre-locking behavior: LOCK/UNLOCK answer 405 and no write-path
+	// enforcement runs.
+	lockRoot func(bucket string) string
+	locksMu  sync.Mutex
+	locks    map[string]lockStore
+}
+
+// WithLockStoreRoot enables WebDAV locking: fn maps a bucket name onto
+// its on-disk directory and each bucket gets a file-backed lockStore
+// under <dir>/.metadata/.locks/. Package main wires getBucketPath here.
+// Without this option (unit-test seam), LOCK/UNLOCK answer 405 exactly
+// as before locking shipped.
+func WithLockStoreRoot(fn func(bucket string) string) Option {
+	return func(f *Frontend) {
+		if fn != nil {
+			f.lockRoot = fn
+		}
+	}
 }
 
 // Compile-time assertion: *Frontend satisfies the frozen frontend seam.

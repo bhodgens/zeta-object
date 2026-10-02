@@ -47,14 +47,19 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 			return nil, fmt.Errorf("webdav frontend requires an identity registry (auth configuration failed earlier?)")
 		}
 		authnr := auth.NewBasicAuthenticator(identityRegistry)
-		return webdav.New(b, webdav.Config{Bucket: cfg.Bucket}, webdav.WithAuthenticator(authnr))
+		// WebDAV locking (webdav-locking-2026-10): the per-bucket lock
+		// store lives under the bucket's own .metadata/.locks/ — the same
+		// getBucketPath math the s3 staging uses.
+		return webdav.New(b, webdav.Config{Bucket: cfg.Bucket}, webdav.WithAuthenticator(authnr),
+			webdav.WithLockStoreRoot(getBucketPath))
 	},
 	"owncloud": func(cfg FrontendConfig, b backend.Backend, creds auth.CredentialSource) (frontend.Frontend, error) {
 		if identityRegistry == nil {
 			return nil, fmt.Errorf("owncloud frontend requires an identity registry (auth configuration failed earlier?)")
 		}
 		authnr := auth.NewBasicAuthenticator(identityRegistry)
-		wd, err := webdav.New(b, webdav.Config{Bucket: cfg.Bucket}, webdav.WithAuthenticator(authnr))
+		wd, err := webdav.New(b, webdav.Config{Bucket: cfg.Bucket}, webdav.WithAuthenticator(authnr),
+			webdav.WithLockStoreRoot(getBucketPath))
 		if err != nil {
 			return nil, err
 		}

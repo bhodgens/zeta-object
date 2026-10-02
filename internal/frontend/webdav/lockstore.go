@@ -57,7 +57,9 @@ func newLockErr(base error, format string, args ...any) error {
 // lockFileName maps a resource key onto the on-disk lock file name. The
 // key is slash-led; slashes become underscores after stripping the lead so
 // every key maps to a single flat file name (depth-1 keys only — that is
-// all v1 issues LOCKs for).
+// all v1 issues LOCKs for). Keys arrive from parseResource, which rejects
+// dot-segment traversal, and the underscore flattening leaves no path
+// structure for an escaped segment to exploit.
 func lockFileName(key string) string {
 	return strings.ReplaceAll(strings.TrimPrefix(key, "/"), "/", "_") + ".lock"
 }
@@ -95,7 +97,7 @@ func expired(info LockInfo, now time.Time) bool {
 
 // readRaw loads the lock file without expiry filtering.
 func (s *fileLockStore) readRaw(key string) (LockInfo, error) {
-	data, err := os.ReadFile(s.path(key))
+	data, err := os.ReadFile(s.path(key)) //nolint:gosec // G703: key is parseResource-vetted, flattened by lockFileName
 	if errors.Is(err, os.ErrNotExist) {
 		return LockInfo{}, ErrNotFound
 	}
@@ -127,7 +129,7 @@ func (s *fileLockStore) readLiveLocked(key string) (LockInfo, error) {
 		// Best-effort unlink: a failed remove (ENOENT from a concurrent
 		// sweeper, EPERM) must not mask the ErrNotFound the caller acts
 		// on; the next access or Sweep retries the removal.
-		if rmErr := os.Remove(s.path(key)); rmErr != nil && !os.IsNotExist(rmErr) {
+		if rmErr := os.Remove(s.path(key)); rmErr != nil && !os.IsNotExist(rmErr) { //nolint:gosec // G703: key is parseResource-vetted, flattened by lockFileName
 			// Surface unusual failures in logs without changing behavior.
 			fmt.Fprintf(os.Stderr, "webdav: lockstore remove %s: %v\n", s.path(key), rmErr)
 		}
@@ -142,14 +144,14 @@ func (s *fileLockStore) writeLocked(info LockInfo) error {
 	if err != nil {
 		return fmt.Errorf("webdav: marshal lock %s: %w", info.Key, err)
 	}
-	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+	if err := os.MkdirAll(s.dir, 0o755); err != nil { //nolint:gosec // G703: dir is the bucket .metadata root, not request-derived
 		return fmt.Errorf("webdav: lock dir: %w", err)
 	}
 	tmp := s.path(info.Key) + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o644); err != nil { //nolint:gosec // G703: key is parseResource-vetted, flattened by lockFileName
 		return fmt.Errorf("webdav: write lock %s: %w", info.Key, err)
 	}
-	if err := os.Rename(tmp, s.path(info.Key)); err != nil {
+	if err := os.Rename(tmp, s.path(info.Key)); err != nil { //nolint:gosec // G703: key is parseResource-vetted, flattened by lockFileName
 		return fmt.Errorf("webdav: commit lock %s: %w", info.Key, err)
 	}
 	return nil
@@ -216,7 +218,7 @@ func (s *fileLockStore) Release(key, token string) error {
 	if info.Token != token {
 		return newLockErr(ErrLockTokenMismatch, "%s held by another token", key)
 	}
-	if err := os.Remove(s.path(key)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(s.path(key)); err != nil && !errors.Is(err, os.ErrNotExist) { //nolint:gosec // G703: key is parseResource-vetted, flattened by lockFileName
 		return fmt.Errorf("webdav: release lock %s: %w", key, err)
 	}
 	return nil
