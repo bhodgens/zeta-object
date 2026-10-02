@@ -156,6 +156,16 @@ type objectEventJSON struct {
 	SizeOld   int64  `json:"sizeOld,omitempty"`
 	SizeNew   int64  `json:"sizeNew,omitempty"`
 	Owner     string `json:"owner,omitempty"`
+	// Principal is the ZFS_EV_PRINCIPAL application tag the WRITING
+	// PROCESS registered with the kernel for this event (issue #7; wire
+	// schema 3 / DB layout 8). Pointer-emitted: present ONLY when the
+	// record carries one — an unregistered writer keeps the exact
+	// pre-change shape (never fabricated). NOTE: while the gateway does
+	// NOT register a principal (per-thread-group registration would
+	// misattribute Go's thread pool), this field surfaces tags written by
+	// OTHER host processes (the branch's own schema probe, operators'
+	// tools) so the ?events stream is complete.
+	Principal *uint64 `json:"principal,omitempty"`
 }
 
 // ListObjectVersionsExt is the ?events&versions XML document — a
@@ -313,6 +323,11 @@ func toEventJSON(events []metadata.ObjectEvent, ownerOf func(key string) (string
 			if owner, ok := ownerOf(e.Key); ok {
 				ev.Owner = owner
 			}
+		}
+		// Principal: pointer copy, present iff the record carries one.
+		if e.Principal != nil {
+			p := *e.Principal
+			ev.Principal = &p
 		}
 		out = append(out, ev)
 	}
