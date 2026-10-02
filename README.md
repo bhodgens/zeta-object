@@ -193,7 +193,8 @@ zeta-object uses a JSON configuration file (see `config.json.example` for a comm
 | `listenAddr` | `:8443` | HTTPS listen address (host:port). |
 | `certFile` | `certs/cert.pem` | TLS certificate path. |
 | `keyFile` | `certs/key.pem` | TLS private key path. |
-| `buckets` | `{}` | Map of bucket names to custom filesystem paths (string form, or `{"path": ..., "backend": ...}` object form). |
+| `buckets` | `{}` | Map of bucket names to custom filesystem paths (string form, or `{"path": ..., "backend": ..., "auditReads": ...}` object form). |
+| `auditLog` | - | Optional `{"path": "..."}` enabling the append-only request audit log. Absent = disabled. See [Principal breadcrumbs and audit trail](#principal-breadcrumbs-and-audit-trail). |
 | `backends` | - | Optional backend registry: backend type name to construction config. Unknown types abort startup. |
 | `frontends` | - | Optional frontend list (default: one S3 frontend on `listenAddr`). Each entry may set its own `listenAddr` for a dedicated TLS listener. |
 | `identities` | `[]` | Optional additional auth identities (name, accessKey, secretKey, optional per-bucket `grants`, optional `sshPublicKeys`). See [Multiple identities](#multiple-identities-and-per-bucket-grants). |
@@ -431,6 +432,83 @@ rclone copyto file.txt :sftp,host=127.0.0.1,port=2022,user=ACCESSKEY:/mybucket/f
 ```
 
 Wire-level coverage lives in e2e case `scripts/e2e/cases/21-sftp.sh` (key-auth round-trip, host-key generation, wrong-key/wrong-password negatives).
+
+## Principal breadcrumbs and audit trail
+
+zeta-object records *which principal* touched each object in the object's
+own filesystem metadata (xattrs), plus an optional append-only request
+audit log. Attribution lives in the storage itself - not in a server-owned
+database.
+
+### The `user.zeta.*` xattr contract
+
+Every mutating write stamps the authenticated principal into the object
+file's xattrs (best-effort: an xattr failure logs one warning and never
+fails the data operation):
+
+| Xattr | Set when | Value |
+|-------|----------|-------|
+| `user.zeta.owner` | object CREATE only - never overwritten afterward | creator's access key ID |
+| `user.zeta.writer.<accessKeyID>` | every write by that principal | `<op>@<RFC3339 UTC>`, op one of `put` / `multipart` / `copy` |
+| `user.zeta.reader.<accessKeyID>` | first GET by that principal on an `auditReads` bucket | last-read RFC3339 |
+
+Writers accumulate as per-principal xattr NAMES - there is no shared list
+and no read-modify-write. Read the breadcrumbs with `getfattr`:
+
+    getfattr -m user.zeta -d /data/mybucket/obj.txt
+
+The traceback chain is: xattr breadcrumb (access key ID) -> identity
+mapping (`identities` in config.json, or your external key broker) ->
+person. Breadcrumbs survive identity deletion; the key ID remains as a
+pseudonym. The breadcrumbs answer "who HAS accessed" - enforcement
+remains the grants layer. Revoked keys leave their breadcrumb behind,
+which is the point of an audit trail.
+
+Layout note: prefer `xattr=dir` datasets for buckets (`zfs set
+xattr=dir <dataset>`). `xattr=sa` inlines attributes up to about 64K per
+file - enough for tens of thousands of principals, documented as the
+limit. Xattr names cap at 255 bytes; the registry rejects any access key
+ID that would reach the cap at config load.
+
+### auditReads
+
+Read-path stamping mutates objects on GET, so it is opt-in per bucket:
+
+    "buckets": {
+      "watched": {"path": "/data/watched", "auditReads": true}
+    }
+
+When true, the FIRST GET per principal stamps
+`user.zeta.reader.<accessKeyID>` (one xattr write per reader per object,
+not per read). Off (the default) means zero read-path overhead. On a
+read-heavy bucket this costs extra txgs and event-log rows - turn it on
+where read attribution matters.
+
+### auditLog
+
+    "auditLog": {"path": "/pool/audit/audit.jsonl"}
+
+An append-only JSON-lines record of every authenticated S3 request, one
+line per request: `ts` (RFC3339Nano), `principal` (access key ID),
+`method`, `bucket`, `key`, `op` (`read|write|list|delete|create`),
+`status`, `denied`. Authorization denials are recorded with
+`denied: true` - they are forensically interesting. The log is WRITER
+ONLY: the server never reads it back; the backing filesystem stays the
+sole source of truth. Best-effort: a failed audit write logs a warning
+and never breaks the request. Absent config = disabled. An unwritable
+path fails startup loudly.
+
+Charter note: the audit log must live on a ZFS dataset (or the bucket's
+own storage) and be protected by ZFS snapshot plus scheduled off-box
+`zfs send`. It grows unbounded by design - rotation is an operator
+concern (logrotate or snapshot pruning).
+
+### Joining with the ZFS event log
+
+`GET /bucket/key?events` reports the mutation timeline (what happened,
+when - from zmetad). Events for objects that carry an owner breadcrumb
+gain an `owner` field joining the WHO. Objects without stamps return the
+exact pre-change shape - the field is never fabricated.
 
 ## Licenses & dependencies
 

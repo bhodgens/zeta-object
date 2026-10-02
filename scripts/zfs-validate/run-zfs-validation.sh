@@ -46,6 +46,7 @@ DATASET="${ZFS_VALIDATE_DATASET:-testpool/zval}"
 PORT="${ZFS_VALIDATE_PORT:-9707}"
 BUCKET="${ZFS_VALIDATE_BUCKET:-zval}"
 AK="valuser"; SK="valpass"
+AK2="valuser2"; SK2="valpass2"
 KEEP_SERVER=0
 [[ "${1:-}" == "--keep-server" ]] && KEEP_SERVER=1
 
@@ -113,8 +114,10 @@ cat > "$WORK/config.json" <<EOF
   "keyFile": "key.pem",
   "zmetad_db_path": "$REMOTE_DIR/zmetad.db",
   "zmetad_binary": "/usr/local/sbin/zmetad",
+  "auditLog": {"path": "$REMOTE_DIR/audit.jsonl"},
   "identities": [
-    { "name": "val", "accessKey": "$AK", "secretKey": "$SK", "grants": { "*": "readwrite" } }
+    { "name": "val", "accessKey": "$AK", "secretKey": "$SK", "grants": { "*": "readwrite" } },
+    { "name": "val2", "accessKey": "$AK2", "secretKey": "$SK2", "grants": { "*": "readwrite" } }
   ],
   "frontends": $FRONTENDS
 }
@@ -154,6 +157,15 @@ from datetime import datetime, timezone
 
 HOST, PORT = "zfs-meta", 9707
 AK, SK, REGION = "valuser", "valpass", "us-east-1"
+
+def sign_as(ak, sk, method, path, query="", payload=b"", amz_meta=None, content_type=None):
+    global AK, SK
+    old_ak, old_sk = AK, SK
+    AK, SK = ak, sk
+    try:
+        return sign(method, path, query=query, payload=payload, amz_meta=amz_meta, content_type=content_type)
+    finally:
+        AK, SK = old_ak, old_sk
 
 def _ssl():
     ctx = ssl.create_default_context()
@@ -207,6 +219,7 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 HOST = "zfs-meta"
 DATASET = "testpool/zval"
 BUCKET = "zval"
+AK2, SK2 = "valuser2", "valpass2"  # second identity (breadcrumb probes)
 
 def sh(cmd, timeout=60):
     r = subprocess.run(["ssh", "-o", "BatchMode=yes", HOST, cmd],
@@ -265,6 +278,62 @@ disk = sh(f"ls -la /{DATASET}/ | head -5")
 check("file lands on ZFS dataset", "val-doc.txt" in disk, disk[:200])
 s, h, b = sign("DELETE", f"/{BUCKET}/val-doc.txt")
 check("S3 DELETE (204)", s == 204, f"{s} {b[:120]}")
+
+RXATTR_HELPER = "/tmp/zval-rxattr.py"
+# One-time helper upload (host has no getfattr/attr CLI; python3 stdlib
+# os.getxattr covers it). The helper prints the value or nothing.
+sh("printf '%s\\n' 'import os,sys' "
+   "'try: print(os.getxattr(sys.argv[1], sys.argv[2]).decode())' "
+   "'except OSError: pass' > " + RXATTR_HELPER)
+
+def remote_xattr(path, name):
+    """Read one xattr on the host via the uploaded os.getxattr helper.
+    Returns the decoded value or None (absent)."""
+    out = sh("python3 {} {} {}".format(json.dumps(RXATTR_HELPER), json.dumps(path), json.dumps(name)))
+    return out.strip() or None
+
+# ---- 1b. principal breadcrumb probes (auth extensions leaf 10) ------------
+s, h, b = sign("PUT", f"/{BUCKET}/val-owner.txt", payload=b"owner probe",
+               content_type="text/plain")
+check("probe PUT as valuser", s == 200, f"{s} {b[:120]}")
+owner_val = remote_xattr(f"/{DATASET}/val-owner.txt", "user.zeta.owner")
+check("xattr user.zeta.owner == valuser (creator)", owner_val == "valuser",
+      repr(owner_val))
+s, h, b = sign_as(AK2, SK2, "PUT", f"/{BUCKET}/val-owner.txt", payload=b"owner probe v2",
+                  content_type="text/plain")
+check("probe overwrite PUT as valuser2", s == 200, f"{s} {b[:120]}")
+owner_val2 = remote_xattr(f"/{DATASET}/val-owner.txt", "user.zeta.owner")
+check("xattr owner UNCHANGED after second writer", owner_val2 == "valuser",
+      repr(owner_val2))
+writer_val2 = remote_xattr(f"/{DATASET}/val-owner.txt", "user.zeta.writer.valuser2")
+check("xattr user.zeta.writer.valuser2 present", writer_val2.startswith("put@"),
+      repr(writer_val2))
+force_collect()  # the event timeline lags the poll interval (SCHEMA.md §8)
+s, h, b = sign("GET", f"/{BUCKET}/val-owner.txt", query="events")
+try:
+    ev_probe = json.loads(b)
+except Exception:
+    ev_probe = {"events": []}
+probe_events = [e for e in ev_probe.get("events", [])
+                if (e.get("key") or "") == "val-owner.txt"]
+check("?events owner field == valuser (xattr join)",
+      any(e.get("owner") == "valuser" for e in probe_events),
+      json.dumps(probe_events)[:250])
+audit_tail = sh("tail -5 $HOME/zeta-validate/audit.jsonl 2>/dev/null")
+audit_ok = False
+audit_lines = []
+for line in audit_tail.splitlines():
+    try:
+        rec = json.loads(line)
+    except Exception:
+        continue
+    audit_lines.append(rec)
+    if set(rec.keys()) == {"ts", "principal", "method", "bucket", "key", "op",
+                           "status", "denied"} and \
+            rec.get("principal") == "valuser" and rec.get("denied") is False:
+        audit_ok = True
+check("audit log written (8-key JSONL, valuser denied:false)", audit_ok,
+      audit_tail[:250])
 
 # ---- 2. multipart complete + GET integrity
 s, h, b = sign("POST", f"/{BUCKET}/mp.bin", query="uploads",
@@ -361,6 +430,17 @@ rows_on = db_query(
     f"SELECT COUNT(*) AS n FROM events WHERE dataset = '{DATASET}' AND path = 'after-on.txt'")
 check("events=on -> capture resumes", (rows_on or [{}])[0].get("n", -1) >= 1,
       str(rows_on)[:200])
+# Bounded re-collect: the events=off window can leave the wire timeline one
+# poll cycle behind; later sections need a settled DB. Poll until the
+# restored dataset reports events again (max ~10s), never fabricate.
+for _ in range(6):
+    force_collect(1.5)
+    s, h, b = sign("GET", f"/{BUCKET}/mp.bin", query="events")
+    try:
+        if json.loads(b).get("events"):
+            break
+    except Exception:
+        continue
 
 # ---- 6. nested-key history exact (v5 insert-time full_path resolution)
 sh(f"mkdir -p /{DATASET}/edge/deep && echo -n x > /{DATASET}/edge/deep/leaf.txt")
@@ -400,12 +480,16 @@ try:
     ev3_pre = json.loads(b)
 except Exception:
     ev3_pre = {"events": []}
-force_collect()
-s, h, b = sign("GET", f"/{BUCKET}/a1/a2/leaf2.txt", query="events")
-try:
-    ev3 = json.loads(b)
-except Exception:
-    ev3 = {"events": []}
+ev3 = {"events": []}
+for _ in range(5):  # bounded re-collect: the ring poll may lag one cycle
+    force_collect(1.5)
+    s, h, b = sign("GET", f"/{BUCKET}/a1/a2/leaf2.txt", query="events")
+    try:
+        ev3 = json.loads(b)
+    except Exception:
+        ev3 = {"events": []}
+    if any(e.get("key") == "a1/a2/leaf2.txt" for e in ev3.get("events", [])):
+        break
 check("deep 2-level path exact (after SIGUSR1 collect)",
       any(e.get("key") == "a1/a2/leaf2.txt" for e in ev3.get("events", [])),
       json.dumps(ev3)[:250])

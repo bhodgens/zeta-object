@@ -24,7 +24,9 @@
 package fsbackend
 
 import (
+	"encoding/json"
 	"log"
+	"os"
 	"strings"
 	"time"
 )
@@ -199,6 +201,26 @@ type BreadcrumbStamp = breadcrumbStamp
 // multipart assembly (op "multipart").
 func StampWriter(path, principal string) {
 	stampWriterBreadcrumb(path, principal, xattrOpMultipart)
+}
+
+// Owner implements the s3 frontend's principalReporter structural seam
+// (the frozen MetadataProvider interface gains NO methods): report the
+// object's user.zeta.owner value when the xattr exists — never fabricated.
+// The data path is resolved shadow-aware exactly like Stat's sidecar
+// fallback. Errors degrade to ("", false): enrichment must never alter the
+// ?events response contract.
+func (f *FS) Owner(bucket, key string) (string, bool) {
+	if err := validateKey(key); err != nil {
+		return "", false
+	}
+	bp := f.bucketPath(bucket)
+	meta := legacyMeta{}
+	if metaJSON, err := os.ReadFile(sidecarPath(bp, key)); err == nil && json.Unmarshal(metaJSON, &meta) == nil {
+		// A corrupt sidecar degrades to the canonical data path — the
+		// enrichment read is best-effort by contract (errors never alter
+		// the ?events response beyond dropping the owner field).
+	}
+	return OwnerXattr(resolveDataPath(bp, key, &meta))
 }
 
 // OwnerXattr reads the object's user.zeta.owner value when present. The

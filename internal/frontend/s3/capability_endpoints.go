@@ -94,6 +94,25 @@ type detailReporter interface {
 	LastDetail() metadata.HistoryDetail
 }
 
+// principalReporter is the optional seam for backends that record
+// principal breadcrumbs (auth extensions leaf 10): Owner reports the
+// object's xattr owner when one exists. The frozen MetadataProvider
+// interface MUST NOT gain methods — the enrichment is type-asserted,
+// exactly like detailReporter above.
+type principalReporter interface {
+	Owner(bucket, key string) (string, bool)
+}
+
+// principalReporterFor type-asserts the bucket's Backend.
+func principalReporterFor(bucket string) principalReporter {
+	if b, err := backendFor(bucket); err == nil && b != nil {
+		if pr, ok := b.(principalReporter); ok {
+			return pr
+		}
+	}
+	return nil
+}
+
 // historyDetailFor reads the detail of the most recent completed History
 // call: the provider's own hook when it implements one. Providers that do
 // NOT implement LastDetail get a zero HistoryDetail (no dataset, no loss
@@ -125,6 +144,9 @@ type ObjectEventHistory struct {
 // "0001-01-01T00:00:00Z" — never replaced with a fabricated value).
 // C8 (bughunt-gateway-2026-09-29): uid/gid are intentionally NOT part of
 // the wire form — client-visible owner identity is unnecessary surface.
+// Owner (auth extensions leaf 10) is the object's xattr breadcrumb
+// (user.zeta.owner), present ONLY when the object carries one — never
+// fabricated; unstamped objects keep the exact pre-change shape.
 type objectEventJSON struct {
 	Op        string `json:"op"`
 	Key       string `json:"key,omitempty"`
@@ -133,6 +155,7 @@ type objectEventJSON struct {
 	Timestamp string `json:"timestamp"` // RFC3339; zero-time is honest "unknown"
 	SizeOld   int64  `json:"sizeOld,omitempty"`
 	SizeNew   int64  `json:"sizeNew,omitempty"`
+	Owner     string `json:"owner,omitempty"`
 }
 
 // ListObjectVersionsExt is the ?events&versions XML document — a
@@ -182,7 +205,7 @@ func handleObjectEvents(w http.ResponseWriter, r *http.Request, bucketName, obje
 		Dataset:     detail.Dataset,
 		RecordsLost: detail.RecordsLost,
 		RingSwaps:   detail.RingSwaps,
-		Events:      toEventJSON(events),
+		Events:      toEventJSON(events, eventsOwnerLookup(bucketName)),
 	})
 }
 
@@ -218,8 +241,20 @@ func handleBucketEvents(w http.ResponseWriter, r *http.Request, bucketName strin
 		Dataset:     detail.Dataset,
 		RecordsLost: detail.RecordsLost,
 		RingSwaps:   detail.RingSwaps,
-		Events:      toEventJSON(events),
+		Events:      toEventJSON(events, eventsOwnerLookup(bucketName)),
 	})
+}
+
+// eventsOwnerLookup returns the per-event owner resolution func for a
+// bucket: the type-asserted principalReporter when the backend records
+// breadcrumbs, else always-absent (plain buckets return the identical
+// pre-change shape — the parity gate). A nil reporter never fabricates.
+func eventsOwnerLookup(bucketName string) func(key string) (string, bool) {
+	pr := principalReporterFor(bucketName)
+	if pr == nil {
+		return func(string) (string, bool) { return "", false }
+	}
+	return func(key string) (string, bool) { return pr.Owner(bucketName, key) }
 }
 
 // resolveEventsContext validates the bucket for an ?events request:
@@ -259,11 +294,13 @@ func writeEventsJSON(w http.ResponseWriter, v ObjectEventHistory) {
 
 // toEventJSON maps provider events to the wire form. Op is lowercased
 // defensively (the zfs parser already lowercases); timestamps pass
-// through honestly (zero stays zero).
-func toEventJSON(events []metadata.ObjectEvent) []objectEventJSON {
+// through honestly (zero stays zero). ownerOf resolves the object's xattr
+// owner per event; absent owners leave the field out entirely (omitempty
+// — never fabricated).
+func toEventJSON(events []metadata.ObjectEvent, ownerOf func(key string) (string, bool)) []objectEventJSON {
 	out := make([]objectEventJSON, 0, len(events))
 	for _, e := range events {
-		out = append(out, objectEventJSON{
+		ev := objectEventJSON{
 			Op:        strings.ToLower(e.Op),
 			Key:       e.Key,
 			OldKey:    e.OldKey,
@@ -271,7 +308,13 @@ func toEventJSON(events []metadata.ObjectEvent) []objectEventJSON {
 			Timestamp: e.Timestamp.UTC().Format("2006-01-02T15:04:05Z07:00"),
 			SizeOld:   e.SizeOld,
 			SizeNew:   e.SizeNew,
-		})
+		}
+		if ownerOf != nil {
+			if owner, ok := ownerOf(e.Key); ok {
+				ev.Owner = owner
+			}
+		}
+		out = append(out, ev)
 	}
 	return out
 }
