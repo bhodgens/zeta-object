@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS events (
     attrs INTEGER,
     full_path TEXT,
     old_full_path TEXT,
+    principal INTEGER,
     UNIQUE(dataset, txg, object_id, event_type, timestamp)
 );
 CREATE INDEX IF NOT EXISTS idx_events_dataset_time ON events(dataset, timestamp);
@@ -130,8 +131,10 @@ func TestOpenZmetadDB_VersionGate(t *testing.T) {
 		{name: "v5 accepted", dbVersion: "5", eventsVersion: "2", wantOK: true},
 		{name: "v5 without events key accepted", dbVersion: "5", eventsVersion: "", wantOK: true},
 		{name: "v6 accepted (additive layout)", dbVersion: "6", eventsVersion: "2", wantOK: true},
+		{name: "v7 accepted (layout 7, wire 3)", dbVersion: "7", eventsVersion: "3", wantOK: true},
+		{name: "v8 accepted (layout 8, wire 3)", dbVersion: "8", eventsVersion: "3", wantOK: true},
 		{
-			name: "v7 refused newer", dbVersion: "7", eventsVersion: "2",
+			name: "v9 refused newer", dbVersion: "9", eventsVersion: "3",
 			wantNewer: true, wantWhich: "db_schema_version",
 		},
 		{
@@ -143,7 +146,7 @@ func TestOpenZmetadDB_VersionGate(t *testing.T) {
 			wantWhich: "db_schema_version", wantHintSubstr: "upgrade zmetad",
 		},
 		{
-			name: "events_schema_version 3 refused", dbVersion: "5", eventsVersion: "3",
+			name: "events_schema_version 4 refused", dbVersion: "5", eventsVersion: "4",
 			wantWhich: "events_schema_version",
 		},
 	}

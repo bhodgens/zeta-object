@@ -120,6 +120,12 @@ func rowsToEvents(rows []EventRow) *rowEventSet {
 			e.GID = uint32(*r.GID) //nolint:gosec // G115: gid is 32-bit on every platform the zfs event log reports; truncation matches zfs behavior (legacy zfs_events.go)
 		}
 
+		// Principal: present iff the column is non-NULL (layout 8+,
+		// registering writer). nil stays nil - never fabricated.
+		if r.Principal != nil {
+			e.Principal = r.Principal
+		}
+
 		set.events = append(set.events, e)
 	}
 	return set

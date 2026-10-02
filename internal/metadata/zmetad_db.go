@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -28,15 +29,22 @@ const zmetadMinDBSchemaVersion = 5
 // understands (SCHEMA.md section 1 refuse-newer rule). Versions evolve
 // ADDITIVELY only (new columns/tables, no renames), so every version in
 // [min, max] is readable: layout 6 adds sync_state.last_lost and
-// meta.purge_epoch, neither of which this consumer reads. Pinning an
+// meta.purge_epoch; layout 7 adds sync_state.root_id; layout 8 adds
+// events.principal — none of which this consumer requires to answer a
+// read (principal is surfaced opportunistically when present). Pinning an
 // EXACT version instead would break the consumer on every additive
 // upstream bump (observed live: zmetad 276fe5085 shipped layout 6 and an
 // exact-5 gate 503'd every ?events request).
-const zmetadMaxDBSchemaVersion = 6
+const zmetadMaxDBSchemaVersion = 8
 
-// zmetadEventsSchemaVersion is the required events wire schema version
-// (SCHEMA.md section 1).
-const zmetadEventsSchemaVersion = "2"
+// zmetadEventsSchemaVersions are the accepted meta.events_schema_version
+// values. The wire version moves IN LOCKSTEP with the DB layout upstream
+// (layout 8 == wire 3: SCHEMA.md section 1), but this consumer reads
+// named SQLite columns, not the wire blob, so both the layout-6 pair
+// (wire "2") and the layout-7/8 pair (wire "3") are readable. A single
+// required value would 503 every not-yet-upgraded deployment for no
+// read-path reason.
+var zmetadEventsSchemaVersions = map[string]bool{"2": true, "3": true}
 
 // ZmetadDBMissingError means the database file does not exist. Callers
 // treat every open failure as "provider unavailable", never a hard error.
@@ -64,8 +72,13 @@ func (e *ZmetadDBVersionError) Error() string {
 		which = "db_schema_version"
 	}
 	if which == "events_schema_version" {
-		return fmt.Sprintf("metadata: zmetad database %s has events_schema_version %s; version %s required",
-			e.Path, e.Version, zmetadEventsSchemaVersion)
+		accepted := make([]string, 0, len(zmetadEventsSchemaVersions))
+		for v := range zmetadEventsSchemaVersions {
+			accepted = append(accepted, v)
+		}
+		sort.Strings(accepted)
+		return fmt.Sprintf("metadata: zmetad database %s has events_schema_version %s; accepted versions %v",
+			e.Path, e.Version, accepted)
 	}
 	if e.Version == "" {
 		return fmt.Sprintf("metadata: zmetad database %s has no db_schema_version key (pre-v1 layout); version %d required - upgrade zmetad, which migrates the database in place",
@@ -114,6 +127,10 @@ type EventRow struct {
 	Target      *string // SYMLINK only
 	OldSize     *int64
 	Attrs       *uint64
+	// Principal is the opaque application tag carried by ZFS_EV_PRINCIPAL
+	// (wire schema 3, DB layout 8). NULL = the writer did not register one
+	// (or the record predates layout 8) - NEVER fabricated to a value.
+	Principal *uint64
 }
 
 // GapStats reports the dataset's loss classes per SCHEMA.md section 4.
@@ -192,7 +209,7 @@ func (db *ZmetadDB) checkVersion(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if eventsVersion != "" && eventsVersion != zmetadEventsSchemaVersion {
+	if eventsVersion != "" && !zmetadEventsSchemaVersions[eventsVersion] {
 		return &ZmetadDBVersionError{Path: db.path, Version: eventsVersion, Newer: false, Which: "events_schema_version"}
 	}
 	return nil
@@ -219,7 +236,7 @@ func (db *ZmetadDB) metaValue(ctx context.Context, key string) (string, error) {
 func (db *ZmetadDB) Events(dataset string, max int) ([]EventRow, error) {
 	query := `SELECT id, dataset, txg, timestamp, captured_at, object_id, event_type,
 			path, old_path, full_path, old_full_path, uid, gid, size, io_offset, io_bytes,
-			parent, old_parent, target, old_size, attrs
+			parent, old_parent, target, old_size, attrs, principal
 		FROM events WHERE dataset = ? ORDER BY txg ASC, id ASC`
 	args := []any{dataset}
 	if max > 0 {
@@ -240,11 +257,12 @@ func (db *ZmetadDB) Events(dataset string, max int) ([]EventRow, error) {
 			capturedAt, uid, gid, size, ioOffset, ioBytes sql.NullInt64
 			parent, oldParent, oldSize, attrs             sql.NullInt64
 			path, oldPath, fullPath, oldFullPath, target  sql.NullString
+			principal                                     sql.NullInt64
 		)
 		if err := rows.Scan(&row.ID, &row.Dataset, &txg, &timestamp, &capturedAt,
 			&objectID, &row.Op, &path, &oldPath, &fullPath, &oldFullPath,
 			&uid, &gid, &size, &ioOffset, &ioBytes, &parent, &oldParent,
-			&target, &oldSize, &attrs); err != nil {
+			&target, &oldSize, &attrs, &principal); err != nil {
 			return nil, fmt.Errorf("metadata: scan event row for dataset %s: %w", dataset, err)
 		}
 		row.Txg = toUint64(txg.Int64)
@@ -265,6 +283,7 @@ func (db *ZmetadDB) Events(dataset string, max int) ([]EventRow, error) {
 		row.Target = nullStringPtr(target)
 		row.OldSize = nullInt64Ptr(oldSize)
 		row.Attrs = nullUint64Ptr(attrs)
+		row.Principal = nullUint64Ptr(principal)
 		events = append(events, row)
 	}
 	if err := rows.Err(); err != nil {

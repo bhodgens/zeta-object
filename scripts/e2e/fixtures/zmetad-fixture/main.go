@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS events (
     target TEXT,
     old_size INTEGER,
     attrs INTEGER,
+    principal INTEGER,
     full_path TEXT,
     old_full_path TEXT,
     UNIQUE(dataset, txg, object_id, event_type, timestamp)

@@ -40,4 +40,10 @@ type ObjectEvent struct {
 	Txg              uint64
 	SizeOld, SizeNew int64
 	UID, GID         uint32
+	// Principal is the opaque application tag carried by ZFS_EV_PRINCIPAL
+	// (wire schema 3 / DB layout 8). nil = the writer did not register one
+	// (or the record predates the field) - nil is NEVER upgraded to a
+	// value. Zero is an honest tag value; the pointer distinguishes
+	// present from absent.
+	Principal *uint64
 }
