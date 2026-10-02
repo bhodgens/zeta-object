@@ -246,10 +246,12 @@ assert_eq 'DELETE emptied dir 404 (already gone)' 404 "$W19_STATUS"
 w19_req PROPFIND "/$W19_BKT/e2e19dir/" -H 'Depth: 0' --data-binary ''
 assert_eq 'deleted dir PROPFIND 404' 404 "$W19_STATUS"
 
-# LOCK is rejected 405 (rejection, not emulation) — challenge first already
-# proven in 19a.
+# LOCK is now implemented (issue #11): a lockless LOCK body is malformed
+# lockinfo -> 400 (rejection, not emulation). Full lock flow lives in
+# case 31-webdav-lock; here we pin that the method is at least routed
+# (challenge already proven in 19a).
 w19_req LOCK "/$W19_BKT/e2e19.txt"
-assert_eq 'LOCK rejected 405' 405 "$W19_STATUS"
+assert_eq 'LOCK routed (400 on malformed body, not 405)' 400 "$W19_STATUS"
 
 # --- part 19c-2: dot-bucket escape + conditional PUT (W1/W2) ---------------
 # W1: an encoded-dot bucket must never reach the fs backend's unchecked
