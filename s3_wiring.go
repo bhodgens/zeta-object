@@ -54,9 +54,12 @@ func installS3Seams() {
 	})
 
 	// SigV4 verification region (region-config-2026-10 leaf 02): the
-	// config loader already applied the default and lowercased the value,
-	// so this is always an explicit value - strict region compare per
-	// Contract 2. Startup-only wiring.
+	// config loader always resolves Region (default us-east-1), which
+	// makes this STRICT region compare in production - a client signing
+	// for another region fails with SignatureDoesNotMatch naming the
+	// expected region (issue #10 acceptance). The permissive mode
+	// (SetRegion("")) is a test-only escape hatch, unreachable from a
+	// launched server by design. Startup-only wiring.
 	s3.SetRegion(serverConfig.Region)
 
 	// Data plane: install the SAME backendFor resolver the handlers used
