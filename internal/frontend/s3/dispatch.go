@@ -382,6 +382,23 @@ func (f *Frontend) objectLevelDispatch(w http.ResponseWriter, r *http.Request, b
 		return
 	}
 
+	// Object tagging (tagging tree leaf 03): the ?tagging sub-resource,
+	// GET/PUT/DELETE — GetObjectTagging / PutObjectTagging /
+	// DeleteObjectTagging.
+	if _, ok := r.URL.Query()["tagging"]; ok {
+		switch r.Method {
+		case "GET":
+			getObjectTaggingHandler(w, r, bucketName, objectName)
+			return
+		case "PUT":
+			putObjectTaggingHandler(w, r, bucketName, objectName)
+			return
+		case "DELETE":
+			deleteObjectTaggingHandler(w, r, bucketName, objectName)
+			return
+		}
+	}
+
 	switch r.Method {
 	case "PUT":
 		putObjectHandler(w, r, bucketName, objectName)

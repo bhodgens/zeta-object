@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -107,6 +108,15 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	for i, name := range metaNames {
 		rawMeta[name] = metaValues[i]
 	}
+	// Object tagging (tagging tree leaf 03): the x-amz-tagging header is
+	// parsed + validated BEFORE the write (S3 rejects a bad tag set with
+	// InvalidTag and creates nothing). An absent header is not an error.
+	putTags, tagErr := requestTagsFromHeader(r)
+	if tagErr != nil && !errors.Is(tagErr, errNoTagHeader) {
+		log.Printf("Invalid x-amz-tagging header for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), tagErr)
+		writeInvalidTag(w, tagErr)
+		return
+	}
 	opts := objectmodel.PutOptions{
 		ContentType: r.Header.Get("Content-Type"),
 		Metadata:    rawMeta,
@@ -119,6 +129,16 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 		log.Printf("Error putting object %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), putErr)
 		writeS3ErrorFrom(w, putErr)
 		return
+	}
+	// Object tagging (tagging tree leaf 03): tags land AFTER the object
+	// exists (the sidecar must be present for the read-modify-write).
+	// putTags is nil for an untagged PUT — no write, byte-compat sidecar.
+	if len(putTags) > 0 {
+		if tagStoreErr := tagStoreFor(getBucketPath(bucketName)).Put(objectName, putTags); tagStoreErr != nil {
+			log.Printf("Error storing tags for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), tagStoreErr)
+			writeS3ErrorFrom(w, tagStoreErr)
+			return
+		}
 	}
 	eTag := obj.ETag
 
@@ -217,9 +237,11 @@ type rangeRequest struct {
 // `bytes=<start>-`, and `bytes=-<suffix>` single ranges are honored. Anything
 // else — wrong unit, unparsable numbers, inverted ranges (`bytes=5-2`),
 // empty spec (`bytes=-`) — is MALFORMED and ignored (200 full body), matching
-// S3's lenient behavior. A multi-range spec (`bytes=0-1,3-4`) also falls back
-// to a full-body 200: simplest legal fallback; we do not emit
-// multipart/byteranges. A syntactically valid range that cannot intersect the
+// S3's lenient behavior. Multi-range specs (`bytes=0-1,3-4`) never reach
+// this function on the GET path: the dispatch (multirange-get-2026-10 leaf
+// 03) serves them as multipart/byteranges first; when this function still
+// sees one (HEAD path), it falls back to a full-body 200. A syntactically
+// valid range that cannot intersect the
 // object (start >= size, suffix length 0) is UNSATISFIABLE → 416.
 func parseRangeHeader(spec string, size int64) rangeRequest {
 	const unit = "bytes="
@@ -445,6 +467,61 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 
 	// Leaf 3.1 fix 5: advertise byte-range support on every 200/206.
 	w.Header().Set("Accept-Ranges", "bytes")
+	// Object tagging (tagging tree leaf 03): TagCount rides GET when the
+	// object is tagged (x-amz-tagging-count; absent when untagged, the
+	// S3 wire form). Best-effort: an unreadable sidecar never breaks a
+	// GET that already proved the object exists.
+	if tags, err := tagStoreFor(bucketPath).Get(objectName); err == nil && len(tags) > 0 {
+		w.Header().Set("x-amz-tagging-count", strconv.Itoa(len(tags)))
+	}
+
+	// Multi-range GET (multirange-get-2026-10 leaf 03): a multi-span Range
+	// header serves 206 multipart/byteranges (RFC 9110). Precedence:
+	// multi-span -> multipart; single-span and malformed fall through to
+	// the existing single-range path UNCHANGED; an over-cap span count
+	// (CoalesceRanges returns false) falls through to the 200 full body.
+	if spans, ok := ParseMultiRange(r.Header.Get("Range"), actualSize); ok && len(spans) > 1 {
+		if coalesced, cok := CoalesceRanges(spans, MultiRangePartsMax); cok {
+			// fetch mirrors the single-range read primitive: reopen the
+			// object through the Backend seam per span, drain the leading
+			// bytes, and window [off, end). The original srcRC stays
+			// unconsumed and is closed by the deferred Close.
+			fetch := func(off, end int64) (io.ReadCloser, error) {
+				rc, _, err := backendCallBucket2(bucketName, func(b backend.Backend) (io.ReadCloser, objectmodel.Object, error) {
+					return b.Get(r.Context(), bucketName, objectName, objectmodel.GetOptions{})
+				})
+				if err != nil {
+					return nil, err
+				}
+				if off > 0 {
+					if _, err := io.CopyN(io.Discard, rc, off); err != nil {
+						rc.Close()
+						return nil, fmt.Errorf("s3: seeking to offset %d: %w", off, err)
+					}
+				}
+				return struct {
+					io.Reader
+					io.Closer
+				}{io.LimitReader(rc, end-off), rc}, nil
+			}
+			if err := WriteMultipartByteranges(w, bucketName+"/"+objectName, actualSize, contentType, coalesced, fetch); err != nil {
+				log.Printf("Error serving multipart/byteranges for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), err)
+			}
+			log.Printf("Served multi-range request for object %s/%s (%s)", strconv.Quote(bucketName), strconv.Quote(objectName), strconv.Quote(r.Header.Get("Range"))) //nolint:gosec // G706: Range is strconv.Quote-escaped.
+			go triggerActions("after_download", ActionContext{
+				FilePath:     objectDataPathFor(bucketPath, objectName),
+				MetadataPath: objectMetadataPath,
+				BucketName:   bucketName,
+				BucketPath:   bucketPath,
+				ObjectKey:    objectName,
+				ContentType:  meta.ContentType,
+				ETag:         meta.ETag,
+				Size:         meta.Size,
+			})
+			return
+		}
+	}
+
 	rr := parseRangeHeader(r.Header.Get("Range"), actualSize)
 	if rr.Outcome != rangeFull {
 		// serveObjectRange needs an *os.File for seeking; the seam returns
@@ -651,6 +728,12 @@ func headObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 
 	// Leaf 3.1 fix 5: advertise byte-range support on 200/206 HEAD.
 	w.Header().Set("Accept-Ranges", "bytes")
+	// Object tagging (tagging tree leaf 03): TagCount rides HEAD when the
+	// object is tagged (x-amz-tagging-count; absent when untagged).
+	// Best-effort, same contract as the GET site.
+	if tags, err := tagStoreFor(getBucketPath(bucketName)).Get(objectName); err == nil && len(tags) > 0 {
+		w.Header().Set("x-amz-tagging-count", strconv.Itoa(len(tags)))
+	}
 	rr := parseRangeHeader(r.Header.Get("Range"), actualSize)
 	if rr.Outcome != rangeFull {
 		// HEAD never streams the data file — headers only (leaf 3.1 fix 6).
@@ -1432,6 +1515,17 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 		dstContentType = r.Header.Get("Content-Type")
 	}
 
+	// Object tagging (tagging tree leaf 03): resolve the destination tags
+	// via ResolveCopyTags BEFORE the write. The replacement tag set (the
+	// x-amz-tagging header, used only by REPLACE) is validated FIRST — S3
+	// rejects a bad tag set with InvalidTag and copies nothing. The source
+	// is known to exist at this point (the seam Get above succeeded), so a
+	// tag-store error here is a real I/O failure, surfaced as such.
+	dstTags, tagFail := resolveCopyTagsFor(w, r, srcBucket, srcKey, bucketName, objectName)
+	if tagFail {
+		return
+	}
+
 	_, putErr := backendCall(bucketName, func(b backend.Backend) (objectmodel.Object, error) {
 		return b.Put(r.Context(), bucketName, objectName, bytes.NewReader(data), int64(len(data)),
 			objectmodel.PutOptions{ContentType: dstContentType, Metadata: dstMeta, Principal: principalOfRequest(r)})
@@ -1440,6 +1534,15 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 		log.Printf("Error writing copy destination %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), putErr)
 		writeS3ErrorFrom(w, putErr)
 		return
+	}
+	// Tags land AFTER the destination object exists (sidecar
+	// read-modify-write); nil/empty = no tags field written.
+	if len(dstTags) > 0 {
+		if tagStoreErr := tagStoreFor(dstBucketPath).Put(objectName, dstTags); tagStoreErr != nil {
+			log.Printf("Error storing tags for copy destination %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), tagStoreErr)
+			writeS3ErrorFrom(w, tagStoreErr)
+			return
+		}
 	}
 
 	// Action context: resolve the concrete paths the action may reference.
@@ -1464,6 +1567,34 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 		ETag:         eTag,
 		Size:         int64(len(data)),
 	})
+}
+
+// resolveCopyTagsFor resolves the CopyObject destination tag set: source
+// tags through the tag store, the x-amz-tagging-directive validation, and
+// ResolveCopyTags. tagFail=true means the response (InvalidTag /
+// InvalidArgument / mapped store error) has already been written and the
+// copy must not proceed. The source is known to exist when this runs (the
+// seam Get succeeded), so a tag-store error is a real I/O failure.
+func resolveCopyTagsFor(w http.ResponseWriter, r *http.Request, srcBucket, srcKey, dstBucket, dstKey string) (map[string]string, bool) {
+	srcTags, srcTagsErr := tagStoreFor(getBucketPath(srcBucket)).Get(srcKey)
+	if srcTagsErr != nil {
+		log.Printf("CopyObject source tag read %s/%s failed: %v", strconv.Quote(srcBucket), strconv.Quote(srcKey), srcTagsErr)
+		writeS3ErrorFrom(w, srcTagsErr)
+		return nil, true
+	}
+	replacementTags, tagErr := requestTagsFromHeader(r)
+	if tagErr != nil && !errors.Is(tagErr, errNoTagHeader) {
+		log.Printf("Invalid x-amz-tagging header for CopyObject %s/%s: %v", strconv.Quote(dstBucket), strconv.Quote(dstKey), tagErr)
+		writeInvalidTag(w, tagErr)
+		return nil, true
+	}
+	tagDirective := r.Header.Get("x-amz-tagging-directive")
+	if tagDirective != "" && tagDirective != objectmodel.TaggingDirectiveCopy && tagDirective != objectmodel.TaggingDirectiveReplace {
+		log.Printf("Invalid x-amz-tagging-directive %s for CopyObject", strconv.Quote(tagDirective))
+		writeS3Error(w, "InvalidArgument", "Unknown tagging directive.", http.StatusBadRequest)
+		return nil, true
+	}
+	return objectmodel.ResolveCopyTags(tagDirective, srcTags, replacementTags), false
 }
 
 // backendCallBucket2 is backendCall for (ReadCloser, Object, error)

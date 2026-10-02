@@ -48,6 +48,19 @@ func writeXML(w http.ResponseWriter, status int, v any) {
 	_, _ = w.Write(x)
 }
 
+// writeXMLBytes writes pre-rendered XML bytes as an S3-conformant XML
+// response — the same prolog + Content-Type treatment writeXML applies to
+// encoded values, for callers whose body comes pre-rendered (e.g.
+// objectmodel.TagsToXML; routing it through writeXML's encoder would
+// escape the document). tagging tree leaf 03.
+func writeXMLBytes(w http.ResponseWriter, status int, body []byte) {
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(xml.Header))
+	//nolint:gosec // G705: callers pass pre-rendered XML (objectmodel.TagsToXML xml-escapes all content); this helper exists precisely for already-encoded documents.
+	_, _ = w.Write(body)
+}
+
 // Placeholder ACL related requests.
 func handleACL(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
 	log.Printf("ACL request for Bucket: '%s', Object: '%s' - Not Implemented", strconv.Quote(bucketName), strconv.Quote(objectName))
