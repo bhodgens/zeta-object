@@ -53,6 +53,12 @@ func installS3Seams() {
 		AuditReads: serverConfig.BucketAuditReads,
 	})
 
+	// SigV4 verification region (region-config-2026-10 leaf 02): the
+	// config loader already applied the default and lowercased the value,
+	// so this is always an explicit value - strict region compare per
+	// Contract 2. Startup-only wiring.
+	s3.SetRegion(serverConfig.Region)
+
 	// Data plane: install the SAME backendFor resolver the handlers used
 	// pre-move (config-driven lookup from backend_lookup.go).
 	s3.InstallBackendLookup(func(bucket string) (backend.Backend, error) {

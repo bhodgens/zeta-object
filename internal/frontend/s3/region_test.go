@@ -38,3 +38,42 @@ func TestRegionOf(t *testing.T) {
 		}
 	})
 }
+
+// TestRegionExplicit pins the strict/permissive mode flag (region-config-
+// 2026-10 leaf 02): regionExplicit() is false in default mode (SetRegion
+// never called with a value, or called with "") and true after any
+// SetRegion with a non-empty value - including "us-east-1" itself, because
+// an explicit config value means STRICT compare (Contract 2).
+func TestRegionExplicit(t *testing.T) {
+	t.Run("default mode is not explicit", func(t *testing.T) {
+		SetRegion("") // reset to the default
+		if regionExplicit() {
+			t.Fatal("regionExplicit() = true in default mode, want false")
+		}
+	})
+
+	t.Run("SetRegion with a value is explicit", func(t *testing.T) {
+		defer SetRegion("")
+		SetRegion("eu-west-1")
+		if !regionExplicit() {
+			t.Fatal("regionExplicit() = false after SetRegion(\"eu-west-1\"), want true")
+		}
+	})
+
+	t.Run("SetRegion with the default value is still explicit", func(t *testing.T) {
+		defer SetRegion("")
+		SetRegion("us-east-1")
+		if !regionExplicit() {
+			t.Fatal("regionExplicit() = false after explicit SetRegion(\"us-east-1\"), want true (explicit config value = strict)")
+		}
+	})
+
+	t.Run("SetRegion empty restores permissive mode", func(t *testing.T) {
+		defer SetRegion("")
+		SetRegion("eu-west-1")
+		SetRegion("")
+		if regionExplicit() {
+			t.Fatal("regionExplicit() = true after SetRegion(\"\"), want false")
+		}
+	})
+}

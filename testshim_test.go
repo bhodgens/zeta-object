@@ -90,6 +90,7 @@ var (
 	isDecodedStreaming             = s3.IsDecodedStreaming
 	requiredPresignedParams        = s3.RequiredPresignedParams
 	authenticateRequest            = s3.AuthenticateRequestFn
+	SetRegionForTest               = s3.SetRegionForTest
 	errorToXML                     = s3.ErrorToXML
 	writeS3Error                   = s3.WriteS3Error
 	parseInt                       = s3.ParseInt

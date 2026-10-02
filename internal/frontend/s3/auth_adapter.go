@@ -158,10 +158,12 @@ func (f *Frontend) authenticateRequest(r *http.Request) (auth.Identity, *authFai
 		return auth.Identity{}, &authFailureError{"InvalidRequest", "Date in credential scope does not match request date", http.StatusBadRequest}, false
 	}
 
-	// Fix 7: region mismatch is AuthorizationHeaderMalformed/400 (AWS behavior).
-	if regionFromCred != defaultRegion {
-		log.Printf("Authentication Error: Invalid region. Expected %s, got %s", defaultRegion, strconvQuote(regionFromCred)) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
-		return auth.Identity{}, &authFailureError{"AuthorizationHeaderMalformed", "Region in credential scope ('" + regionFromCred + "') is incorrect; expected '" + defaultRegion + "'.", http.StatusBadRequest}, false
+	// Fix 7 (updated, region-config-2026-10 leaf 02): region handling via
+	// regionOf() with strict/permissive semantics (Contract 2). Explicit
+	// mismatch is SignatureDoesNotMatch naming the expected region;
+	// default mode is permissive with a notice (see checkRegionMatch).
+	if failure := checkRegionMatch(regionFromCred); failure != nil {
+		return auth.Identity{}, failure, false
 	}
 
 	// Step 1: Create a Canonical Request
@@ -334,11 +336,10 @@ func (f *Frontend) authenticatePresignedRequest(r *http.Request) (auth.Identity,
 			"The AWS Access Key Id you provided does not exist in our records.", http.StatusForbidden}, false
 	}
 
-	if regionFromCred != defaultRegion {
-		log.Printf("Presigned Auth Error: region %q incorrect; expected %q", strconvQuote(regionFromCred), defaultRegion) //nolint:gosec // G706: strconv.Quote sanitizes
-		return auth.Identity{}, &authFailureError{"AuthorizationQueryParametersError",
-			"Error parsing the X-Amz-Credential parameter; the region is incorrect; expected '" + defaultRegion + "'.",
-			http.StatusBadRequest}, false
+	// region-config-2026-10 leaf 02: region handling via regionOf() with
+	// strict/permissive semantics (Contract 2), same as the header path.
+	if failure := checkRegionMatch(regionFromCred); failure != nil {
+		return auth.Identity{}, failure, false
 	}
 
 	clientSignature := q.Get("X-Amz-Signature")

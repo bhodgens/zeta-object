@@ -276,6 +276,59 @@ func TestGetBucketLocationHandler(t *testing.T) {
 	}
 }
 
+// TestGetBucketLocationHandler_ReportsConfiguredRegion pins region-config-
+// 2026-10 leaf 02 task 4: GetBucketLocation reports the CONFIGURED region
+// as the location constraint. Default mode keeps the AWS "US Standard"
+// convention (empty LocationConstraint for us-east-1 - byte-identical to
+// the pre-leaf behavior); an explicitly configured region is reported.
+func TestGetBucketLocationHandler_ReportsConfiguredRegion(t *testing.T) {
+	t.Run("explicit eu-west-1 is reported", func(t *testing.T) {
+		SetRegion("eu-west-1")
+		defer SetRegion("")
+
+		env := setupS3TestEnv(t)
+		_ = env.setupBucket(t, "test-bucket")
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/test-bucket?location", nil)
+		getBucketLocationHandler(w, req, "test-bucket")
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+		var loc LocationConstraint
+		if err := xml.Unmarshal(w.Body.Bytes(), &loc); err != nil {
+			t.Fatalf("Failed to parse response XML: %v", err)
+		}
+		if loc.Location != "eu-west-1" {
+			t.Errorf("location = %q, want configured region %q", loc.Location, "eu-west-1")
+		}
+	})
+
+	t.Run("explicit us-east-1 keeps US Standard empty convention", func(t *testing.T) {
+		SetRegion("us-east-1")
+		defer SetRegion("")
+
+		env := setupS3TestEnv(t)
+		_ = env.setupBucket(t, "test-bucket")
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/test-bucket?location", nil)
+		getBucketLocationHandler(w, req, "test-bucket")
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+		var loc LocationConstraint
+		if err := xml.Unmarshal(w.Body.Bytes(), &loc); err != nil {
+			t.Fatalf("Failed to parse response XML: %v", err)
+		}
+		if loc.Location != "" {
+			t.Errorf("location = %q, want empty (US Standard convention for us-east-1)", loc.Location)
+		}
+	})
+}
+
 // ---- Object Handler Tests ----
 
 func TestPutObjectHandler_Success(t *testing.T) {

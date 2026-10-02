@@ -582,13 +582,21 @@ func TestAuthSignedHeadersMismatchRejected(t *testing.T) {
 }
 
 func TestAuthRegionMismatch400(t *testing.T) {
-	req, _ := buildSignedRequest(t, map[string]string{"region": "eu-west-1"})
+	// region-config-2026-10 leaf 02 (Contract 2): default mode is now
+	// permissive - a well-formed non-default client region (eu-west-1)
+	// is ACCEPTED with a one-line notice. Strict rejection applies only
+	// when an explicit region is configured; that shape is pinned by the
+	// s3 package's TestRegionMatrix_StrictMismatchCode.
+	SetRegionForTest("eu-west-1")
+	defer SetRegionForTest("")
+
+	req, _ := buildSignedRequest(t, map[string]string{"region": "us-east-1"})
 	w := httptest.NewRecorder()
 	if authenticateRequest(w, req) {
-		t.Fatal("region mismatch should not authenticate")
+		t.Fatal("strict region mismatch should not authenticate")
 	}
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("region mismatch: got status %d, want 400", w.Code)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("strict region mismatch: got status %d, want 403", w.Code)
 	}
 }
 

@@ -333,9 +333,16 @@ func getBucketLocationHandler(w http.ResponseWriter, r *http.Request, bucketName
 		return
 	}
 
-	// S3 returns an empty LocationConstraint for US Standard (us-east-1)
-	location := LocationConstraint{Location: ""}
-	writeXML(w, http.StatusOK, location)
+	// region-config-2026-10 leaf 02: report the configured region as the
+	// location constraint. AWS returns an empty LocationConstraint for
+	// US Standard (us-east-1); keep that convention for the default so
+	// existing clients see byte-identical behavior, and report any
+	// explicitly configured region.
+	location := ""
+	if cfg := regionOf(); cfg != defaultRegion {
+		location = cfg
+	}
+	writeXML(w, http.StatusOK, LocationConstraint{Location: location})
 	log.Printf("Successfully served GetBucketLocation for %s", strconv.Quote(bucketName))
 }
 

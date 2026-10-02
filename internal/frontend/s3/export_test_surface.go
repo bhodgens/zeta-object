@@ -95,6 +95,12 @@ func HandleACL(w httpResponseWriter, r *httpRequest, bucketName, objectName stri
 	handleACL(w, r, bucketName, objectName)
 }
 
+// ---------- Region config (region.go, region-config-2026-10) ----------
+
+// SetRegionForTest exposes the startup-only region setter to test shims
+// (region-config-2026-10 leaf 02). Not production surface.
+func SetRegionForTest(r string) { SetRegion(r) }
+
 // ---------- Auth adapters (auth_adapter.go) ----------
 
 // AuthenticateRequestFn adapts the Frontend method to the pre-move

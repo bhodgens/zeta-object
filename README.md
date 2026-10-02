@@ -41,7 +41,7 @@ Most "S3-compatible" servers are the same idea restated: a service that owns a b
 
 **S3 core** - buckets, objects, multipart (parts 1-10000, expiry sweeper), ListObjectsV2 (prefix/delimiter/continuation/`encoding-type=url`), CopyObject (COPY/REPLACE directives), batch DeleteObjects, `?versions` listing, Range requests (206/416), conditional GET (If-Match/If-None-Match/If-(Un)Modified-Since), presigned URLs, verified `aws-chunked` streaming signatures.
 
-**Auth** - AWS Signature Version 4 (header and presigned), 15-minute clock-skew window, region pinning (`us-east-1`).
+**Auth** - AWS Signature Version 4 (header and presigned), 15-minute clock-skew window, configurable verification region (default `us-east-1`).
 
 **Event Actions** - run shell commands on upload/download/delete with glob matching, per-subdirectory merge/override/disable inheritance, inactivity triggers (e.g. `zfs snapshot` after 30 quiet minutes), safe single-quote shell-quoting of all variables, timeouts with process-group kill. See [Event Actions](#event-actions).
 
@@ -175,7 +175,7 @@ Limitations: SIGHUP is a POSIX signal (on Windows, rotate by restart). The env p
 aws configure --profile zetaobject
 ```
 
-Enter `minioadmin`/`minioadmin` (or your custom pair). The region **must** be `us-east-1`: the server is pinned to that region and rejects other regions with `AuthorizationHeaderMalformed`.
+Enter `minioadmin`/`minioadmin` (or your custom pair). The signature region must match the server's configured `region` (default `us-east-1`): with the default, other well-formed regions are accepted permissively with a log notice; when `region` is set explicitly, a mismatching scope fails with `SignatureDoesNotMatch` naming the expected region.
 
 ```bash
 aws s3 ls --profile zetaobject --endpoint-url https://localhost:8443 --no-verify-ssl
@@ -254,7 +254,7 @@ Data files are plain bytes. The `.metadata/` sidecars carry content type, ETag, 
 
 *   **Endpoint URL**: `https://localhost:8443` (or your `listenAddr`).
 *   **Credentials**: `minioadmin`/`minioadmin` (default) or your custom pair.
-*   **Region**: `us-east-1` - other regions are rejected.
+*   **Region**: default `us-east-1` - set `region` in config.json to pin another region (strict scope compare); with the default, other well-formed regions are accepted permissively with a log notice.
 *   **SSL**: the bundled self-signed cert covers `localhost`/`127.0.0.1`; otherwise `--no-verify-ssl`.
 
 ```bash
@@ -691,7 +691,6 @@ Every pull goes through the pre-commit chain (secrets scan, vet, error-pattern c
 *   Region pinned to `us-east-1`.
 *   Object keys with `..` or `.metadata` path segments are rejected, and keys must be in canonical form (safety over S3 compatibility; no `a//b` aliasing).
 *   S3 versioning is not implemented; `?versions` lists existing objects, and the ZFS-events-derived version listing is an extension, not S3 versioning.
-*   Multi-range GET is unsupported (single range: 206/416).
 
 ## Roadmap
 

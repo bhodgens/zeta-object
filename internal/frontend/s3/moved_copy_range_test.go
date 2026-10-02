@@ -219,13 +219,21 @@ func TestGetObject_RangeMalformedIgnored(t *testing.T) {
 
 func TestGetObject_RangeMultiRangeFallsBack200(t *testing.T) {
 	_, content, _ := setupRangeObject(t)
+	// multirange-get-2026-10 leaf 03: multi-span Range now serves 206
+	// multipart/byteranges (supersedes the old 200-fallback expectation).
 	w := rangeGet(t, map[string]string{"Range": "bytes=0-1,3-4"})
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 for multi-range fallback, got %d", w.Code)
+	if w.Code != http.StatusPartialContent {
+		t.Fatalf("expected 206 multipart for multi-range, got %d", w.Code)
 	}
-	if got := w.Body.String(); got != content {
-		t.Errorf("expected full body, got %q", got)
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "multipart/byteranges") {
+		t.Errorf("expected multipart/byteranges Content-Type, got %q", ct)
 	}
+	for _, want := range []string{"Content-Range: bytes 0-1/10", "Content-Range: bytes 3-4/10"} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("multipart body missing %q", want)
+		}
+	}
+	_ = content
 }
 
 func TestGetObject_AcceptRangesOn200(t *testing.T) {

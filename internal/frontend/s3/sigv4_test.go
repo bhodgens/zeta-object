@@ -23,7 +23,11 @@ func TestSigV4_HeaderAndPresigned(t *testing.T) {
 		{name: "bad signature rejected", kind: "header", opts: map[string]string{"signature": "0000000000000000000000000000000000000000000000000000000000000000"}, wantErr: true},
 		{name: "non-hex signature rejected", kind: "header", opts: map[string]string{"signature": "zz-not-hex-or-full-length"}, wantErr: true},
 		{name: "expired presigned rejected", kind: "presigned", expired: true, wantErr: true},
-		{name: "wrong region rejected", kind: "header", opts: map[string]string{"region": "eu-west-1"}, wantErr: true},
+		// region-config-2026-10 leaf 02 (Contract 2): default mode is
+		// permissive - a well-formed non-default client region is accepted
+		// with a notice. Strict mismatch rejection is pinned by
+		// TestRegionMatrix and TestRegionMatrix_StrictMismatchCode.
+		{name: "different region accepted in permissive default mode", kind: "header", opts: map[string]string{"region": "eu-west-1"}, wantErr: false},
 		{name: "scope date mismatch rejected", kind: "header", opts: map[string]string{"scopeDate": "20000101"}, wantErr: true},
 	}
 	for _, tt := range tests {
