@@ -240,3 +240,26 @@ func TestEnvPairShape(t *testing.T) {
 		t.Errorf("Names() = %v", names)
 	}
 }
+
+// TestAccessKeyXattrNameBudget (auth extensions leaf 10, design 2a):
+// an AccessKeyID whose writer breadcrumb name reaches the 255-byte xattr
+// name cap is rejected at registry build with the offender named.
+func TestAccessKeyXattrNameBudget(t *testing.T) {
+	long := strings.Repeat("k", 255-len("user.zeta.writer."))
+	_, err := auth.NewMultiRegistry([]auth.IdentityConfig{{
+		Name: "too-long", AccessKey: long, SecretKey: "s",
+	}})
+	if err == nil {
+		t.Fatal("over-budget accessKey accepted")
+	}
+	if !strings.Contains(err.Error(), "too-long") {
+		t.Fatalf("error does not name the offender: %v", err)
+	}
+	// Boundary: one byte under the cap builds fine.
+	ok := strings.Repeat("k", 254-len("user.zeta.writer."))
+	if _, err := auth.NewMultiRegistry([]auth.IdentityConfig{{
+		Name: "fits", AccessKey: ok, SecretKey: "s",
+	}}); err != nil {
+		t.Fatalf("under-budget accessKey rejected: %v", err)
+	}
+}

@@ -68,6 +68,16 @@ func (f *FS) Put(ctx context.Context, bucket, key string, data io.Reader, size i
 	unlockParent := fsLockObject(filepath.Dir(flatPath))
 	defer unlockParent()
 	dataPath := objectDataPathFor(bucketPath, key)
+	// Principal breadcrumbs (auth extensions leaf 10): the object's owner
+	// is read BEFORE the atomic write replaces the inode (the rename would
+	// otherwise destroy the old object's stamps). carryOwner preserves the
+	// creator across overwrites — owner is set-once, later writers never
+	// change it (design 2a); "" means create (the writer becomes owner).
+	carryOwner := ""
+	var carryWriters []breadcrumbStamp
+	if opts.Principal != "" {
+		carryOwner, carryWriters = CollectBreadcrumbNames(dataPath)
+	}
 	// BUGHUNT B4: when the shadow layout wins, the write target's file and
 	// directory differ from the locked flat path. Lock the ACTUAL target
 	// (and its parent, <bucket>/!data) too, so a concurrent Put/Delete
@@ -112,6 +122,16 @@ func (f *FS) Put(ctx context.Context, bucket, key string, data io.Reader, size i
 	if err := writeFileAtomic(dataPath, body, 0644); err != nil { //nolint:gosec // G703: validated key.
 		return objectmodel.Object{}, backend.ToObjectModelError(err)
 	}
+
+	// Principal breadcrumbs (leaf 10, best-effort by contract): writer on
+	// every mutating write; owner set-once — carried over from the
+	// previous object version when one exists (overwrite keeps its
+	// creator), else the current writer becomes the owner (create). An
+	// xattr failure logs one WARN with the xattr name and NEVER fails the
+	// Put.
+	stampOwnerCarried(dataPath, opts.Principal, carryOwner)
+	carryWriterBreadcrumbs(dataPath, carryWriters)
+	stampWriterBreadcrumb(dataPath, opts.Principal, xattrOpPut)
 
 	// Create the metadata directory (pre-seam putObjectHandler does the
 	// same MkdirAll before the sidecar write).

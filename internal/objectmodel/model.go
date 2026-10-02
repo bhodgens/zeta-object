@@ -52,6 +52,12 @@ type PutOptions struct {
 	Metadata    map[string]string
 	IfMatch     string
 	IfNoneMatch string
+	// Principal is the authenticated principal (AccessKeyID) performing
+	// the write. Empty = unattributed write (backends skip breadcrumb
+	// stamping). Advisory per the design (zfs-principal-metadata.md
+	// section 3): backends that cannot persist it ignore it; fsbackend
+	// stamps best-effort user.zeta.* xattrs with it.
+	Principal string
 }
 
 type CapabilitySet struct {

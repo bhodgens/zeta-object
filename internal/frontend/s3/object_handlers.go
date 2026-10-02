@@ -109,6 +109,7 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	opts := objectmodel.PutOptions{
 		ContentType: r.Header.Get("Content-Type"),
 		Metadata:    rawMeta,
+		Principal:   principalOfRequest(r),
 	}
 	obj, putErr := backendCall(bucketName, func(b backend.Backend) (objectmodel.Object, error) {
 		return b.Put(r.Context(), bucketName, objectName, bytes.NewReader(body), int64(len(body)), opts)
@@ -1408,7 +1409,7 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 
 	_, putErr := backendCall(bucketName, func(b backend.Backend) (objectmodel.Object, error) {
 		return b.Put(r.Context(), bucketName, objectName, bytes.NewReader(data), int64(len(data)),
-			objectmodel.PutOptions{ContentType: dstContentType, Metadata: dstMeta})
+			objectmodel.PutOptions{ContentType: dstContentType, Metadata: dstMeta, Principal: principalOfRequest(r)})
 	})
 	if putErr != nil {
 		log.Printf("Error writing copy destination %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), putErr)

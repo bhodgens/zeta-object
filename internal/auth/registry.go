@@ -110,6 +110,17 @@ func NewMultiRegistry(identities []IdentityConfig) (*MultiRegistry, error) {
 		if cfg.AccessKey == "" {
 			return nil, fmt.Errorf("identity %q: accessKey is required", cfg.Name)
 		}
+		// Principal breadcrumb boundary (design zfs-principal-metadata.md
+		// 2a: "validate at config load that access keys fit the prefix
+		// budget"): xattr names cap at 255 bytes, and the longest
+		// breadcrumb this build stamps is user.zeta.writer.<AccessKeyID>.
+		// The arithmetic pairs with fsbackend's xattr.go constants (kept
+		// local to avoid an auth→fsbackend import; a comment there pins
+		// the pairing). Trivially true for real keys — the check
+		// documents the boundary and fails loud naming the offender.
+		if n := len("user.zeta.writer.") + len(cfg.AccessKey); n >= 255 {
+			return nil, fmt.Errorf("identity %q: accessKey %d bytes long; user.zeta.writer breadcrumb name would reach the 255-byte xattr-name cap", cfg.Name, len(cfg.AccessKey))
+		}
 		if cfg.SecretKey == "" {
 			return nil, fmt.Errorf("identity %q: secretKey is required", cfg.Name)
 		}

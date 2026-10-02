@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bhodgens/zeta-object/internal/backend/fsbackend"
 )
 
 // multipart_handlers.go — S3 multipart upload handlers
@@ -55,6 +57,16 @@ func validateUploadID(id string) (string, error) {
 		return "", fmt.Errorf("invalid uploadId %q: must be 32 hex characters", id)
 	}
 	return id, nil
+}
+
+// principalOfRequest returns the authenticated principal's AccessKeyID for
+// breadcrumb stamping and audit attribution. The identity is published
+// into the request context by serveHTTP after authentication (the same
+// seam CopyObject's source-bucket grant check consumes); requests that
+// bypassed dispatch (direct handler invocation in tests) degrade to the
+// legacy wildcard principal exactly like identityOf.
+func principalOfRequest(r *http.Request) string {
+	return identityOf(r).AccessKeyID
 }
 
 // Multipart Handlers
@@ -615,6 +627,21 @@ func finalizeComplete(w http.ResponseWriter, r *http.Request, bucketName, object
 		return
 	}
 	*failCleanup = false // rename consumed the temp file
+
+	// Principal breadcrumbs (auth extensions leaf 10): the multipart
+	// assembly is pinned ABOVE the seam (master Contract 4), so the
+	// completed object is stamped here. The rename replaces the inode, so
+	// the PRE-rename object's breadcrumbs are snapshotted and carried
+	// over: owner set-once (the previous owner, else the completing
+	// principal), prior writer names, then the multipart breadcrumb.
+	// Best-effort: stamp failures never fail the completed upload.
+	principal := principalOfRequest(r)
+	if principal != "" {
+		priorOwner, priorWriters := fsbackend.CollectBreadcrumbNames(finalObjectPath)
+		fsbackend.StampOwnerCarried(finalObjectPath, principal, priorOwner)
+		fsbackend.CarryWriterBreadcrumbs(finalObjectPath, priorWriters)
+		fsbackend.StampWriter(finalObjectPath, principal)
+	}
 
 	// Clean up: delete the multipart upload metadata file and the temporary parts directory
 	if err := os.Remove(mpUploadMetaPath); err != nil { //nolint:gosec // G703: uploadID validated 32-hex; no traversal possible.
