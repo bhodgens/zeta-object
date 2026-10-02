@@ -335,6 +335,77 @@ for line in audit_tail.splitlines():
 check("audit log written (8-key JSONL, valuser denied:false)", audit_ok,
       audit_tail[:250])
 
+# ---- 1c. ZFS_EV_PRINCIPAL probes (issue #7; wire schema 3 / layout 8) -----
+# The gateway deliberately does NOT register a kernel principal (per-
+# thread-group registration would misattribute Go's arbitrary thread
+# pool). The probes verify the CONSUMER side end to end: a separate host
+# process registers a tag via lzc_set_principal, writes INTO THE DATASET,
+# and the tag must (a) land in zmetad's principal column and (b) surface
+# through ?events JSON. An unregistered writer's records stay principal-
+# free (absence never fabricated).
+PRINCIPAL_PROBE = "/tmp/zval-p7.c"
+p7_src = (
+    "#include <stdint.h>\n"
+    "#include <stdio.h>\n"
+    "typedef unsigned char boolean_t;\n"
+    "typedef unsigned int uint_t;\n"
+    "typedef unsigned char uchar_t;\n"
+    "typedef long long hrtime_t;\n"
+    "#include <libzfs/libzfs_core.h>\n"
+    "int main(int argc, char **argv) {\n"
+    "    if (libzfs_core_init()) return 2;\n"
+    "    uint64_t gen = 0;\n"
+    "    int rc = lzc_set_principal(0xC0FFEE, &gen);\n"
+    "    printf(\"reg=%d\\n\", rc);\n"
+    "    FILE *f = fopen(argv[1], \"w\");\n"
+    "    if (!f) return 3;\n"
+    "    fputs(\"principal-tagged\\n\", f);\n"
+    "    fclose(f);\n"
+    "    return 0;\n"
+    "}\n")
+for line in p7_src.splitlines():
+    sh("printf '%s\\n' {} >> {}".format(json.dumps(line), PRINCIPAL_PROBE))
+sh("gcc -o /tmp/zval-p7 {} -I/usr/local/include/libzfs -L/usr/local/lib "
+   "-lzfs_core -lnvpair 2>/dev/null".format(PRINCIPAL_PROBE))
+gcc_ok = sh("test -x /tmp/zval-p7 && echo yes || echo no") == "yes"
+if gcc_ok:
+    sh("sudo /tmp/zval-p7 /{}/p7-tagged.bin".format(DATASET))
+    sh("echo unregistered > /{}/p7-plain.bin".format(DATASET))
+    force_collect()
+check("ZFS_EV_PRINCIPAL probe compiled+ran", gcc_ok, "gcc or libzfs_core missing")
+
+def principal_col(where):
+    rows = db_query(f"SELECT principal FROM events WHERE dataset = '{DATASET}' AND {where}")
+    vals = [r.get("principal") for r in (rows or [])]
+    return vals
+
+tagged_vals = principal_col("path = 'p7-tagged.bin'")
+check("zmetad principal column carries registered tag (0xC0FFEE=12648430)",
+      gcc_ok and any(v == 12648430 for v in tagged_vals), str(tagged_vals)[:200])
+plain_vals = principal_col("path = 'p7-plain.bin'")
+check("unregistered writer rows have NULL principal (never fabricated)",
+      gcc_ok and len(plain_vals) > 0 and all(v is None for v in plain_vals),
+      str(plain_vals)[:200])
+
+s, h, b = sign("GET", f"/{BUCKET}/p7-tagged.bin", query="events")
+try:
+    ev_p7 = json.loads(b)
+except Exception:
+    ev_p7 = {"events": []}
+p7_events = [e for e in ev_p7.get("events", []) if (e.get("key") or "") == "p7-tagged.bin"]
+check("?events JSON surfaces principal for tagged records",
+      gcc_ok and any(e.get("principal") == 12648430 for e in p7_events),
+      json.dumps(p7_events)[:250])
+s, h, b = sign("GET", f"/{BUCKET}/p7-plain.bin", query="events")
+try:
+    ev_p7b = json.loads(b)
+except Exception:
+    ev_p7b = {"events": []}
+p7b_events = [e for e in ev_p7b.get("events", []) if (e.get("key") or "") == "p7-plain.bin"]
+check("?events JSON omits principal for unregistered writers",
+      gcc_ok and len(p7b_events) > 0 and all("principal" not in e for e in p7b_events),
+      json.dumps(p7b_events)[:250])
+
 # ---- 2. multipart complete + GET integrity
 s, h, b = sign("POST", f"/{BUCKET}/mp.bin", query="uploads",
                content_type="application/octet-stream")
