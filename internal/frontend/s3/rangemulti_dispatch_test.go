@@ -117,7 +117,7 @@ func TestGetObject_MultiRangeOverCapFallsBack200(t *testing.T) {
 	writeRangeObject(t, setupS3TestEnv(t), "range-bucket", "data.bin", content, testObjectModTime())
 	// 101 disjoint 2-byte spans (stride 40) → 202 bytes requested, 101 parts.
 	var specs []string
-	for i := 0; i < 101; i++ {
+	for i := range 101 {
 		start := i * 40
 		specs = append(specs, itoaRangeSpan(start, start+1))
 	}
