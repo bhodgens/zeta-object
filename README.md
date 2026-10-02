@@ -199,7 +199,7 @@ zeta-object uses a JSON configuration file (see `config.json.example` for a comm
 | `identities` | `[]` | Optional additional auth identities (name, accessKey, secretKey, optional per-bucket `grants`, optional `sshPublicKeys`). See [Multiple identities](#multiple-identities-and-per-bucket-grants). |
 | `auth` | - | Optional auth settings; `auth.mode: "none"` enables the loud zero-auth dev mode. |
 | `zmetad_db_path` | `/var/lib/zfs/zmetad.db` | Path to the zmetad SQLite export database the ZFS-events provider reads. See [Metadata Capability Endpoints](#metadata-capability-endpoints-zfs-events). |
-| `zmetad_binary` | `zmetad` | zmetad executable used for history purge (`--purge`). Defaults to a `PATH` lookup. |
+| `zmetad_binary` | `zmetad` | zmetad executable reserved for the provider-level purge operation (`--purge`); purge is not exposed over HTTP (see Purge below). Defaults to a `PATH` lookup. |
 
 Credentials are **not** set in the config file - environment variables only.
 
@@ -453,9 +453,10 @@ The events come from the **zmetad** daemon (zfs-metadata
 a SQLite database. zeta-object reads that database exclusively - it never
 execs `zfs events` itself:
 
-- zmetad must be running on the ZFS host with **DB layout version 5**
+- zmetad must be running on the ZFS host with **DB layout version 5 or 6**
   (events carry insert-time-resolved `full_path`; the consumer contract is
-  zmetad's `SCHEMA.md`). Newer layouts are refused until zeta-object
+  zmetad's `SCHEMA.md`). Layout versions evolve additively, so the
+  consumer accepts a range; newer layouts are refused until zeta-object
   catches up; older ones are refused with an upgrade hint (zmetad migrates
   in place).
 - The bucket's dataset must be tracked and polled by zmetad. Buckets that
@@ -497,15 +498,23 @@ folded into one number):
 days), so listing depth is bounded by that window; the gap/swap counts are
 lifetime and are never retention-deleted.
 
-### Purge
+### Purge (operator-only, not an HTTP endpoint)
 
-The provider's purge operation execs `zmetad --purge <dataset>`: the
-coordinated wipe clears BOTH the database rows (events, gaps, sync_state)
-AND the kernel ring buffer, and resets the loss history
-(`recordsLost`/`ringSwaps` start over). zeta-object never purges via SQL
-itself - a hand-rolled delete would leave the kernel ring uncleared and
-cause a full re-import. Purge is destructive, is reachable only through
-authenticated request paths, and never runs at server startup.
+History purge is deliberately NOT exposed over the S3 API: no route calls
+it. The capability exists at the provider level (it execs
+`zmetad --purge <dataset>`: the coordinated wipe clears BOTH the database
+rows - events, gaps, sync_state, objmap - AND the kernel ring buffer, and
+resets the loss history). zeta-object never purges via SQL itself - a
+hand-rolled delete would leave the kernel ring uncleared and cause a full
+re-import, and dropping sync_state corrupts the watermark.
+
+Rationale for keeping it off the wire: the data purge destroys is
+audit-flavored (event history plus the permanent gap/loss record), and the
+credentials that grant object write access should not also grant erasure
+of that history. To purge a dataset's history, run `zmetad --purge
+<dataset>` on the ZFS host (the same operator who runs zmetad). If an
+admin-tier grant lands later, wiring an authenticated purge endpoint
+gated on that tier is the right shape.
 
 ## Event Actions
 

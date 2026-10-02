@@ -64,6 +64,17 @@ that predate the GUID stamp — matching SCHEMA.md §6 "identity unknown"
 semantics. No consumer action needed (swap detection is zmetad's job;
 consumers read the gaps -1 sentinel).
 
+**F-zmetad-5 (DECIDED 2026-10-01): purge stays operator-only.** The
+provider's Purge (execs `zmetad --purge <dataset>`) has no HTTP route and
+deliberately keeps it that way: purge destroys audit-flavored data (event
+history + the permanent gap record), and object-write credentials should
+not grant erasure of that history. Operators purge on the host directly.
+If an admin-tier grant lands later, an authenticated purge endpoint gated
+on that tier is the right shape. README "Purge (operator-only...)"
+documents the decision; the earlier README claim that purge was "reachable
+only through authenticated request paths" was wrong (no route existed) and
+was corrected.
+
 ## Cleanup
 
 Server + zmetad stopped, `testpool/zval` destroyed (harness auto-cleanup).
