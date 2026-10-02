@@ -24,9 +24,8 @@
 package fsbackend
 
 import (
-	"encoding/json"
+	"context"
 	"log"
-	"os"
 	"strings"
 	"time"
 )
@@ -214,11 +213,14 @@ func (f *FS) Owner(bucket, key string) (string, bool) {
 		return "", false
 	}
 	bp := f.bucketPath(bucket)
-	meta := legacyMeta{}
-	if metaJSON, err := os.ReadFile(sidecarPath(bp, key)); err == nil && json.Unmarshal(metaJSON, &meta) == nil {
-		// A corrupt sidecar degrades to the canonical data path — the
-		// enrichment read is best-effort by contract (errors never alter
-		// the ?events response beyond dropping the owner field).
+	// Shadow-aware resolution: honor a sidecar storagePath exactly like
+	// Get/Stat do. statLocked degrades read/unmarshal errors to a zero
+	// legacyMeta (canonical data path) for ErrNoSuchKey — the lenient
+	// behavior the best-effort enrichment contract wants; any other read
+	// error likewise degrades to the zero meta below.
+	meta, _, err := f.statLocked(context.Background(), bucket, key)
+	if err != nil {
+		meta = legacyMeta{}
 	}
 	return OwnerXattr(resolveDataPath(bp, key, &meta))
 }
