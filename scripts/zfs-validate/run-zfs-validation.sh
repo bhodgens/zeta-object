@@ -2,14 +2,21 @@
 # Reusable ZFS validation harness (AGENTS.md "ZFS validation rule").
 #
 # Validates the CURRENT repo HEAD against real OpenZFS (extended-metadata
-# branch) on the zfs-meta host:
+# branch) on the zfs-meta host, ZMETAD PATH (provider reads the zmetad
+# SQLite DB, layout v5 - no CLI `zfs events` transport remains):
 #   1. builds the repo's linux/amd64 server binary
 #   2. deploys it (+ a freshly generated TLS cert) to zfs-meta:~/zeta-validate/
 #   3. recreates a scratch dataset testpool/zval fresh (events=on, events_size=1M)
-#   4. writes the config and launches the server on :9707
-#   5. runs the S3 + ZFS-event checks (see run_checks below)
-#   6. prints a PASS/FAIL table, exits non-zero on any failure
-#   7. cleans up: stops the server, destroys testpool/zval
+#   4. starts zmetad (poll 2s) exporting to ~/zeta-validate/zmetad.db
+#   5. writes the config (zmetad_db_path + zmetad_binary) and launches the
+#      server on :9707
+#   6. runs the S3 + zmetad-DB event checks (see checks.py below): wire
+#      ?events vs the SQLite ground truth, full_path nested-key resolution,
+#      freshness bound (poll interval), SIGUSR1 forced collect, gap/loss
+#      fields, events=off -> 503 (zmetad prunes untracked datasets) ->
+#      events=on restores
+#   7. prints a PASS/FAIL table, exits non-zero on any failure
+#   8. cleans up: stops the server + zmetad, destroys testpool/zval
 #
 # Usage:  scripts/zfs-validate/run-zfs-validation.sh [--keep-server]
 #   --keep-server   leave the server + dataset in place after the run
@@ -59,7 +66,7 @@ openssl req -x509 -newkey rsa:2048 -keyout "$WORK/key.pem" -out "$WORK/cert.pem"
 # ------------------------------------------------------------- deploy ------
 log "Deploying to $HOST:$REMOTE_DIR"
 # stop any prior instance first - overwriting a running binary fails (ETXTBSY)
-ssh -o BatchMode=yes "$HOST" "pkill -f 'zeta-serve[r].*zeta-validate' 2>/dev/null; sleep 0.5; mkdir -p $REMOTE_DIR; true"
+ssh -o BatchMode=yes "$HOST" "pkill -f '[.]/zeta-serve[r]' 2>/dev/null; pkill -f 'zmeta[d].*zeta-validate' 2>/dev/null; sleep 0.5; mkdir -p $REMOTE_DIR; true"
 scp -q "$BIN" "$HOST:$REMOTE_DIR/zeta-server"
 scp -q "$WORK/cert.pem" "$WORK/key.pem" "$HOST:$REMOTE_DIR/"
 ssh -o BatchMode=yes "$HOST" "chmod +x $REMOTE_DIR/zeta-server"
@@ -73,6 +80,27 @@ ssh -o BatchMode=yes "$HOST" "
   sudo chown -R \$(id -u):\$(id -g) '/$DATASET'
 "
 
+# ------------------------------------------------------------- zmetad ------
+# /dev/zfs is 0666 on this host, so zmetad runs unprivileged. Poll interval
+# 2s keeps the freshness waits in checks.py short. Foreground flag + setsid
+# detaches it from the ssh session (gotcha (a)).
+log "Starting zmetad (poll 2s, db $REMOTE_DIR/zmetad.db)"
+cat > "$WORK/start-zmetad.sh" <<EOF
+#!/usr/bin/env bash
+pkill -f 'zmeta[d].*zeta-validate' 2>/dev/null || true
+sleep 0.3
+rm -f '$REMOTE_DIR/zmetad.db' '$REMOTE_DIR/zmetad.db-wal' '$REMOTE_DIR/zmetad.db-shm'
+setsid nohup zmetad --foreground -d '$REMOTE_DIR/zmetad.db' -i 2 < /dev/null >> '$REMOTE_DIR/zmetad.log' 2>&1 &
+for i in \$(seq 1 50); do
+  [ -f '$REMOTE_DIR/zmetad.db' ] && echo "ZMETAD_UP" && exit 0
+  sleep 0.2
+done
+echo "ZMETAD_FAILED"; tail -20 '$REMOTE_DIR/zmetad.log' 2>/dev/null; exit 1
+EOF
+scp -q "$WORK/start-zmetad.sh" "$HOST:$REMOTE_DIR/start-zmetad.sh"
+ssh -o BatchMode=yes "$HOST" "bash $REMOTE_DIR/start-zmetad.sh" \
+  || die "zmetad did not come up"
+
 # ------------------------------------------------------ config + starter ---
 # NOTE gotcha (b): frontend port must differ from listenAddr (or use empty
 # frontends array) to avoid the dual-listener self-collision.
@@ -83,6 +111,8 @@ cat > "$WORK/config.json" <<EOF
   "listenAddr": ":$PORT",
   "certFile": "cert.pem",
   "keyFile": "key.pem",
+  "zmetad_db_path": "$REMOTE_DIR/zmetad.db",
+  "zmetad_binary": "/usr/local/sbin/zmetad",
   "identities": [
     { "name": "val", "accessKey": "$AK", "secretKey": "$SK", "grants": { "*": "readwrite" } }
   ],
@@ -96,7 +126,7 @@ scp -q "$WORK/config.json" "$HOST:$REMOTE_DIR/config.json"
 cat > "$WORK/start-server.sh" <<EOF
 #!/usr/bin/env bash
 cd '$REMOTE_DIR'
-pkill -f 'zeta-serve[r].*zeta-validate' 2>/dev/null || true
+pkill -f '[.]/zeta-serve[r]' 2>/dev/null || true
 sleep 0.5
 setsid nohup ./zeta-server < /dev/null >> server.log 2>&1 &
 for i in \$(seq 1 50); do
@@ -183,12 +213,45 @@ def sh(cmd, timeout=60):
                        capture_output=True, text=True, timeout=timeout)
     return (r.stdout + r.stderr).strip()
 
+# checks.py runs LOCALLY and queries the DB over ssh: resolve the REMOTE
+# home now (db_query embeds this absolute path into the remote python3).
+ZMETAD_DB = sh("echo $HOME") + "/zeta-validate/zmetad.db"
+
+def db_query(sql):
+    """Query the zmetad DB on the host via python3 stdlib sqlite3 (the host
+    has no sqlite3 CLI). Returns parsed JSON."""
+    py = ("import sqlite3,json,sys;"
+          "c=sqlite3.connect('file:%s?mode=ro',uri=True);"
+          "c.row_factory=sqlite3.Row;"
+          "r=[dict(x) for x in c.execute(sys.argv[1])];"
+          "print(json.dumps(r))" % ZMETAD_DB)
+    out = sh(f"python3 -c {json.dumps(py)} {json.dumps(sql)}")
+    try:
+        return json.loads(out[out.index("["):out.rindex("]") + 1])
+    except Exception:
+        return None
+
+def force_collect(secs=1.5):
+    """SIGUSR1 forces an out-of-band zmetad collect (SCHEMA.md section 8)."""
+    sh("pkill -USR1 -f 'zmeta[d].*zeta-validate' 2>/dev/null; true")
+    time.sleep(secs)
+
 results = []
 def check(name, ok, detail=""):
     results.append((name, bool(ok), str(detail)[:300]))
 
 def wait_events(secs=1.2):
     time.sleep(secs)
+
+# ---- 0. zmetad DB is live and tracking the scratch dataset
+force_collect()
+meta = db_query("SELECT key, value FROM meta")
+check("zmetad DB reachable + meta rows", isinstance(meta, list) and len(meta) >= 1, str(meta)[:200])
+ver = {r["key"]: r["value"] for r in (meta or [])}
+check("db_schema_version in supported range (5..6)",
+      ver.get("db_schema_version") in ("5", "6"), str(ver))
+ds_rows = db_query(f"SELECT dataset, mountpoint FROM datasets WHERE dataset = '{DATASET}'")
+check("datasets table tracks scratch dataset", bool(ds_rows), str(ds_rows)[:200])
 
 # ---- 1. plain S3 round-trip on the ZFS-backed bucket
 s, h, b = sign("PUT", f"/{BUCKET}/val-doc.txt", payload=b"zfs validation payload",
@@ -225,36 +288,48 @@ check("multipart GET integrity", s == 200 and len(b) == 6 * 1024 * 1024 and
       b[:1] == b"A" and b[-1:] == b"B", f"{s} len={len(b)}")
 wait_events()
 
-# ---- 3. ?events JSON vs `zfs events -j` ground truth
+# ---- 3. ?events JSON vs zmetad SQLite ground truth
+force_collect()
 s, h, b = sign("GET", f"/{BUCKET}/mp.bin", query="events")
 check("?events JSON 200", s == 200, f"{s} {b[:150]}")
 try:
     ev = json.loads(b)
     check("?events has dataset", ev.get("dataset") == DATASET, str(ev)[:200])
+    check("?events envelope keys (dataset/recordsLost/ringSwaps/events)",
+          set(ev.keys()) == {"dataset", "recordsLost", "ringSwaps", "events"},
+          str(sorted(ev.keys())))
 except Exception as e:
     check("?events JSON parses", False, f"{e} {b[:120]}")
     ev = {"events": []}
-z = sh(f"sudo zfs events -j {DATASET}")
-z = z[:z.rindex("]") + 1] if "]" in z else z
-truth = json.loads(z)
-names = {e.get("name") for e in truth if isinstance(e, dict)}
-check("ZFS ground truth has mp.bin", "mp.bin" in names, sorted(n for n in names if n)[:8])
+rows = db_query(
+    f"SELECT event_type, path, full_path, old_path, old_full_path, txg "
+    f"FROM events WHERE dataset = '{DATASET}' ORDER BY txg, id")
+check("zmetad DB has rows for scratch dataset", bool(rows), f"{len(rows or [])} rows")
+db_names = {r.get("path") for r in (rows or [])}
+check("DB ground truth has mp.bin", "mp.bin" in db_names,
+      sorted(n for n in db_names if n)[:8])
 srv_keys = {e.get("key") for e in ev.get("events", [])}
 check("server events include mp.bin", any("mp.bin" in (k or "") for k in srv_keys),
       sorted(k for k in srv_keys if k)[:8])
-# per-record match: every server key for mp.bin corresponds to a ZFS record
+# per-record match: every server key for mp.bin corresponds to a DB record
 srecs = [e for e in ev.get("events", []) if "mp.bin" in (e.get("key") or "")]
 # F-live-4 (documented semantics): a completed multipart object surfaces as
 # exactly ONE rename event (tmp assembly file -> final name) on the wire;
-# the ZFS ring holds the full CREATE(tmp)+RENAME pair.
+# the DB holds the full CREATE(tmp)+RENAME pair.
 check("multipart rename event (tmp->final) present",
       any(e.get("op") == "rename" and e.get("key") == "mp.bin" and
           "tmp" in (e.get("oldKey") or "") for e in srecs),
       json.dumps(srecs)[:250])
 for e in srecs:
     zn = e.get("key", "").rsplit("/", 1)[-1]
-    check(f"  event '{e.get('op', '?')} {e.get('key')}' backed by ZFS truth",
-          zn in names, f"no zfs record named {zn}")
+    check(f"  event '{e.get('op', '?')} {e.get('key')}' backed by DB truth",
+          zn in db_names, f"no db record named {zn}")
+# full_path fidelity: v5 stores insert-time-resolved paths; the server's
+# key for a root-level object must equal the DB full_path verbatim.
+db_full = {r.get("full_path") for r in (rows or []) if r.get("full_path")}
+check("server keys come from DB full_path (root-level)",
+      any(k in db_full for k in srv_keys if k),
+      f"srv={sorted(k for k in srv_keys if k)[:5]} db={sorted(db_full)[:5]}")
 
 # ---- 4. ?events&versions ext XML
 s, h, b = sign("GET", f"/{BUCKET}", query="events&versions&max-events=20")
@@ -262,18 +337,34 @@ check("?events&versions ext XML", s == 200 and b"ListObjectVersionsExt" in b,
       f"{s} {b[:150]}")
 check("ext XML has IsLossy/RecordsLost", b"IsLossy" in b and b"RecordsLost" in b, b[:150])
 
-# ---- 5. events=off -> 503 -> events=on -> restored
+# ---- 5. events=off semantics on the zmetad path: zmetad PRUNES datasets
+# rows not refreshed in a poll cycle (prune_stale_datasets), and an
+# events=off dataset is skipped during collection - so its mountpoint row
+# disappears, path resolution fails, and ?events 503s (same client-visible
+# semantics as the CLI path). events=on restores tracking on the next poll.
 sh(f"sudo zfs set events=off {DATASET}")
+force_collect(2.5)
 s, h, b = sign("GET", f"/{BUCKET}/mp.bin", query="events")
-check("events=off -> 503", s == 503, f"{s} {b[:120]}")
+check("events=off -> 503 (dataset pruned from zmetad tracking)", s == 503, f"{s} {b[:120]}")
+sh(f"echo -n offprobe > /{DATASET}/during-off.txt")
+force_collect(2.5)
+rows_off = db_query(
+    f"SELECT COUNT(*) AS n FROM events WHERE dataset = '{DATASET}' AND path = 'during-off.txt'")
+check("events=off -> NEW writes not captured", (rows_off or [{}])[0].get("n", -1) == 0,
+      str(rows_off)[:200])
 sh(f"sudo zfs set events=on {DATASET}")
-time.sleep(0.5)
+sh(f"echo -n onprobe > /{DATASET}/after-on.txt")
+force_collect(2.5)
 s, h, b = sign("GET", f"/{BUCKET}/mp.bin", query="events")
-check("events=on restores service", s == 200 and b'"events"' in b, f"{s} {b[:120]}")
+check("events=on restores service (200)", s == 200, f"{s} {b[:120]}")
+rows_on = db_query(
+    f"SELECT COUNT(*) AS n FROM events WHERE dataset = '{DATASET}' AND path = 'after-on.txt'")
+check("events=on -> capture resumes", (rows_on or [{}])[0].get("n", -1) >= 1,
+      str(rows_on)[:200])
 
-# ---- 6. nested-key history exact (full-path reconstruction)
+# ---- 6. nested-key history exact (v5 insert-time full_path resolution)
 sh(f"mkdir -p /{DATASET}/edge/deep && echo -n x > /{DATASET}/edge/deep/leaf.txt")
-wait_events()
+force_collect()
 s, h, b = sign("GET", f"/{BUCKET}/edge/deep/leaf.txt", query="events")
 try:
     ev2 = json.loads(b)
@@ -283,11 +374,11 @@ check("nested key ?events 200", s == 200, f"{s} {b[:120]}")
 nested = [e for e in ev2.get("events", []) if e.get("key") == "edge/deep/leaf.txt"]
 check("nested-key history exact full path", len(nested) >= 1,
       json.dumps(ev2)[:250])
-z = sh(f"sudo zfs events -j {DATASET}")
-z = z[:z.rindex("]") + 1] if "]" in z else z
-truth2 = json.loads(z)
-check("nested key in ZFS truth (bare name)", any(e.get("name") == "leaf.txt" for e in truth2),
-      str([e for e in truth2 if "leaf" in str(e)])[:200])
+db_nested = db_query(
+    f"SELECT full_path FROM events WHERE dataset = '{DATASET}' AND path = 'leaf.txt'")
+check("DB full_path resolved for nested key (v5)",
+      any(r.get("full_path") == "edge/deep/leaf.txt" for r in (db_nested or [])),
+      str(db_nested)[:200])
 
 # ---- 7. '.'-key rejection (bucket integrity)
 # Go >=1.22 http.ServeMux canonicalizes PUT /zval/. -> 307 redirect to /zval
@@ -300,17 +391,41 @@ check("PUT '.' rejected (400/403 or mux 307 canonicalize)",
 disk = sh(f"ls -ld /{DATASET} && ls /{DATASET}/ | grep -c '^\\.$' ; true")
 check("no '.' object written to dataset", "drwx" in disk, disk[:200])
 
-# ---- 8. deep 2-level path history
+# ---- 8. deep 2-level path history + freshness bound
 sh(f"mkdir -p /{DATASET}/a1/a2 && echo -n x > /{DATASET}/a1/a2/leaf2.txt")
-wait_events()
+# Freshness (SCHEMA.md section 8): BEFORE any forced collect, the new event
+# may not be in the DB yet - that is the documented poll-interval lag.
+s, h, b = sign("GET", f"/{BUCKET}/a1/a2/leaf2.txt", query="events")
+try:
+    ev3_pre = json.loads(b)
+except Exception:
+    ev3_pre = {"events": []}
+force_collect()
 s, h, b = sign("GET", f"/{BUCKET}/a1/a2/leaf2.txt", query="events")
 try:
     ev3 = json.loads(b)
 except Exception:
     ev3 = {"events": []}
-check("deep 2-level path exact", any(e.get("key") == "a1/a2/leaf2.txt"
-                                     for e in ev3.get("events", [])),
+check("deep 2-level path exact (after SIGUSR1 collect)",
+      any(e.get("key") == "a1/a2/leaf2.txt" for e in ev3.get("events", [])),
       json.dumps(ev3)[:250])
+check("SIGUSR1 forced collect made event visible",
+      len(ev3.get("events", [])) >= len(ev3_pre.get("events", [])),
+      f"pre={len(ev3_pre.get('events', []))} post={len(ev3.get('events', []))}")
+
+# ---- 9. loss accounting fields (gaps table -> wire)
+gaps = db_query(f"SELECT lost FROM gaps WHERE dataset = '{DATASET}'")
+known_lost = sum(r["lost"] for r in (gaps or []) if r["lost"] > 0)
+ring_swaps = sum(1 for r in (gaps or []) if r["lost"] == -1)
+s, h, b = sign("GET", f"/{BUCKET}", query="events")
+try:
+    evb = json.loads(b)
+except Exception:
+    evb = {}
+check("recordsLost == gaps knownLost", evb.get("recordsLost") == known_lost,
+      f"wire={evb.get('recordsLost')} db={known_lost}")
+check("ringSwaps == gaps -1 count", evb.get("ringSwaps") == ring_swaps,
+      f"wire={evb.get('ringSwaps')} db={ring_swaps}")
 
 failed = [(n, d) for n, ok, d in results if not ok]
 for n, ok, d in results:
@@ -328,9 +443,10 @@ set -e
 
 # ------------------------------------------------------------- cleanup -----
 if [[ $RC -ne 0 || $KEEP_SERVER -eq 0 ]]; then
-  log "Cleanup: stopping server, destroying $DATASET"
+  log "Cleanup: stopping server + zmetad, destroying $DATASET"
   ssh -o BatchMode=yes "$HOST" "
-    pkill -f 'zeta-serve[r].*zeta-validate' 2>/dev/null || true
+    pkill -f '[.]/zeta-serve[r]' 2>/dev/null || true
+    pkill -f 'zmeta[d].*zeta-validate' 2>/dev/null || true
     sudo zfs destroy -r '$DATASET' 2>/dev/null || true
     true
   " || true

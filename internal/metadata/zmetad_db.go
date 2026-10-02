@@ -19,11 +19,20 @@ import (
 	_ "modernc.org/sqlite" // pure-Go sqlite driver; no cgo, static binary preserved
 )
 
-// zmetadMaxDBSchemaVersion is the maximum db_schema_version this
-// consumer understands (SCHEMA.md section 1 refuse-newer rule). The
-// read path also requires exactly this version: the v5 full_path
-// column is the read-path contract.
-const zmetadMaxDBSchemaVersion = 5
+// zmetadMinDBSchemaVersion is the minimum db_schema_version this consumer
+// can read: layout 5 introduced the full_path columns the read path is
+// built on (SCHEMA.md section 7).
+const zmetadMinDBSchemaVersion = 5
+
+// zmetadMaxDBSchemaVersion is the maximum db_schema_version this consumer
+// understands (SCHEMA.md section 1 refuse-newer rule). Versions evolve
+// ADDITIVELY only (new columns/tables, no renames), so every version in
+// [min, max] is readable: layout 6 adds sync_state.last_lost and
+// meta.purge_epoch, neither of which this consumer reads. Pinning an
+// EXACT version instead would break the consumer on every additive
+// upstream bump (observed live: zmetad 276fe5085 shipped layout 6 and an
+// exact-5 gate 503'd every ?events request).
+const zmetadMaxDBSchemaVersion = 6
 
 // zmetadEventsSchemaVersion is the required events wire schema version
 // (SCHEMA.md section 1).
@@ -40,7 +49,7 @@ func (e *ZmetadDBMissingError) Error() string {
 // ZmetadDBVersionError means the database's stored schema version is not
 // acceptable: either newer than this consumer knows (Newer true -
 // refuse-newer rule, never open with guessed semantics) or older than the
-// required v5 layout (Newer false - zmetad migrates the database in place
+// required layout 5 (Newer false - zmetad migrates the database in place
 // on upgrade, so the hint is to upgrade zmetad).
 type ZmetadDBVersionError struct {
 	Path    string
@@ -176,7 +185,7 @@ func (db *ZmetadDB) checkVersion(ctx context.Context) error {
 	if n > zmetadMaxDBSchemaVersion {
 		return &ZmetadDBVersionError{Path: db.path, Version: dbVersion, Newer: true, Which: "db_schema_version"}
 	}
-	if n < zmetadMaxDBSchemaVersion {
+	if n < zmetadMinDBSchemaVersion {
 		return &ZmetadDBVersionError{Path: db.path, Version: dbVersion, Newer: false, Which: "db_schema_version"}
 	}
 	eventsVersion, err := db.metaValue(ctx, "events_schema_version")

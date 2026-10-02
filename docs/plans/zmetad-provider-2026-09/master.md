@@ -63,9 +63,11 @@ no auto-SIGUSR1 plumbing (documented as a future option; Open Question 2).
 
 Read path: mini-s3 opens the zmetad SQLite database read-only (pure-Go
 driver `modernc.org/sqlite` - no cgo, the repo's static-binary rule),
-refuses `db_schema_version > 5` (SCHEMA.md refuse-newer rule), requires >= 5
-(the v5 `full_path` column is the read-path contract; older DBs are refused
-with an upgrade hint - zmetad migrates in place).
+refuses `db_schema_version` outside 5..6 (SCHEMA.md refuse-newer rule;
+versions evolve additively, so the consumer accepts a RANGE: >= 5 because
+the v5 `full_path` columns are the read-path contract, <= the max known
+layout - currently 6). Older DBs are refused with an upgrade hint (zmetad
+migrates in place).
 
 Dataset resolution: longest mountpoint-prefix match in the `datasets` table
 (SCHEMA.md section 5) - NO `zfs get` exec anywhere. DetectZFS (statfs)

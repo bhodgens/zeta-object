@@ -129,8 +129,9 @@ func TestOpenZmetadDB_VersionGate(t *testing.T) {
 	}{
 		{name: "v5 accepted", dbVersion: "5", eventsVersion: "2", wantOK: true},
 		{name: "v5 without events key accepted", dbVersion: "5", eventsVersion: "", wantOK: true},
+		{name: "v6 accepted (additive layout)", dbVersion: "6", eventsVersion: "2", wantOK: true},
 		{
-			name: "v6 refused newer", dbVersion: "6", eventsVersion: "2",
+			name: "v7 refused newer", dbVersion: "7", eventsVersion: "2",
 			wantNewer: true, wantWhich: "db_schema_version",
 		},
 		{
