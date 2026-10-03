@@ -30,7 +30,7 @@ Most "S3-compatible" servers are the same idea restated: a service that owns a b
 4. **Pluggable on both axes, honest about semantics.** Frontends (client protocols) and backends (storage) plug into one neutral object model, and the seams reject what a protocol cannot express instead of silently emulating it. A parity gate proves an enabled metadata provider changes nothing about core S3 responses.
 5. **Small enough to read, hardened enough to trust.** One Go binary, a tiny audited dependency set (all licenses in docs/licenses/), and a gate wall: 1100+ unit test functions, a 703-assert e2e suite over 34 cases, race detector, fuzzing, ceph/s3-tests conformance ratchet, staticcheck/gosec, and a pre-commit chain that enforces all of it. The codebase is small enough that an afternoon of reading covers every line that touches your data.
 
-The honest, per-operation capability matrix for every protocol — what is implemented, what degrades and how, what is absent — lives in [docs/protocol-compatibility.md](docs/protocol-compatibility.md).
+The honest, per-operation capability matrix for every protocol — what is implemented, what degrades and how, what is absent — lives in [docs/protocol-compatibility.md](docs/protocol-compatibility.md). The per-operation **S3 behavior contract** (request/response shapes, error codes, and every deliberate divergence from AWS S3, maintained under the upstream-zfs documentation contract): [docs/s3-behavior.md](docs/s3-behavior.md).
 
 ## Who it is for
 

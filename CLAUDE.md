@@ -180,7 +180,8 @@ Configure profile with credentials `minioadmin`/`minioadmin` and region `us-east
 ## Known Issues / Documented Divergences
 
 The historical data-loss and SigV4 bugs from `docs/gap-closure.md` are fixed.
-What remains is a short list of intentional divergences from real S3:
+The authoritative divergences-from-AWS list lives in
+`docs/s3-behavior.md` §7 (the per-operation behavior contract). Short form:
 
 - **Object keys containing `..` (or `.metadata`) path segments are rejected.**
   Real S3 treats keys as flat strings and permits `..`; here safety wins
@@ -190,15 +191,17 @@ What remains is a short list of intentional divergences from real S3:
   `validateBucketName` (`bucket_handlers.go`): names like `..` or `../escape`
   fail the S3 naming rules (3-63 chars, lowercase/digits/hyphens/periods) and
   never reach the filesystem path join.
-- **Range requests: single ranges only.** GET/HEAD honor `Range` (206 with
+- **Range requests: single and multi-span.** GET/HEAD honor `Range` (206 with
   `Content-Range`, 416 `InvalidRange` for unsatisfiable requests - hardening
-  leaf 3.1), and conditional `If-*` headers are evaluated first per RFC 7232.
-  Multi-range requests are not supported: clients asking for several ranges get
-  a full-body `200` instead of `206`/`multipart/byteranges`.
-- **Single credential.** One access/secret pair for all clients; no per-user
-  IAM, policies, or ACLs (ACL endpoints return "Not Implemented").
-- **Region is pinned to `us-east-1`.** Requests signed for another region are
-  rejected with `AuthorizationHeaderMalformed`/400 (matching AWS behavior).
+  leaf 3.1), conditional `If-*` headers are evaluated first per RFC 7232, and
+  multi-span headers serve RFC 9110 `multipart/byteranges` (issue #9; an
+  all-unsatisfiable multi-span 416s). Over 100 coalesced spans -> full-body 200.
+- **Single credential model.** One identity registry (config `identities` + env
+  pair) for all clients; no per-user IAM, policies, or ACLs (ACL endpoints
+  return "Not Implemented").
+- **Region is configurable** (`region` config key, default `us-east-1` - issue
+  #10). A launched server is always strict: a mismatching client scope fails
+  `SignatureDoesNotMatch`/403 naming the expected region.
 
-See `docs/gap-closure.md` for the fix history and the 2026-09 hardening
-campaign summary.
+See `docs/gap-closure.md` for the fix history, `docs/s3-behavior.md` for the
+behavior contract, and the 2026-09 hardening campaign summary.

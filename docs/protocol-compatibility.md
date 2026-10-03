@@ -156,3 +156,9 @@ Finder and Windows mount with Basic auth. e2e 19 (59 asserts), e2e 31
 | Path-traversal rejection (`..`, `.metadata` segments) | key validation | e2e 03/19 |
 | Principal breadcrumbs (`user.zeta.*` xattrs) + optional append-only audit log | xattr stamping at the write path | e2e 28 |
 | Per-package coverage floors + conformance ratchet | CI + `make conformance` | `.github/workflows/check.yml` |
+
+Behavior contract: the authoritative per-operation S3 behavior reference
+(request/response shapes, error codes, divergences from AWS) is
+[docs/s3-behavior.md](s3-behavior.md) - maintained under the same
+documentation contract as zmetad's `SCHEMA.md`: a behavior change
+without a doc change is a bug.
