@@ -93,33 +93,50 @@ type CommonPrefix struct {
 }
 
 // ObjectVersion is one <Version> entry in the ListVersionsResult (leaf 5.1
-// [a]-2 fix: the ?versions sub-resource). mini-s3 is not versioned, so every
-// object is reported as a single version with the fixed null version ID —
-// the wire shape real S3 produces for an unversioned bucket.
+// [a]-2 fix: the ?versions sub-resource). The legacy (never-versioned)
+// renderer reports every object as a single version with the fixed null
+// version ID; the versioned renderer (leaf 04) fills VersionID with the
+// store's version id.
 type ObjectVersion struct {
 	Key          string `xml:"Key"`
 	VersionID    string `xml:"VersionId"`
 	IsLatest     bool   `xml:"IsLatest"`
 	LastModified string `xml:"LastModified"` // Format: 2006-01-02T15:04:05.000Z
-	ETag         string `xml:"ETag"`
+	ETag         string `xml:"ETag,omitempty"`
 	Size         int64  `xml:"Size"`
 	StorageClass string `xml:"StorageClass"`
 	Owner        Owner  `xml:"Owner"`
 }
 
+// DeleteMarkerEntry is one <DeleteMarker> entry in the versioned
+// ListVersionsResult (Contract 2): a delete marker carries no Size or
+// ETag, exactly as real S3 renders it.
+type DeleteMarkerEntry struct {
+	Key          string `xml:"Key"`
+	VersionID    string `xml:"VersionId"`
+	IsLatest     bool   `xml:"IsLatest"`
+	LastModified string `xml:"LastModified"`
+	Owner        Owner  `xml:"Owner"`
+}
+
 // ListVersionsResult is the S3 response structure for GET /bucket?versions.
+// Versions and DeleteMarkers render as interleaved <Version> and
+// <DeleteMarker> elements (Go marshals the two slices back-to-back; the
+// versioned renderer keeps each key's stream contiguous so the document
+// stays per-key newest-first regardless of element grouping).
 type ListVersionsResult struct {
-	XMLName             xml.Name        `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListVersionsResult"`
-	Name                string          `xml:"Name"`
-	Prefix              string          `xml:"Prefix"`
-	KeyMarker           string          `xml:"KeyMarker"`
-	VersionIDMarker     string          `xml:"VersionIdMarker"`
-	NextKeyMarker       string          `xml:"NextKeyMarker,omitempty"`
-	NextVersionIDMarker string          `xml:"NextVersionIdMarker,omitempty"`
-	EncodingType        string          `xml:"EncodingType,omitempty"`
-	MaxKeys             int             `xml:"MaxKeys"`
-	IsTruncated         bool            `xml:"IsTruncated"`
-	Versions            []ObjectVersion `xml:"Version"`
+	XMLName             xml.Name            `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListVersionsResult"`
+	Name                string              `xml:"Name"`
+	Prefix              string              `xml:"Prefix"`
+	KeyMarker           string              `xml:"KeyMarker"`
+	VersionIDMarker     string              `xml:"VersionIdMarker"`
+	NextKeyMarker       string              `xml:"NextKeyMarker,omitempty"`
+	NextVersionIDMarker string              `xml:"NextVersionIdMarker,omitempty"`
+	EncodingType        string              `xml:"EncodingType,omitempty"`
+	MaxKeys             int                 `xml:"MaxKeys"`
+	IsTruncated         bool                `xml:"IsTruncated"`
+	Versions            []ObjectVersion     `xml:"Version"`
+	DeleteMarkers       []DeleteMarkerEntry `xml:"DeleteMarker"`
 }
 
 // LocationConstraint is for GetBucketLocation
