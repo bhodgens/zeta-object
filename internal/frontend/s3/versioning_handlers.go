@@ -237,11 +237,18 @@ func isSidecarShapedVersionID(id string) bool {
 // the old ETag, and the sidecar's prior version history (the backend Put
 // rewrites the sidecar wholesale, so the record step must restore the
 // history it captured). nil (pointer) means "no prior object" — a create
-// writes no version.
+// writes no version — AND, in the reflink modes, "clone failed
+// fail-soft" (the PUT proceeds; no version record).
 type capturedObjectVersion struct {
 	data         []byte
 	etag         string
 	priorEntries []sidecarVersionEntry
+	// reflink carries the capture-time clone result for the
+	// reflink/both modes (nil for the sidecar capture). Non-nil means
+	// recordCapturedObjectVersion writes ONLY the sidecar bookkeeping
+	// entry (the data clone is already on disk under .versions-r) and
+	// then applies retention.
+	reflink *capturedReflinkVersion
 }
 
 // errNoPriorVersion is the sentinel returned by captureCurrentObjectVersion
@@ -249,11 +256,20 @@ type capturedObjectVersion struct {
 // sentinel keeps the capture contract explicit instead of a nil,nil return.
 var errNoPriorVersion = errors.New("s3: no prior object version to record")
 
-// captureCurrentObjectVersion reads the object's CURRENT bytes + version
-// history for the record step, BEFORE the caller's plain overwrite.
-// errNoPriorVersion means the object does not exist (a create records
-// nothing). Only real I/O failures return any other error.
+// captureCurrentObjectVersion captures the object's CURRENT state for
+// the record step, BEFORE the caller's plain overwrite. Dispatch is by
+// the installed zfs_versioning mode: "reflink"/"both" clone the current
+// file into .versions-r (fail-soft on FICLONE failure — a nil-capture
+// contract via errNoPriorVersion-like semantics, see
+// captureReflinkObjectVersion); every other mode takes the sidecar
+// capture (full byte read). errNoPriorVersion means the object does not
+// exist (a create records nothing). Only real I/O failures return any
+// other error.
 func captureCurrentObjectVersion(bucketPath, objectName string) (*capturedObjectVersion, error) {
+	switch zfsVersioningModeFor() {
+	case "reflink", "both":
+		return captureReflinkDispatch(bucketPath, objectName)
+	}
 	s := sidecarVersionStore{bucketPath: bucketPath}
 	meta, ok := readObjectMetaForList(filepath.Join(bucketPath, ".metadata"), objectName)
 	if !ok {
@@ -278,16 +294,50 @@ func captureCurrentObjectVersion(bucketPath, objectName string) (*capturedObject
 	return &capturedObjectVersion{data: raw, etag: meta.ETag, priorEntries: vs.Versions}, nil
 }
 
+// captureReflinkDispatch wraps captureReflinkObjectVersion into the
+// handler-level capturedObjectVersion product: the clone rides the
+// capture (reflink field); the captured history comes from the shared
+// sidecar (the backend will rewrite it on Put, so the record step must
+// restore it). A failed (fail-soft) clone yields a NON-NIL capture with
+// reflink.cloneOK=false — the record step then writes nothing.
+func captureReflinkDispatch(bucketPath, objectName string) (*capturedObjectVersion, error) {
+	r, err := captureReflinkObjectVersion(bucketPath, objectName)
+	if err != nil {
+		return nil, err
+	}
+	// Prior history lives in the (about-to-be-rewritten) sidecar.
+	s := reflinkVersionStore{sidecarVersionStore{bucketPath: bucketPath}}
+	vs, vsErr := s.readVersionedSidecar(objectName)
+	if vsErr != nil && !isNoSuchKeyErr(vsErr) {
+		return nil, vsErr
+	}
+	return &capturedObjectVersion{priorEntries: vs.Versions, reflink: r}, nil
+}
+
 // recordCapturedObjectVersion writes the captured pre-overwrite bytes as
 // one version and RESTORES the captured history beneath the new entry.
 // Called AFTER the successful backend Put: the backend owns the sidecar
 // format and rewrites it wholesale on Put, so the pre-write history must
 // ride the capture (a plain PutVersion read-modify-write would start
 // from an already-wiped sidecar and collapse the history to one entry).
-// Version recording is ALWAYS the sidecar mechanism (snapshots mode
-// never reaches this path — the handler gate skips it; snapshots are
-// host policy and the plain overwrite stands).
+// Version recording is ALWAYS the sidecar mechanism for bookkeeping
+// (snapshots mode never reaches this path — the handler gate skips it;
+// snapshots are host policy and the plain overwrite stands). In the
+// reflink modes (leaf 06) the DATA file was already cloned at capture
+// time into .versions-r — this step writes ONLY the sidecar bookkeeping
+// entry (pre-minted id, old ETag/size), then applies retention.
 func recordCapturedObjectVersion(bucketPath, bucketName, objectName string, captured *capturedObjectVersion) error {
+	if captured.reflink != nil {
+		// Reflink/both mode: a fail-soft clone means NO version record
+		// (the PUT already succeeded; the version is skipped by design).
+		if !captured.reflink.cloneOK {
+			return nil
+		}
+		if err := recordCapturedReflinkObjectVersion(bucketPath, objectName, captured.reflink); err != nil {
+			return err
+		}
+		return nil
+	}
 	s := sidecarVersionStore{bucketPath: bucketPath}
 	unlock := lockObject(s.sidecarPath(objectName))
 	defer unlock()

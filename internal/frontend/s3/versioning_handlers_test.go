@@ -493,11 +493,14 @@ func TestVersionStoreFor_BothModeYieldsMergeStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := versionStoreFor(bp, nil, "both")
-	m, ok := s.(mergeVersionStore)
+	// Leaf 06: "both" = reflink + sidecar-layout history merged
+	// (reflinkBothVersionStore); the OLD merge (sidecar+snapshots) is
+	// gone — snapshot entries stay OUT of per-write modes by design.
+	m, ok := s.(reflinkBothVersionStore)
 	if !ok {
-		t.Fatalf("both mode yielded %T, want mergeVersionStore", s)
+		t.Fatalf("both mode yielded %T, want reflinkBothVersionStore", s)
 	}
-	// Writes route to the sidecar store: state round-trip through the
+	// Writes route to the reflink store: state round-trip through the
 	// SHARED marker.
 	if err := m.SetState("b", "Enabled"); err != nil {
 		t.Fatalf("SetState: %v", err)

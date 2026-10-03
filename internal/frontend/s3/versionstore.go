@@ -79,25 +79,31 @@ var errVersioningUnimplemented = errors.New("s3: versioning mode not implemented
 var ErrVersioningModeInvalid = errors.New("s3: invalid versioning mode")
 
 // versionStoreFor resolves the version store for a bucket given the
-// server's zfs_versioning mode: "sidecar" | "snapshots" | "both"
-// (Contract 1). Non-ZFS buckets always get the sidecar store; mode applies
-// to ZFS-backed buckets only (leaf 03 wiring decides bucket kind — the
-// factory takes the mode it is told to use). zdb may be nil for the
-// sidecar mode (it is only needed by the ZFS snapshot store).
+// server's zfs_versioning mode: "sidecar" | "snapshots" | "reflink" |
+// "both" (Contract 1, extended by leaf 06). Non-ZFS buckets always get
+// the sidecar store; mode applies to ZFS-backed buckets only (leaf 03
+// wiring decides bucket kind — the factory takes the mode it is told to
+// use). zdb may be nil for the sidecar/reflink modes (it is only needed
+// by the ZFS snapshot store).
 func versionStoreFor(bucketPath string, zdb *metadata.ZmetadDB, mode string) versionStore {
 	switch mode {
 	case "sidecar", "":
 		return sidecarVersionStore{bucketPath: bucketPath}
 	case "snapshots":
 		return zfsSnapshotVersionStore{bucketPath: bucketPath, zdb: zdb}
+	case "reflink":
+		return reflinkVersionStore{sidecarVersionStore{bucketPath: bucketPath}}
 	case "both":
-		// Leaf 03: the merge wrapper — sidecar per-write versions are
-		// authoritative for writes and delete markers; snapshot entries
-		// merge into List and Open resolves sidecar ids first, then
-		// snapshot names.
-		return mergeVersionStore{
-			sidecar:  sidecarVersionStore{bucketPath: bucketPath},
-			snapshot: zfsSnapshotVersionStore{bucketPath: bucketPath, zdb: zdb},
+		// Leaf 06: "both" = reflink + sidecar-layout history MERGED
+		// (per-write histories are one timeline; snapshot entries stay
+		// OUT — a merged snapshot window would double-render writes the
+		// per-write stores already recorded). Writes land in the
+		// reflink layout; Open resolves .versions-r first, then the
+		// plain .versions layout (history written while the mode was
+		// "sidecar" stays readable across an operator's mode switch).
+		return reflinkBothVersionStore{
+			reflink: reflinkVersionStore{sidecarVersionStore{bucketPath: bucketPath}},
+			sidecar: sidecarVersionStore{bucketPath: bucketPath},
 		}
 	default:
 		return unimplementedVersionStore{mode: mode}
