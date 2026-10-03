@@ -37,6 +37,8 @@ Reading the columns:
 
 | Operation | Status | Notes / proof |
 |---|---|---|
+| CreateBucket (`PUT /<bucket>`) | Implemented (opt-in) | Plain-dir mode: 200, mkdir + `.metadata/`. ZFS dataset mode (`zfs_bucket_datasets: true`): 200, the bucket becomes dataset `<dataDirDataset>/<bucket>` (`zfs create`); fail-loud 500 InternalError on provisioning failure - never a silent plain-dir fallback. e2e 34 (`scripts/e2e/cases/34-zfs-bucket-datasets.sh`), zfs-validate ([docs/validation-zfs-bucket-datasets-2026-10-06.md](validation-zfs-bucket-datasets-2026-10-06.md)) |
+| DeleteBucket (`DELETE /<bucket>`) | Implemented (opt-in) | Plain-dir mode: 204 + RemoveAll; empty-only (`409 BucketNotEmpty` otherwise). Dataset mode: 204, `zfs destroy <dataDirDataset>/<bucket>`; a dataset holding snapshots answers `409 BucketHasSnapshots` with the snapshot count and the `zfs destroy <ds>@<snapshot>` hint in the body - never a recursive destroy, snapshots are operator-removed. e2e 34 (`scripts/e2e/cases/34-zfs-bucket-datasets.sh`), zfs-validate ([docs/validation-zfs-bucket-datasets-2026-10-06.md](validation-zfs-bucket-datasets-2026-10-06.md)) |
 | PUT / GET / HEAD / DELETE object | Implemented | HEAD carries full metadata; DELETE idempotent 204. e2e 02/03, conformance |
 | PUT ?uploads / parts / complete (multipart) | Implemented | parts 1-10000, expiry sweeper, `ETag` assembly. e2e 05, conformance |
 | ListObjectsV2 (+V1 shape) | Implemented | prefix/delimiter/continuation-token/`encoding-type=url`. e2e 04, conformance |

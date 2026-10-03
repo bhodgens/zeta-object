@@ -28,7 +28,7 @@ Most "S3-compatible" servers are the same idea restated: a service that owns a b
 2. **Existing directories become S3 buckets with zero migration.** Bucket `logs` at `/var/log` means the decade of log files already on disk is immediately listable, downloadable, and presign-able over S3 - byte-for-byte, no import, no copy. Symlinks are followed, so a bucket can live anywhere.
 3. **Filesystem capabilities become S3 capabilities.** When a bucket sits on a ZFS dataset polled by the zmetad daemon (per-dataset file-op history exported to SQLite), zeta-object serves `GET /<bucket>?events` and `GET /<bucket>?versions` derived from the kernel's own record of what happened to each file - create, rename, truncate, delete - with loss indicators. No hosted S3 offers object history; no opaque object server can borrow it from the filesystem. When the filesystem does not support it, the capability is simply absent (a clean 503), never faked.
 4. **Pluggable on both axes, honest about semantics.** Frontends (client protocols) and backends (storage) plug into one neutral object model, and the seams reject what a protocol cannot express instead of silently emulating it. A parity gate proves an enabled metadata provider changes nothing about core S3 responses.
-5. **Small enough to read, hardened enough to trust.** One Go binary, a tiny audited dependency set (all licenses in docs/licenses/), and a gate wall: 1100+ unit test functions, a 703-assert e2e suite over 34 cases, race detector, fuzzing, ceph/s3-tests conformance ratchet, staticcheck/gosec, and a pre-commit chain that enforces all of it. The codebase is small enough that an afternoon of reading covers every line that touches your data.
+5. **Small enough to read, hardened enough to trust.** One Go binary, a tiny audited dependency set (all licenses in docs/licenses/), and a gate wall: 1100+ unit test functions, a 703+-assert e2e suite over 35 cases, race detector, fuzzing, ceph/s3-tests conformance ratchet, staticcheck/gosec, and a pre-commit chain that enforces all of it. The codebase is small enough that an afternoon of reading covers every line that touches your data.
 
 The honest, per-operation capability matrix for every protocol — what is implemented, what degrades and how, what is absent — lives in [docs/protocol-compatibility.md](docs/protocol-compatibility.md). The per-operation **S3 behavior contract** (request/response shapes, error codes, and every deliberate divergence from AWS S3, maintained under the upstream-zfs documentation contract): [docs/s3-behavior.md](docs/s3-behavior.md).
 
@@ -48,6 +48,8 @@ The honest, per-operation capability matrix for every protocol — what is imple
 **Event Actions** - run shell commands on upload/download/delete with glob matching, per-subdirectory merge/override/disable inheritance, inactivity triggers (e.g. `zfs snapshot` after 30 quiet minutes), safe single-quote shell-quoting of all variables, timeouts with process-group kill. See [Event Actions](#event-actions).
 
 **Metadata capability endpoints** - when a bucket's filesystem provides an event log (ZFS `org.openzfs:events`, exported by the zmetad daemon to SQLite): object and bucket event history as JSON, a versions-style XML listing derived from the log (delete markers included, `IsLossy`/`RecordsLost`/`RingSwaps` loss indicators - swaps and lost records are separate classes, never folded), probed lazily per bucket. Absent capability = clean 503, zero overhead.
+
+**ZFS bucket datasets** - opt-in per-bucket ZFS provisioning: with `zfs_bucket_datasets` on, every S3-created bucket becomes its own dataset (`zfs create <dataDirDataset>/<bucket>`), so snapshots, quotas, and `.zfs/snapshot/` history are per-bucket-correct; bucket delete destroys the dataset, and a dataset with snapshots refuses deletion with `409 BucketHasSnapshots` (never a recursive destroy - the operator removes snapshots). See [ZFS bucket datasets](#zfs-bucket-datasets).
 
 **Object tagging** - `x-amz-tagging` on PUT, the `?tagging` GET/PUT/DELETE sub-resource, `TagCount` on GET/HEAD, and tag COPY/REPLACE directives on CopyObject, with S3 validation limits (10 tags, 128-byte keys, 256-byte values, reserved `aws:` prefix → `InvalidTag`). Tags live in the per-object `.metadata/` JSON sidecar (the charter-sanctioned metadata path) for both bucket kinds today; ZFS-native tag storage lands with upstream zfs-metadata#13 behind the `tagStore` seam — until then the sidecar is the v1 store for ZFS buckets too.
 
@@ -76,7 +78,7 @@ Quality gates and tests:
 ```bash
 make test         # unit tests with coverage summary
 make check        # full local gate: build, vet, fmt, lint, tests, race, vuln, secrets
-make e2e          # end-to-end suite: 700+ asserts over 34 cases (incl. boto3 + mc + rclone interop)
+make e2e          # end-to-end suite: 700+ asserts over 35 cases (incl. boto3 + mc + rclone interop)
 ```
 
 ## Credentials Configuration
@@ -193,7 +195,7 @@ zeta-object uses a JSON configuration file (see `config.json.example` for a comm
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `dataDir` | `./data/` | Root directory for auto-discovered buckets. Any subdirectory (including symlinks) becomes a bucket. |
+| `dataDir` | `./data/` | Root directory for auto-discovered buckets. Any subdirectory (including symlinks) becomes a bucket; with `zfs_bucket_datasets` on, API-created buckets are ZFS datasets instead of plain directories. |
 | `listenAddr` | `:8443` | HTTPS listen address (host:port). |
 | `certFile` | `certs/cert.pem` | TLS certificate path. |
 | `keyFile` | `certs/key.pem` | TLS private key path. |
@@ -208,6 +210,8 @@ zeta-object uses a JSON configuration file (see `config.json.example` for a comm
 | `region` | `us-east-1` | SigV4 verification region; values are lowercased at load. See [Auth](#feature-highlights). |
 | `zfs_versioning` | `reflink` | ZFS-bucket versioning mechanism: `reflink` (FICLONE block-clone per-write versions under `.metadata/.versions-r/` — the default; fail-soft on filesystems without block cloning), `snapshots` (faux versioning from existing snapshots), `sidecar` (true per-write + delete markers), or `both` (reflink merged with sidecar-layout history). Applies to ZFS-backed buckets only — non-ZFS buckets always use the sidecar mechanism. Unknown values abort startup. See [S3 Versioning](#s3-versioning). |
 | `zfs_versioning_reflink_retention` | `0` (unlimited) | Reflink-mode version retention: count of version files retained PER KEY (newest N kept; oldest beyond the cap are pruned with their sidecar entries after each recorded version). `0`/unset = unlimited; a negative value aborts startup. Server-wide (per-bucket override is future work). See [S3 Versioning](#s3-versioning). |
+| `zfs_bucket_datasets` | `false` | Opt-in: S3-created buckets each become their own ZFS dataset (`<dataDirDataset>/<bucket>`); startup aborts unless `dataDir` is a ZFS mountpoint. See [ZFS bucket datasets](#zfs-bucket-datasets). |
+| `zfs_binary` | `zfs` | The `zfs` CLI used by `zfs_bucket_datasets` (PATH lookup). See [ZFS bucket datasets](#zfs-bucket-datasets). |
 
 Credentials are **not** set in the config file - environment variables only.
 
@@ -652,6 +656,27 @@ Reflink mode details:
 
 The versioning surface is covered end to end: e2e case `scripts/e2e/cases/32-versioning.sh` drives the sidecar path over the wire (`?versioning` enable/echo, overwrite-records-old-bytes, `?versions` newest-first render, delete-marker 404/405 semantics, suspend, off); e2e case `scripts/e2e/cases/33-reflink-versioning.sh` drives the reflink path honestly over a non-FICLONE filesystem (every PUT succeeds, `?versions` bounds, delete-marker semantics, retention bookkeeping). Section 10 of the ZFS validation harness (`scripts/zfs-validate/run-zfs-validation.sh`) proves snapshots-mode parity against a real OpenZFS host — manually-taken `sudo zfs snapshot`s become VersionIds, `?versions` lists them newest-first, `?versionId=<snapname>` reads the bytes as of that snapshot, and an unknown/expired snapshot answers an honest 404 — and section 11 proves the reflink mode against real ZFS block cloning: version files land under `.metadata/.versions-r/` with clone evidence (`st_nlink >= 2` plus a `cp --reflink=always` dataset probe), `?versionId` returns the pre-overwrite bytes, `retention=2` prunes the oldest, and delete markers suppress the plain delete.
 
+## ZFS bucket datasets
+
+By default every bucket is a plain directory under `dataDir`. With the opt-in `zfs_bucket_datasets` flag, each bucket created through the S3 API becomes its own ZFS dataset: `PUT /<bucket>` runs `zfs create <dataDirDataset>/<bucket>`, and `DELETE /<bucket>` runs `zfs destroy` on it. The backing filesystem stays the sole source of truth - the dataset mountpoint IS the bucket directory, with objects as plain files inside it.
+
+Configuration:
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `zfs_bucket_datasets` | `false` | Opt-in: buckets created via the API become child datasets of the dataDir's dataset. |
+| `zfs_binary` | `zfs` | The `zfs` CLI to exec (PATH lookup, same convention as `zmetad_binary`). |
+
+Startup validation is fail-loud: with the flag on, the server ABORTS at launch unless the `zfs_binary` resolves on PATH, `dataDir` is on ZFS, and its dataset name resolves (`zfs list -H -o name -t filesystem <dataDir>`). There is no lazy first-request failure and no silent fallback to plain directories. Unknown config keys still abort startup as everywhere else.
+
+Destroy policy - the honest-data rule: a dataset holding snapshots refuses `DELETE /<bucket>` with `409 Conflict` and code `BucketHasSnapshots`; the response body carries the snapshot count and the exact remediation (`zfs destroy <dataset>@<snapshot>`). The server NEVER destroys recursively (`zfs destroy -r` never appears in any argv) and never removes a snapshot itself - snapshots are host policy, so the operator decides when history dies. Until the operator destroys the snapshots, the dataset (and every byte in it) stays exactly where it was.
+
+Pre-feature buckets keep their semantics: directories that already existed under `dataDir` before the flag was turned on are plain directories, and deleting them still uses the legacy directory removal - the server probes each delete by dataset NAME (`zfs list` on the derived `<parent>/<bucket>`), never by path, so a plain dir can never be mistaken for a dataset. Custom-path buckets (`buckets` config map) are entirely unaffected - they were never creatable or deletable via the API and stay that way in dataset mode.
+
+Synergy with `zfs_versioning: snapshots`: snapshot faux-versioning reads the bucket's `.zfs/snapshot/<snap>/<key>`. With one shared dataset, every bucket sees the WHOLE pool's snapshot history through its own path; with a per-bucket dataset, `.zfs/snapshot/` is per-bucket-correct - each bucket's version history is exactly the snapshots that cover that bucket, and a per-bucket snapshot quota or schedule becomes possible for the operator.
+
+Coverage: e2e case `scripts/e2e/cases/34-zfs-bucket-datasets.sh` drives create/list/object round-trip/delete-dataset/snapshot-refusal/dotted-name over the wire (it skips gracefully on non-ZFS hosts; the feature-flagged launch is supplied by the ZFS validation harness), and the live proof on real OpenZFS is `docs/validation-zfs-bucket-datasets-2026-10-06.md` (leaf 05 of the zfs-bucket-datasets tree).
+
 ## Event Actions
 
 Configurable shell commands fire in response to S3 operations, via `.bucket-actions` files (JSON5) placed in bucket directories. Subdirectories inherit and can merge, override, or disable parent actions.
@@ -688,7 +713,7 @@ Inspect configured actions with `./scripts/show-bucket-actions.sh data/`.
 
 zeta-object is baselined against the industry-standard [ceph/s3-tests](https://github.com/ceph/s3-tests) suite. `make conformance` builds the server, launches it on a free HTTPS port, runs the in-scope pytest subset (277 tests - buckets, objects, listing, multipart, copy, conditional, range, presigned), and exits non-zero only when a previously-passing test regresses against the committed ratchet `scripts/conformance/baseline.txt`. The full matrix with per-failure triage: [docs/conformance/2026-09-28-matrix.md](docs/conformance/2026-09-28-matrix.md).
 
-The e2e suite (`make e2e`, 700+ asserts over 34 cases) additionally covers every user-facing surface - including custom buckets, backend/frontend configuration, the metadata endpoints, object tagging, multi-range GET, WebDAV locking, versioning, all four protocol frontends, and live boto3/mc/rclone interop - per the repo rule in [AGENTS.md](AGENTS.md). The full per-operation protocol matrix: [docs/protocol-compatibility.md](docs/protocol-compatibility.md).
+The e2e suite (`make e2e`, 700+ asserts over 35 cases) additionally covers every user-facing surface - including custom buckets, backend/frontend configuration, the metadata endpoints, object tagging, multi-range GET, WebDAV locking, versioning, ZFS bucket datasets, all four protocol frontends, and live boto3/mc/rclone interop - per the repo rule in [AGENTS.md](AGENTS.md). The full per-operation protocol matrix: [docs/protocol-compatibility.md](docs/protocol-compatibility.md).
 
 ## Architecture
 
@@ -732,7 +757,7 @@ make clean    # remove build artifacts
 ```bash
 make test              # unit tests with coverage summary
 make check             # build, vet, fmt, lint, tests, race, vuln, secrets
-make e2e               # 700+-assert end-to-end suite, 34 cases
+make e2e               # 700+-assert end-to-end suite, 35 cases
 make parity-test       # metadata-provider parity gate (FS vs provider-backed identical)
 make test-cover-enforce # aggregate coverage floor (ratchets up over time)
 make conformance       # ceph/s3-tests subset vs committed ratchet
