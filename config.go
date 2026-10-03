@@ -32,6 +32,13 @@ const (
 	// Config load owns the default - the s3 frontend receives a
 	// concrete value.
 	defaultS3Region = "us-east-1"
+
+	// ZFS versioning mechanism values (s3-versioning-2026-10 Contract
+	// 3). Config load owns the default ("snapshots") and validates the
+	// vocabulary - the s3 frontend receives a concrete value. Empty also
+	// selects the default at wiring time (a zero-value struct built
+	// outside loadConfig behaves like the documented default).
+	defaultZfsVersioning = "snapshots"
 )
 
 // authModeNone is the opt-in zero-auth dev mode value for auth.mode
@@ -90,6 +97,16 @@ type ServerConfig struct {
 	// load - one place owns the default; values are lowercased at load
 	// (SigV4 regions are lowercase).
 	Region string `json:"region"`
+
+	// ZfsVersioning selects the versioning mechanism for ZFS-backed
+	// buckets (s3-versioning-2026-10 Contract 3): "snapshots" (faux
+	// versioning from the dataset's existing snapshots — the default),
+	// "sidecar" (true per-write versioning + delete markers), or "both"
+	// (sidecar merged with snapshot entries; ?versionId resolves sidecar
+	// ids first, then snapshot names). Non-ZFS buckets always use the
+	// sidecar store regardless of this key. Absent/empty -> the default
+	// at config load; an unknown value aborts startup.
+	ZfsVersioning string `json:"zfs_versioning"`
 
 	// AuditLog configures the append-only request audit log (charter
 	// exception, decided 2026-10-02). nil/absent = disabled (default off).
@@ -283,14 +300,15 @@ var serverConfig = ServerConfig{
 // parse can never leave the global partially mutated.
 func defaultServerConfig() ServerConfig {
 	return ServerConfig{
-		DataDir:      defaultDataDir,
-		Buckets:      make(map[string]string),
-		ListenAddr:   defaultListenAddr,
-		CertFile:     defaultCertFile,
-		KeyFile:      defaultKeyFile,
-		ZmetadDBPath: defaultZmetadDBPath,
-		ZmetadBinary: defaultZmetadBinary,
-		Region:       defaultS3Region,
+		DataDir:       defaultDataDir,
+		Buckets:       make(map[string]string),
+		ListenAddr:    defaultListenAddr,
+		CertFile:      defaultCertFile,
+		KeyFile:       defaultKeyFile,
+		ZmetadDBPath:  defaultZmetadDBPath,
+		ZmetadBinary:  defaultZmetadBinary,
+		Region:        defaultS3Region,
+		ZfsVersioning: defaultZfsVersioning,
 	}
 }
 
@@ -347,6 +365,16 @@ func loadConfig(configPath string) error {
 	if cfg.Region == "" {
 		cfg.Region = defaultS3Region
 	}
+	// zfs_versioning: absent/empty -> default; anything outside the
+	// Contract 3 vocabulary is a loud startup failure (s3-versioning
+	// tree Contract 3) - a typo must never silently pick a mechanism.
+	switch cfg.ZfsVersioning {
+	case "":
+		cfg.ZfsVersioning = defaultZfsVersioning
+	case "snapshots", "sidecar", "both":
+	default:
+		return fmt.Errorf("invalid zfs_versioning %q (want \"snapshots\", \"sidecar\", or \"both\")", cfg.ZfsVersioning)
+	}
 	// Absent/empty frontends array == S3 on the default listener (leaf 03
 	// backward-compatibility rule).
 	if len(cfg.Frontends) == 0 {
@@ -370,19 +398,20 @@ func loadConfig(configPath string) error {
 // A null buckets value fails with the bucket's name in the message.
 func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	type alias struct {
-		DataDir      string                `json:"dataDir"`
-		ListenAddr   string                `json:"listenAddr"`
-		CertFile     string                `json:"certFile"`
-		KeyFile      string                `json:"keyFile"`
-		Frontends    []FrontendConfig      `json:"frontends"`
-		Backends     map[string]BackendCfg `json:"backends"`
-		Buckets      bucketsRaw            `json:"buckets"`
-		AuditLog     *AuditLogConfig       `json:"auditLog"`
-		Identities   []auth.IdentityConfig `json:"identities"`
-		Auth         AuthConfig            `json:"auth"`
-		ZmetadDBPath string                `json:"zmetad_db_path"`
-		ZmetadBinary string                `json:"zmetad_binary"`
-		Region       string                `json:"region"`
+		DataDir       string                `json:"dataDir"`
+		ListenAddr    string                `json:"listenAddr"`
+		CertFile      string                `json:"certFile"`
+		KeyFile       string                `json:"keyFile"`
+		Frontends     []FrontendConfig      `json:"frontends"`
+		Backends      map[string]BackendCfg `json:"backends"`
+		Buckets       bucketsRaw            `json:"buckets"`
+		AuditLog      *AuditLogConfig       `json:"auditLog"`
+		Identities    []auth.IdentityConfig `json:"identities"`
+		Auth          AuthConfig            `json:"auth"`
+		ZmetadDBPath  string                `json:"zmetad_db_path"`
+		ZmetadBinary  string                `json:"zmetad_binary"`
+		Region        string                `json:"region"`
+		ZfsVersioning string                `json:"zfs_versioning"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
@@ -401,6 +430,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	c.ZmetadDBPath = a.ZmetadDBPath
 	c.ZmetadBinary = a.ZmetadBinary
 	c.Region = a.Region
+	c.ZfsVersioning = a.ZfsVersioning
 	c.AuditLog = a.AuditLog
 	a.Buckets.apply(c)
 	return c.bucketsErr

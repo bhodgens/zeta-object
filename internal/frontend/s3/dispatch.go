@@ -323,6 +323,18 @@ func (f *Frontend) bucketLevelDispatch(w http.ResponseWriter, r *http.Request, b
 		listObjectVersionsHandler(w, r, bucketName)
 		return
 	}
+	// s3-versioning leaf 03: the ?versioning sub-resource —
+	// PUT SetBucketVersioning / GET GetBucketVersioning (Contract 2).
+	if _, ok := r.URL.Query()["versioning"]; ok {
+		switch r.Method {
+		case "PUT":
+			putBucketVersioningHandler(w, r, bucketName)
+			return
+		case "GET":
+			getBucketVersioningHandler(w, r, bucketName)
+			return
+		}
+	}
 	// Leaf 3.5: DeleteObjects sub-resource (POST /bucket?delete)
 	if _, ok := r.URL.Query()["delete"]; ok && r.Method == "POST" {
 		deleteObjectsHandler(w, r, bucketName)
@@ -397,6 +409,14 @@ func (f *Frontend) objectLevelDispatch(w http.ResponseWriter, r *http.Request, b
 			deleteObjectTaggingHandler(w, r, bucketName, objectName)
 			return
 		}
+	}
+
+	// s3-versioning leaf 03: the ?versionId sub-resource — a versioned
+	// read (GET/HEAD, Contract 2). Sits above the plain method switch.
+	// The body lives in dispatchObjectVersionId (gocyclo: keep this
+	// dispatch under the complexity gate).
+	if objectVersionedDispatch(w, r, bucketName, objectName) {
+		return
 	}
 
 	switch r.Method {

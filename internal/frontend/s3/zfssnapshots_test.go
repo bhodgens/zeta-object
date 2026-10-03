@@ -239,7 +239,7 @@ func TestZfsSnapshotVersionStore_List_DatasetNotTracked(t *testing.T) {
 	mountpoint := t.TempDir()
 	store := zfsSnapshotVersionStore{
 		bucketPath: filepath.Join(mountpoint, "bkt"),
-		zdb: fakeSnapshotResolver{dsErr: &metadata.DatasetNotTrackedError{Path: mountpoint + "/bkt"}},
+		zdb:        fakeSnapshotResolver{dsErr: &metadata.DatasetNotTrackedError{Path: mountpoint + "/bkt"}},
 	}
 	scriptZfsSnapshotRunner(t, "", nil)
 
@@ -369,10 +369,6 @@ func TestVersionStoreFor_SnapshotsModeYieldsZfsSnapshotStore(t *testing.T) {
 	st := versionStoreFor(bp, nil, "snapshots")
 	if _, ok := st.(zfsSnapshotVersionStore); !ok {
 		t.Fatalf("snapshots mode yielded %T, want zfsSnapshotVersionStore", st)
-	}
-	// both-mode merge wrapper is leaf 03; still fails loudly.
-	if _, err := versionStoreFor(bp, nil, "both").State("b"); !errors.Is(err, errVersioningUnimplemented) {
-		t.Errorf("both mode must stay unimplemented placeholder, got %v", err)
 	}
 }
 

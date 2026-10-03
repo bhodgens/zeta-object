@@ -39,7 +39,7 @@ Most "S3-compatible" servers are the same idea restated: a service that owns a b
 
 ## Feature highlights
 
-**S3 core** - buckets, objects, multipart (parts 1-10000, expiry sweeper), ListObjectsV2 (prefix/delimiter/continuation/`encoding-type=url`), CopyObject (COPY/REPLACE directives), object tagging (`x-amz-tagging` on PUT/COPY with COPY/REPLACE directives, the `?tagging` GET/PUT/DELETE sub-resource, `TagCount` on GET/HEAD), batch DeleteObjects, `?versions` listing, Range requests (206/416), conditional GET (If-Match/If-None-Match/If-(Un)Modified-Since), presigned URLs, verified `aws-chunked` streaming signatures.
+**S3 core** - buckets, objects, multipart (parts 1-10000, expiry sweeper), ListObjectsV2 (prefix/delimiter/continuation/`encoding-type=url`), CopyObject (COPY/REPLACE directives), object tagging (`x-amz-tagging` on PUT/COPY with COPY/REPLACE directives, the `?tagging` GET/PUT/DELETE sub-resource, `TagCount` on GET/HEAD), batch DeleteObjects, `?versions` listing, S3 versioning (`?versioning` enable/echo, versioned overwrites, delete markers, `?versionId` reads - sidecar mechanism for file-backed buckets, snapshot-derived faux versioning or opt-in sidecar/both for ZFS buckets via `zfs_versioning`), Range requests (206/416), conditional GET (If-Match/If-None-Match/If-(Un)Modified-Since), presigned URLs, verified `aws-chunked` streaming signatures.
 
 **Auth** - AWS Signature Version 4 (header and presigned), 15-minute clock-skew window, configurable verification region (default `us-east-1`).
 
@@ -204,6 +204,7 @@ zeta-object uses a JSON configuration file (see `config.json.example` for a comm
 | `zmetad_db_path` | `/var/lib/zfs/zmetad.db` | Path to the zmetad SQLite export database the ZFS-events provider reads. See [Metadata Capability Endpoints](#metadata-capability-endpoints-zfs-events). |
 | `zmetad_binary` | `zmetad` | zmetad executable reserved for the provider-level purge operation (`--purge`); purge is not exposed over HTTP (see Purge below). Defaults to a `PATH` lookup. |
 | `region` | `us-east-1` | SigV4 verification region; values are lowercased at load. See [Auth](#feature-highlights). |
+| `zfs_versioning` | `snapshots` | ZFS-bucket versioning mechanism: `snapshots` (faux versioning from existing snapshots), `sidecar` (true per-write + delete markers), or `both` (merged). Applies to ZFS-backed buckets only — non-ZFS buckets always use the sidecar mechanism. Unknown values abort startup. See [S3 Versioning](#s3-versioning). |
 
 Credentials are **not** set in the config file - environment variables only.
 
@@ -605,6 +606,38 @@ of that history. To purge a dataset's history, run `zmetad --purge
 admin-tier grant lands later, wiring an authenticated purge endpoint
 gated on that tier is the right shape.
 
+## S3 Versioning
+
+Buckets can be versioned: overwrites preserve the old bytes as retrievable versions, deletes write a delete marker instead of destroying data, and any version is readable by ID — standard S3 semantics over plain files. Version state and versioned data live in the bucket's own metadata area (`<bucket>/.metadata/.versioning` marker; versioned copies under `<bucket>/.metadata/.versions/<key-sha>/<versionId>`), so the backing filesystem stays the sole source of truth.
+
+### Enabling
+
+`PUT /<bucket>?versioning` with the standard document; `GET /<bucket>?versioning` echoes the state (no `Status` element = Off):
+
+```xml
+<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Status>Enabled</Status>
+</VersioningConfiguration>
+```
+
+Once enabled:
+
+*   **PUT overwrite** — the object's previous bytes become one version; the write itself proceeds normally. `x-amz-version-id` is not yet returned on plain PUTs.
+*   **DELETE** — writes a delete marker (the data file and sidecar are untouched) and answers `204`. A plain `GET` of a delete-marked key answers `404` with `x-amz-delete-marker: true`; `GET ?versionId=<marker>` answers `405 Method Not Allowed` with the same header.
+*   **GET ?versionId=\<id\>** — reads any recorded version (`200` + `x-amz-version-id`). An unknown version ID answers `400 InvalidArgument`; an expired ZFS snapshot window answers an honest `404`.
+*   **Suspended** — overwrites and deletes revert to plain (non-versioned) semantics; previously recorded versions remain readable.
+*   **Off** — byte-identical to pre-versioning behavior; no versioning state is ever written to the bucket.
+
+### Versioning mechanisms per bucket kind (config key `zfs_versioning`)
+
+| Mode | Bucket kind | Mechanism | Delete markers | `?versionId` reads | History fidelity |
+|------|-------------|-----------|----------------|--------------------|------------------|
+| `snapshots` (default) | ZFS-backed | FAUX versioning from the dataset's EXISTING snapshots — no snapshots are taken; VersionId = the snapshot name | no (a deleted key just loses future snapshot presence) | reads `<mountpoint>/.zfs/snapshot/<snap>/<key>` — windowed, honest 404 when the snapshot or the key is gone | whatever the host's snapshot policy retains |
+| `sidecar` | any (always used for non-ZFS buckets) | true per-write versioning: versioned copies in the bucket's `.metadata/.versions/` plus bookkeeping in the object's own sidecar | yes | exact bytes of every recorded write | exact per-write — but only for writes made through zeta-object |
+| `both` | ZFS-backed | sidecar per-write versions MERGED with snapshot-derived entries | yes (sidecar-authoritative) | sidecar IDs resolve first, then snapshot names | merged: exact per-write + the host's snapshot window |
+
+`snapshots` mode requires zmetad tracking of the bucket's dataset (the same prerequisite as the `?events` endpoints); an untracked or unopenable zmetad database makes snapshot reads answer honestly-not-found, never a substitution of current data. No new ZFS capability is required — the mode works against any snapshot policy the host already runs. Upstream zfs-metadata#15 (snapshot-on-write) is the future densification: snapshot mode becomes data-true per-write with zero code change here.
+
 ## Event Actions
 
 Configurable shell commands fire in response to S3 operations, via `.bucket-actions` files (JSON5) placed in bucket directories. Subdirectories inherit and can merge, override, or disable parent actions.
@@ -700,7 +733,7 @@ Every pull goes through the pre-commit chain (secrets scan, vet, error-pattern c
 *   Key rotation for `identities` is a SIGHUP reload (edit config.json → `kill -HUP`); the env pair still needs a restart. No OAuth/OIDC/token-based auth for S3 (SigV4 cannot express it).
 *   Region: defaults to `us-east-1`; set `region` in config.json to pin another region (strict credential-scope compare — a mismatch fails with `SignatureDoesNotMatch` naming the expected region). When `region` is left unset, default mode accepts any well-formed client region permissively with a log notice — a dev escape hatch; set `region` for a strict production posture.
 *   Object keys with `..` or `.metadata` path segments are rejected, and keys must be in canonical form (safety over S3 compatibility; no `a//b` aliasing).
-*   S3 versioning is not implemented; `?versions` lists existing objects, and the ZFS-events-derived version listing is an extension, not S3 versioning.
+*   S3 versioning `?versions` listing stays unversioned-shaped (each object = one `null` version); versioned listing render (Version/DeleteMarker XML entries from the version store) is planned next. The ZFS-events-derived version listing remains an extension, not S3 versioning.
 
 ## Roadmap
 

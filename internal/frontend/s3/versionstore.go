@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"time"
 
@@ -54,8 +55,8 @@ type versionStore interface {
 
 // versioning state values (the sidecar marker and the wire form agree).
 const (
-	versioningOff      = "Off"
-	versioningEnabled  = "Enabled"
+	versioningOff       = "Off"
+	versioningEnabled   = "Enabled"
 	versioningSuspended = "Suspended"
 )
 
@@ -90,9 +91,14 @@ func versionStoreFor(bucketPath string, zdb *metadata.ZmetadDB, mode string) ver
 	case "snapshots":
 		return zfsSnapshotVersionStore{bucketPath: bucketPath, zdb: zdb}
 	case "both":
-		// Leaf 03: mergeStore{sidecarVersionStore{...},
-		// zfsSnapshotVersionStore{...}}.
-		return unimplementedVersionStore{mode: mode}
+		// Leaf 03: the merge wrapper — sidecar per-write versions are
+		// authoritative for writes and delete markers; snapshot entries
+		// merge into List and Open resolves sidecar ids first, then
+		// snapshot names.
+		return mergeVersionStore{
+			sidecar:  sidecarVersionStore{bucketPath: bucketPath},
+			snapshot: zfsSnapshotVersionStore{bucketPath: bucketPath, zdb: zdb},
+		}
 	default:
 		return unimplementedVersionStore{mode: mode}
 	}
@@ -275,7 +281,7 @@ func (s sidecarVersionStore) writeVersionedSidecar(key string, vs versionedSidec
 	// Nested keys map to nested sidecar paths; the store stays
 	// self-sufficient even when called before the backend created the
 	// sidecar tree.
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { //nolint:gosec // G703: key is validateObjectKey-checked at every handler entry; path is the frozen sidecar layout.
 		return fmt.Errorf("s3: creating sidecar dir for %s: %w", key, err)
 	}
 	return writeFileAtomicJSON(path, vs, 0o644)
@@ -452,6 +458,121 @@ func (s sidecarVersionStore) Open(bucket, key, versionID string) (io.ReadCloser,
 	return f, entry, nil
 }
 
+// ---------- mergeVersionStore (both mode, leaf 03) ----------
+
+// mergeVersionStore implements versionStore for the "both" mode: the
+// sidecar store is authoritative (State/SetState/PutVersion/
+// PutDeleteMarker go to it — true per-write versions and delete
+// markers), while List merges snapshot-derived entries and Open
+// resolves sidecar ids FIRST, then snapshot names (the wire contract
+// for ?versionId in both mode).
+type mergeVersionStore struct {
+	sidecar  sidecarVersionStore
+	snapshot zfsSnapshotVersionStore
+}
+
+// State reads the SHARED bucket-level state marker (both stores read
+// the same file; the sidecar store is the canonical reader).
+func (m mergeVersionStore) State(bucket string) (string, error) {
+	return m.sidecar.State(bucket)
+}
+
+// SetState writes the SHARED bucket-level state marker.
+func (m mergeVersionStore) SetState(bucket, state string) error {
+	return m.sidecar.SetState(bucket, state)
+}
+
+// PutVersion writes a true per-write version through the sidecar store.
+func (m mergeVersionStore) PutVersion(bucket, key string, r io.Reader, size int64, etag string) (VersionEntry, error) {
+	return m.sidecar.PutVersion(bucket, key, r, size, etag)
+}
+
+// PutDeleteMarker appends a delete marker through the sidecar store
+// (both mode HAS delete markers — the snapshot store is never consulted
+// for writes).
+func (m mergeVersionStore) PutDeleteMarker(bucket, key string) (VersionEntry, error) {
+	return m.sidecar.PutDeleteMarker(bucket, key)
+}
+
+// List merges the sidecar history with snapshot-derived entries,
+// newest-first by LastModified. Sidecar entries keep their IsLatest
+// flags (the sidecar store owns recency for per-write versions); the
+// newest snapshot entry — when the key has NO sidecar history at all —
+// carries IsLatest instead. A key with neither any sidecar version nor
+// any snapshot presence is objectmodel.ErrNoSuchKey.
+func (m mergeVersionStore) List(bucket, key string) ([]VersionEntry, error) {
+	side, sideErr := m.sidecar.List(bucket, key)
+	var snaps []VersionEntry
+	snapErr := error(nil)
+	if m.snapshot.zdb != nil {
+		snaps, snapErr = m.snapshot.List(bucket, key)
+	}
+	switch {
+	case sideErr == nil && snapErr == nil:
+		merged := append(append([]VersionEntry{}, snaps...), side...)
+		sort.SliceStable(merged, func(i, j int) bool {
+			return merged[i].LastModified.After(merged[j].LastModified)
+		})
+		// IsLatest: the sidecar store's flag wins when present; else
+		// the newest merged entry (first position) is latest.
+		if !anyLatest(side) && len(merged) > 0 {
+			merged[0].IsLatest = true
+		}
+		return merged, nil
+	case sideErr == nil:
+		return side, nil
+	case snapErr == nil:
+		return snaps, nil
+	case isNoSuchKeyErr(sideErr) && isNoSuchKeyErr(snapErr):
+		return nil, sideErr // absent everywhere: honest NoSuchKey
+	case isNoSuchKeyErr(sideErr):
+		return nil, snapErr
+	case isNoSuchKeyErr(snapErr):
+		return nil, sideErr
+	default:
+		return nil, sideErr // both failed on real I/O: surface the primary
+	}
+}
+
+// anyLatest reports whether any entry claims IsLatest.
+func anyLatest(entries []VersionEntry) bool {
+	for _, e := range entries {
+		if e.IsLatest {
+			return true
+		}
+	}
+	return false
+}
+
+// Open resolves a version id: sidecar FIRST (a sidecar id always wins —
+// per-write versions are exact), then the snapshot name. The sidecar
+// store's error identity (ErrIsDeleteMarker, ErrNoSuchKey) propagates
+// for sidecar ids; an id unknown to both stores is the snapshot store's
+// ErrNoSuchKey (404-class, never current-data substitution).
+func (m mergeVersionStore) Open(bucket, key, versionID string) (io.ReadCloser, VersionEntry, error) {
+	rc, entry, sideErr := m.sidecar.Open(bucket, key, versionID)
+	if sideErr == nil {
+		return rc, entry, nil
+	}
+	if errors.Is(sideErr, ErrIsDeleteMarker) {
+		return nil, entry, sideErr // delete markers exist in both mode
+	}
+	if !isNoSuchKeyErr(sideErr) {
+		return nil, VersionEntry{}, sideErr // real I/O failure: surface it
+	}
+	if m.snapshot.zdb == nil {
+		return nil, VersionEntry{}, sideErr
+	}
+	rc, entry, snapErr := m.snapshot.Open(bucket, key, versionID)
+	if snapErr == nil {
+		return rc, entry, nil
+	}
+	if !isNoSuchKeyErr(snapErr) {
+		return nil, VersionEntry{}, snapErr
+	}
+	return nil, VersionEntry{}, sideErr // unknown to both: 404-class
+}
+
 // parseJSONStrictEnough decodes JSON tolerantly (unknown fields ignored —
 // forward compatibility across sidecar writers).
 func parseJSONStrictEnough(raw []byte, v any) error {
@@ -471,6 +592,7 @@ func isNoSuchKeyErr(err error) bool {
 // interface, and its legacy metadata embedding keeps the frozen sidecar
 // JSON keys.
 var (
-	_ versionStore             = sidecarVersionStore{}
+	_ versionStore                     = sidecarVersionStore{}
+	_ versionStore                     = mergeVersionStore{}
 	_ objectmodel.LegacyObjectMetadata = versionedSidecar{}.LegacyObjectMetadata
 )

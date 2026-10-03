@@ -21,6 +21,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"path/filepath"
 	"sync"
 	"time"
@@ -61,6 +62,20 @@ func installS3Seams() {
 	// (SetRegion("")) is a test-only escape hatch, unreachable from a
 	// launched server by design. Startup-only wiring.
 	s3.SetRegion(serverConfig.Region)
+
+	// ZFS versioning mode + zmetad DB handle (s3-versioning-2026-10
+	// leaf 03): the config loader has validated + defaulted
+	// zfs_versioning, so the factory always receives a concrete mode.
+	// The DB opens read-only ONCE at startup (WAL lets readers run
+	// against the live daemon); an unopenable/missing DB stays nil and
+	// snapshots-mode resolution fails per request with the store's
+	// honest not-tracked error - never a silent degradation.
+	s3.InstallZfsVersioningMode(serverConfig.ZfsVersioning)
+	if db, dbErr := metadata.OpenZmetadDB(context.Background(), serverConfig.ZmetadDBPath); dbErr == nil {
+		s3.InstallZmetadDB(db)
+	} else {
+		log.Printf("zmetad database unavailable (%v): snapshots-mode versioning will answer honestly-not-found", dbErr)
+	}
 
 	// Data plane: install the SAME backendFor resolver the handlers used
 	// pre-move (config-driven lookup from backend_lookup.go).

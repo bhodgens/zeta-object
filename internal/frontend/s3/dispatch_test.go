@@ -167,24 +167,31 @@ func doSignedAs(t *testing.T, srv *httptest.Server, method, target, body, access
 	return resp
 }
 
-// TestS3Frontend_VersioningDegrades pins the capability degradation:
-// the declared Versioning=false capability is never silently emulated —
-// the versioning sub-resource is simply not routed (falling through to
-// the same default bucket handling as pre-move).
+// TestS3Frontend_VersioningDegrades — flipped by s3-versioning leaf 03:
+// the ?versioning sub-resource is now a REAL, routed sub-resource
+// (SetBucketVersioning), so a signed PUT ?versioning on an existing
+// bucket answers 200 and the state echoes back via GET — the opposite
+// of the old silent degradation. The never-emulated contract now lives
+// in the implemented semantics (status vocabulary, Off echo).
 func TestS3Frontend_VersioningDegrades(t *testing.T) {
 	srv := newTestServer(t)
 
 	put := doSigned(t, srv, "PUT", "/testbucket", "")
 	put.Body.Close()
 
-	// A versioning PUT is not a recognized sub-resource: it lands on the
-	// bucket-level PUT handler, which reports BucketAlreadyOwnedByYou —
-	// the versioning configuration is silently NOT applied (no emulation).
-	resp := doSigned(t, srv, "PUT", "/testbucket?versioning", "")
+	resp := doSigned(t, srv, "PUT", "/testbucket?versioning",
+		"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>")
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "BucketAlreadyOwnedByYou") && resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Fatalf("versioning PUT degraded to %d (body %s); want no silent emulation", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("versioning PUT = %d (body %s); want 200", resp.StatusCode, body)
+	}
+
+	get := doSigned(t, srv, "GET", "/testbucket?versioning", "")
+	defer get.Body.Close()
+	body, _ := io.ReadAll(get.Body)
+	if get.StatusCode != http.StatusOK || !strings.Contains(string(body), "<Status>Enabled</Status>") {
+		t.Fatalf("versioning GET = %d (body %s); want echoed Enabled", get.StatusCode, body)
 	}
 }
 

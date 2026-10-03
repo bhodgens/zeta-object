@@ -64,6 +64,29 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 		return
 	}
 
+	// s3-versioning leaf 03: on a versioning-ENABLED bucket the object's
+	// CURRENT bytes become one version on overwrite (versioning records
+	// the OLD version). The old bytes are captured BEFORE the plain
+	// overwrite; the version RECORD lands AFTER the successful backend
+	// Put — the backend owns the sidecar format and rewrites it wholesale
+	// on Put, so a pre-write record would be destroyed by the write
+	// itself (the same read-modify-write-after constraint the tagging
+	// integration documents). OFF/Suspended buckets skip both steps
+	// (byte-identical plain path; the state read on a never-versioned
+	// bucket is one missing-file stat). In snapshots mode the record is
+	// a no-op (ErrSnapshotsReadOnly → nil — snapshots are host policy).
+	bucketPathForVersioning := getBucketPath(bucketName)
+	var capturedOld *capturedObjectVersion
+	if state, stErr := versionStoreForBucket(bucketPathForVersioning).State(bucketName); stErr == nil && state == versioningEnabled {
+		captured, capErr := captureCurrentObjectVersion(bucketPathForVersioning, objectName)
+		if capErr != nil && !errors.Is(capErr, errNoPriorVersion) {
+			log.Printf("Error capturing prior version for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), capErr)
+			writeS3Error(w, "InternalError", "Error capturing object version.", http.StatusInternalServerError)
+			return
+		}
+		capturedOld = captured
+	}
+
 	// Read the request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -137,6 +160,16 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 		if tagStoreErr := tagStoreFor(getBucketPath(bucketName)).Put(objectName, putTags); tagStoreErr != nil {
 			log.Printf("Error storing tags for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), tagStoreErr)
 			writeS3ErrorFrom(w, tagStoreErr)
+			return
+		}
+	}
+	// s3-versioning leaf 03: record the CAPTURED old bytes as one version
+	// (after the successful write — the backend owns and rewrites the
+	// sidecar on Put). A capture of nil means create/no prior object.
+	if capturedOld != nil {
+		if recErr := recordCapturedObjectVersion(bucketPathForVersioning, bucketName, objectName, capturedOld); recErr != nil {
+			log.Printf("Error recording prior version for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), recErr)
+			writeS3Error(w, "InternalError", "Error recording object version.", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -430,6 +463,16 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 		return
 	}
 
+	// s3-versioning leaf 03: a plain GET on a delete-marked key answers
+	// 404 with x-amz-delete-marker: true. OFF/never-versioned buckets
+	// are unaffected (the consult short-circuits on the Off state; the
+	// normal path below keeps answering the plain 404).
+	if markerHidden, mErr := plainObjectDeleteMarker404(bucketPath, bucketName, objectName); mErr == nil && markerHidden {
+		w.Header().Set("x-amz-delete-marker", "true")
+		writeS3Error(w, "NotFound", "The specified key does not exist.", http.StatusNotFound)
+		return
+	}
+
 	// Data-plane flip (leaf 02): read metadata + open the data file through
 	// the Backend seam. The backend performs the corrupt-storagePath
 	// fallback and holds the leaf-4.8 reader locks across stat→open.
@@ -619,7 +662,24 @@ func deleteObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, obj
 		return
 	}
 
-	if err := deleteObjectCore(getBucketPath(bucketName), bucketName, objectName); err != nil {
+	// s3-versioning leaf 03: on a versioning-ENABLED bucket a DELETE
+	// writes a delete marker (data file untouched) and answers 204 —
+	// the plain backend delete is suppressed. OFF/Suspended buckets
+	// proceed to the plain delete unchanged (byte-identical path).
+	bucketPath := getBucketPath(bucketName)
+	suppress, markerErr := deleteObjectVersionedMarker(bucketPath, bucketName, objectName)
+	if markerErr != nil {
+		log.Printf("Error writing delete marker for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), markerErr)
+		writeS3ErrorFrom(w, markerErr)
+		return
+	}
+	if suppress {
+		log.Printf("Delete marker written for %s/%s (versioning enabled)", strconv.Quote(bucketName), strconv.Quote(objectName))
+		w.WriteHeader(http.StatusNoContent) // S3 spec: 204 No Content
+		return
+	}
+
+	if err := deleteObjectCore(bucketPath, bucketName, objectName); err != nil {
 		log.Printf("Error deleting object %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), err)
 		writeS3ErrorFrom(w, err)
 		return

@@ -99,6 +99,13 @@
   // "zmetad_db_path": "/var/lib/zfs/zmetad.db",
   // "zmetad_binary": "zmetad",
 
+  // ZFS-bucket versioning mechanism: "snapshots" (default - faux
+  // versioning from the dataset's existing snapshots), "sidecar" (true
+  // per-write versioning + delete markers), or "both" (merged). Applies
+  // to ZFS-backed buckets only; non-ZFS buckets always use the sidecar
+  // mechanism. See the README "S3 Versioning" section.
+  // "zfs_versioning": "snapshots",
+
   // Custom bucket name -> filesystem path mappings. These buckets appear in
   // ListBuckets alongside auto-discovered buckets, cannot be created or
   // deleted via the S3 API, and may point to any directory (incl. symlinks).

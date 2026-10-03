@@ -487,30 +487,8 @@ func TestVersionStoreFor_ModeDispatch(t *testing.T) {
 
 	// "snapshots" is wired to zfsSnapshotVersionStore as of leaf 02 —
 	// covered by TestVersionStoreFor_SnapshotsModeYieldsZfsSnapshotStore.
-	for _, mode := range []string{"both"} {
-		s := versionStoreFor(bp, nil, mode)
-		if _, ok := s.(unimplementedVersionStore); !ok {
-			t.Errorf("mode %s: expected unimplementedVersionStore placeholder, got %T", mode, s)
-		}
-		if _, err := s.State("b"); !errors.Is(err, errVersioningUnimplemented) {
-			t.Errorf("mode %s: State err = %v, want errVersioningUnimplemented", mode, err)
-		}
-		if _, err := s.PutVersion("b", "k", strings.NewReader("x"), 1, "e"); !errors.Is(err, errVersioningUnimplemented) {
-			t.Errorf("mode %s: PutVersion err = %v, want errVersioningUnimplemented", mode, err)
-		}
-		if _, err := s.PutDeleteMarker("b", "k"); !errors.Is(err, errVersioningUnimplemented) {
-			t.Errorf("mode %s: PutDeleteMarker err = %v", mode, err)
-		}
-		if _, err := s.List("b", "k"); !errors.Is(err, errVersioningUnimplemented) {
-			t.Errorf("mode %s: List err = %v", mode, err)
-		}
-		if _, _, err := s.Open("b", "k", "id"); !errors.Is(err, errVersioningUnimplemented) {
-			t.Errorf("mode %s: Open err = %v", mode, err)
-		}
-		if err := s.SetState("b", "Enabled"); !errors.Is(err, errVersioningUnimplemented) {
-			t.Errorf("mode %s: SetState err = %v", mode, err)
-		}
-	}
+	// "both" is wired to the mergeVersionStore as of leaf 03 — covered by
+	// TestVersionStoreFor_BothModeYieldsMergeStore below.
 
 	invalid := versionStoreFor(bp, nil, "bogus")
 	if _, err := invalid.State("b"); !errors.Is(err, errVersioningUnimplemented) {
