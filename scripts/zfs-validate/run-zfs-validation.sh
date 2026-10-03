@@ -589,6 +589,137 @@ check("recordsLost == gaps knownLost", evb.get("recordsLost") == known_lost,
 check("ringSwaps == gaps -1 count", evb.get("ringSwaps") == ring_swaps,
       f"wire={evb.get('ringSwaps')} db={ring_swaps}")
 
+# ---- 10. ZFS snapshots-mode versioning parity (s3-versioning-2026-10
+# leaf 05). The server config pins zfs_versioning "snapshots" (the
+# default). Snapshots are HOST POLICY: they are taken MANUALLY here
+# (sudo zfs snapshot), never by the server. VersionId = the snapshot
+# short name; ?versions lists the snapshots (newest first) that still
+# contain the key; ?versionId=<snap> reads the bytes as of that
+# snapshot. No delete markers exist in this mode.
+S10_KEY = "ver-snap.txt"
+S10_SNAP1 = "s1val"
+S10_SNAP2 = "s2val"
+sh(f"sudo zfs destroy -d '{DATASET}@{S10_SNAP1}' 2>/dev/null; true")
+sh(f"sudo zfs destroy -d '{DATASET}@{S10_SNAP2}' 2>/dev/null; true")
+# Enable versioning on the bucket FIRST: SetState writes the bucket-level
+# .versioning marker and ?versions routes on its presence (the marker
+# switches the listing from the legacy null-shape renderer to the
+# versioned one). Snapshots mode shares the sidecar state marker.
+s, h, b = sign("PUT", f"/{BUCKET}", query="versioning",
+               payload=(b'<VersioningConfiguration '
+                        b'xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+                        b'<Status>Enabled</Status>'
+                        b'</VersioningConfiguration>'),
+               content_type="application/xml")
+check("s10 PUT ?versioning Enabled on snapshots-mode bucket", s == 200,
+      f"{s} {b[:120]}")
+s, h, b = sign("GET", f"/{BUCKET}", query="versioning")
+check("s10 GET ?versioning echoes Enabled",
+      s == 200 and b"<Status>Enabled</Status>" in b, f"{s} {b[:120]}")
+# Snapshot ordering bound: `zfs list -o creation` formats with ctime()
+# at MINUTE resolution, so two snapshots taken in the same minute sort
+# as a tie (zfs name order kept — OLDEST-first on ties). The probe waits
+# 65s between the two snapshots so the newest-first assert below is
+# deterministic.
+# v1 exists at snapshot time s1val.
+s, h, b = sign("PUT", f"/{BUCKET}/{S10_KEY}", payload=b"snap-v1-bytes")
+check("s10 PUT v1 before snapshot s1val", s == 200, f"{s} {b[:120]}")
+snap_out = sh(f"sudo zfs snapshot '{DATASET}@{S10_SNAP1}' && sudo zfs list -H -t snapshot -o name -d 1 '{DATASET}' | grep -c '@{S10_SNAP1}$'")
+check("s10 manual snapshot s1val taken", snap_out.strip().endswith("1"), snap_out[:200])
+# v2 written AFTER s1val: only snapshot s2val will hold it.
+s, h, b = sign("PUT", f"/{BUCKET}/{S10_KEY}", payload=b"snap-v2-bytes")
+check("s10 PUT v2 (overwrite) after s1val", s == 200, f"{s} {b[:120]}")
+time.sleep(65)  # minute-resolution creation ordering (see bound above)
+snap_out = sh(f"sudo zfs snapshot '{DATASET}@{S10_SNAP2}' && sudo zfs list -H -t snapshot -o name -d 1 '{DATASET}' | grep -c '@{S10_SNAP2}$'")
+check("s10 manual snapshot s2val taken", snap_out.strip().endswith("1"), snap_out[:200])
+# The snapdir must be listable/readable for the store's stat walk
+# (snapdir=hidden still allows direct path access; visible is set
+# defensively for the harness's own ls-based probe below).
+sh(f"sudo zfs set snapdir=visible '{DATASET}' 2>/dev/null; true")
+
+# ?versions on the key lists BOTH snapshot-named versions, newest first
+# (s2val IsLatest), as <Version> entries keyed by the snapshot short name.
+# The document is parsed with ElementTree (namespace-agnostic): Go renders
+# the Version slice as one <Version> element per entry, but a regex split
+# on <Version>...</Version> mis-pairs entries in interleaved documents.
+s, h, b = sign("GET", f"/{BUCKET}", query="versions")
+check("s10 ?versions 200 on snapshots-mode bucket", s == 200, f"{s} {b[:150]}")
+try:
+    vx = b.decode("utf-8", "replace")
+except Exception:
+    vx = ""
+s10_entries = []
+try:
+    import xml.etree.ElementTree as ET
+    _root = ET.fromstring(b)
+    for _el in _root:
+        if _el.tag.rsplit("}", 1)[-1] != "Version":
+            continue
+        _key = _vid = ""
+        _lat = False
+        for _c in _el:
+            _t = _c.tag.rsplit("}", 1)[-1]
+            if _t == "Key":
+                _key = _c.text or ""
+            elif _t == "VersionId":
+                _vid = _c.text or ""
+            elif _t == "IsLatest":
+                _lat = (_c.text or "") == "true"
+        if _key == S10_KEY:
+            s10_entries.append((_vid, _lat))
+except Exception as _e:
+    check("s10 ?versions XML parses", False, f"{_e} {vx[:150]}")
+check("s10 ?versions lists both snapshot versions for the key",
+      [e[0] for e in s10_entries] == [S10_SNAP2, S10_SNAP1],
+      str(s10_entries)[:250])
+check("s10 newest snapshot entry IsLatest",
+      len(s10_entries) >= 2 and s10_entries[0][1] and not s10_entries[1][1],
+      str(s10_entries)[:250])
+check("s10 snapshots mode renders no <DeleteMarker>",
+      "<DeleteMarker>" not in vx, vx[:200])
+
+# ?versionId=<snapname> reads the BYTES AS OF THAT SNAPSHOT: s1val holds
+# v1 bytes (the overwrite happened after), s2val holds v2 bytes.
+s, h, b = sign("GET", f"/{BUCKET}/{S10_KEY}", query=f"versionId={S10_SNAP1}")
+check("s10 ?versionId=<s1val> 200", s == 200, f"{s} {b[:120]}")
+check("s10 ?versionId=<s1val> returns v1 bytes (pre-overwrite snapshot)",
+      b == b"snap-v1-bytes", f"len={len(b)}")
+check("s10 x-amz-version-id echoes the snapshot name",
+      h.get("x-amz-version-id") == S10_SNAP1, str(h.get("x-amz-version-id")))
+s, h, b = sign("GET", f"/{BUCKET}/{S10_KEY}", query=f"versionId={S10_SNAP2}")
+check("s10 ?versionId=<s2val> 200", s == 200, f"{s} {b[:120]}")
+check("s10 ?versionId=<s2val> returns v2 bytes", b == b"snap-v2-bytes",
+      f"len={len(b)}")
+# Plain (no versionId) GET keeps serving the CURRENT bytes.
+s, h, b = sign("GET", f"/{BUCKET}/{S10_KEY}")
+check("s10 plain GET still current bytes", s == 200 and b == b"snap-v2-bytes",
+      f"{s} len={len(b)}")
+# An expired/unknown snapshot id is an honest 404 (never current-data
+# substitution). A snapshot-form id is not sidecar-shaped, so the wire
+# rule is 404 NoSuchKey.
+s, h, b = sign("GET", f"/{BUCKET}/{S10_KEY}", query="versionId=no-such-snap")
+check("s10 unknown snapshot id -> honest 404", s == 404, f"{s} {b[:120]}")
+check("s10 unknown snapshot id error code NoSuchKey", b"<Code>NoSuchKey</Code>" in b,
+      b[:150])
+# A key that never existed has no snapshot presence: ?versions renders
+# nothing for it and the read is 404.
+s, h, b = sign("GET", f"/{BUCKET}/never-snap.txt", query=f"versionId={S10_SNAP1}")
+check("s10 absent key ?versionId -> 404", s == 404, f"{s} {b[:120]}")
+# Delete markers do not exist in snapshots mode: DELETE on a
+# versioning-enabled snapshots-mode bucket answers the typed
+# ErrDeleteMarkersUnsupported as a 4xx-class rejection (the snapshot
+# window is the history — the server never fabricates markers), and the
+# key stays plainly readable.
+s, h, b = sign("DELETE", f"/{BUCKET}/{S10_KEY}")
+check("s10 DELETE in snapshots mode rejected (no marker fabrication)",
+      400 <= s < 500, f"{s} {b[:120]}")
+s, h, b = sign("GET", f"/{BUCKET}/{S10_KEY}")
+check("s10 key still readable after rejected delete", s == 200 and
+      b == b"snap-v2-bytes", f"{s} len={len(b)}")
+s, h, b = sign("GET", f"/{BUCKET}/{S10_KEY}", query=f"versionId={S10_SNAP1}")
+check("s10 snapshot still serves the pre-overwrite bytes", s == 200 and
+      b == b"snap-v1-bytes", f"{s} len={len(b)}")
+
 failed = [(n, d) for n, ok, d in results if not ok]
 for n, ok, d in results:
     print(f"{'PASS' if ok else 'FAIL'} | {n}" + (f" | {d}" if not ok else ""))
