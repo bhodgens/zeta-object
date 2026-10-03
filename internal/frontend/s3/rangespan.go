@@ -25,8 +25,8 @@ type specStatus int
 
 const (
 	specOK            specStatus = iota
-	specMalformed                 // cannot interpret: whole header ignored (200)
-	specUnsatisfiable             // interpretable, out of range: candidate for 416
+	specMalformed                // cannot interpret: whole header ignored (200)
+	specUnsatisfiable            // interpretable, out of range: candidate for 416
 )
 
 func ParseMultiRange(header string, size int64) ([]Span, bool) {
@@ -36,8 +36,8 @@ func ParseMultiRange(header string, size int64) ([]Span, bool) {
 	}
 
 	spans := make([]Span, 0, 4)
-	anySpec := false       // at least one parseable (interpretable) spec
-	anyMalformed := false  // at least one syntactically bad spec
+	anySpec := false      // at least one parseable (interpretable) spec
+	anyMalformed := false // at least one syntactically bad spec
 	for specPart := range strings.SplitSeq(strings.TrimPrefix(header, unit), ",") {
 		specPart = strings.TrimSpace(specPart)
 		if specPart == "" {
