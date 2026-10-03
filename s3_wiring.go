@@ -72,6 +72,16 @@ func installS3Seams() {
 	// honest not-tracked error - never a silent degradation.
 	s3.InstallZfsVersioningMode(serverConfig.ZfsVersioning)
 	s3.InstallZfsVersioningReflinkRetention(serverConfig.ZfsVersioningReflinkRetention)
+
+	// ZFS bucket datasets (zfs-bucket-datasets leaf 03): when the
+	// feature is on, main() has already run validateZfsBucketDatasets
+	// (fail-loud — see main.go), so zfsBucketsParentDataset holds the
+	// resolved parent. Installing the provisioner is itself fail-loud:
+	// a rejected install aborts startup (mirrors main.go's validation
+	// abort) rather than serving creates that would silently fall back
+	// to plain dirs. Feature off (the default): hooks stay nil and the
+	// legacy plain-dir path runs byte-identically.
+	installZfsDatasetProvisionerIfNeeded()
 	if db, dbErr := metadata.OpenZmetadDB(context.Background(), serverConfig.ZmetadDBPath); dbErr == nil {
 		s3.InstallZmetadDB(db)
 	} else {
@@ -249,4 +259,22 @@ func startMultipartExpirySweeper() {
 			runMultipartSweepPass()
 		}
 	}()
+}
+
+// installZfsDatasetProvisionerIfNeeded wires the zfs-bucket-datasets
+// feature (leaf 03): when serverConfig.ZfsBucketDatasets is true, main()
+// has already run validateZfsBucketDatasets (fail-loud — see main.go),
+// so zfsBucketsParentDataset holds the resolved parent. The install is
+// itself fail-loud: a rejected install aborts startup (mirrors main.go's
+// validation abort) rather than serving creates that would silently fall
+// back to plain dirs. Feature off (the default): hooks stay nil and the
+// legacy plain-dir path runs byte-identically.
+func installZfsDatasetProvisionerIfNeeded() {
+	if !serverConfig.ZfsBucketDatasets {
+		return
+	}
+	if err := s3.InstallZfsDatasetProvisioner(zfsBucketsParentDataset, serverConfig.ZfsBinary); err != nil {
+		log.Fatalf("ZFS bucket datasets provisioning install failed: %v", err)
+	}
+	s3.SetZfsBucketDatasetParent(zfsBucketsParentDataset)
 }

@@ -28,6 +28,18 @@ type osFileMode = os.FileMode
 
 type ioReader = io.Reader
 
+// ---------- ZFS dataset provisioner (zfs-bucket-datasets leaf 03) ----------
+
+// ZfsDatasetProvisionerInstalled reports whether the leaf-02 dataset
+// hooks are installed (feature on). Test-only probe.
+func ZfsDatasetProvisionerInstalled() bool {
+	return zfsBucketCreate != nil && zfsBucketDestroy != nil && zfsBucketDatasetExists != nil
+}
+
+// ZfsBucketDatasetParentProbe exposes the recorded dataset parent
+// prefix (empty when the feature is off). Test-only probe.
+func ZfsBucketDatasetParentProbe() string { return zfsBucketDatasetParent }
+
 // ---------- Constants (constants.go) ----------
 
 const (

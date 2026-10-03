@@ -209,6 +209,13 @@ func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 		return
 	}
 
+	// zfs-bucket-datasets leaf 03: when the dataset hooks are installed
+	// (feature on), the dataset create replaces the plain MkdirAll.
+	if zfsBucketCreate != nil {
+		createBucketDatasetPath(w, r.Context(), bucketName, bucketPath, metadataPath)
+		return
+	}
+
 	// Create bucket directory
 	if err := os.MkdirAll(bucketPath, 0755); err != nil { //nolint:gosec // G703: bucketPath built from validateBucketName-checked name
 		log.Printf("Error creating bucket directory %s: %v", bucketPath, err)
@@ -292,6 +299,31 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 				writeS3Error(w, "BucketNotEmpty", "Bucket has in-progress multipart uploads.", http.StatusConflict)
 				return
 			}
+		}
+	}
+
+	// zfs-bucket-datasets leaf 03: when the dataset hooks are installed
+	// (feature on), ask the exists probe whether this bucket dir is a
+	// dataset mountpoint. The dataset NAME is deterministic and derives
+	// from the same closure that produced the create-side name (see
+	// zfsBucketDatasetName, leaf 03 seam-local, set by
+	// InstallZfsDatasetProvisioner's closure capture); deriving it here
+	// from a path is the read-the-PARENT-dataset hazard zfsdatasets.go
+	// documents. A plain dir (pre-feature bucket) falls through to the
+	// legacy RemoveAll path; a dataset goes through the destroy hook —
+	// NEVER RemoveAll on a live mountpoint. Exists failure is a 500:
+	// guessing "plain dir" on a probe error is a data-loss hazard.
+	if zfsBucketDatasetExists != nil && zfsBucketDatasetParent != "" {
+		dataset := zfsBucketDatasetParent + "/" + bucketName
+		isDataset, existsErr := zfsBucketDatasetExists(r.Context(), dataset)
+		if existsErr != nil {
+			log.Printf("Error probing dataset existence for bucket %s: %v", strconv.Quote(bucketName), existsErr)
+			writeS3Error(w, "InternalError", "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		if isDataset {
+			deleteBucketDatasetPath(w, r.Context(), bucketName, dataset)
+			return
 		}
 	}
 
