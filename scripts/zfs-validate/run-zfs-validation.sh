@@ -106,12 +106,17 @@ ssh -o BatchMode=yes "$HOST" "bash $REMOTE_DIR/start-zmetad.sh" \
 # NOTE gotcha (b): frontend port must differ from listenAddr (or use empty
 # frontends array) to avoid the dual-listener self-collision.
 FRONTENDS='[]'
+# Section 10 (snapshots-mode versioning) was written against the OLD
+# default; leaf 06 flips defaultZfsVersioning to "reflink", so the
+# snapshots mode is now pinned EXPLICITLY here. Section 11 restarts the
+# server with a reflink config (written by checks.py over ssh).
 cat > "$WORK/config.json" <<EOF
 {
   "dataDir": "/testpool/",
   "listenAddr": ":$PORT",
   "certFile": "cert.pem",
   "keyFile": "key.pem",
+  "zfs_versioning": "snapshots",
   "zmetad_db_path": "$REMOTE_DIR/zmetad.db",
   "zmetad_binary": "/usr/local/sbin/zmetad",
   "auditLog": {"path": "$REMOTE_DIR/audit.jsonl"},

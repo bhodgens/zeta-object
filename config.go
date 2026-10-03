@@ -34,11 +34,17 @@ const (
 	defaultS3Region = "us-east-1"
 
 	// ZFS versioning mechanism values (s3-versioning-2026-10 Contract
-	// 3). Config load owns the default ("snapshots") and validates the
-	// vocabulary - the s3 frontend receives a concrete value. Empty also
-	// selects the default at wiring time (a zero-value struct built
-	// outside loadConfig behaves like the documented default).
-	defaultZfsVersioning = "snapshots"
+	// 3, extended by leaf 06). Config load owns the default
+	// ("reflink" — FICLONE block-clone per-write versions, the cheapest
+	// exact mechanism on ZFS 2.2+) and validates the vocabulary - the
+	// s3 frontend receives a concrete value. Empty also selects the
+	// default at wiring time (a zero-value struct built outside
+	// loadConfig behaves like the documented default).
+	defaultZfsVersioning = "reflink"
+
+	// defaultZfsVersioningReflinkRetention is the zfs_versioning_reflink_retention
+	// default: 0 = unlimited (no pruning).
+	defaultZfsVersioningReflinkRetention = 0
 )
 
 // authModeNone is the opt-in zero-auth dev mode value for auth.mode
@@ -99,14 +105,24 @@ type ServerConfig struct {
 	Region string `json:"region"`
 
 	// ZfsVersioning selects the versioning mechanism for ZFS-backed
-	// buckets (s3-versioning-2026-10 Contract 3): "snapshots" (faux
-	// versioning from the dataset's existing snapshots — the default),
-	// "sidecar" (true per-write versioning + delete markers), or "both"
-	// (sidecar merged with snapshot entries; ?versionId resolves sidecar
-	// ids first, then snapshot names). Non-ZFS buckets always use the
-	// sidecar store regardless of this key. Absent/empty -> the default
-	// at config load; an unknown value aborts startup.
+	// buckets (s3-versioning-2026-10 Contract 3, extended by leaf 06):
+	// "reflink" (FICLONE block-clone per-write versions under
+	// .metadata/.versions-r/ — the default), "sidecar" (true per-write
+	// versioning + delete markers as rewritten copies), "snapshots"
+	// (faux versioning from the dataset's existing snapshots), or
+	// "both" (reflink merged with sidecar-layout history; snapshot
+	// entries stay OUT). Non-ZFS buckets always use the sidecar store
+	// regardless of this key. Absent/empty -> the default at config
+	// load; an unknown value aborts startup.
 	ZfsVersioning string `json:"zfs_versioning"`
+
+	// ZfsVersioningReflinkRetention caps how many reflink version DATA
+	// files are retained PER KEY (newest N kept): after each recorded
+	// version the OLDEST beyond the cap are pruned along with their
+	// sidecar entries. 0/unset = unlimited (no pruning); a negative
+	// value aborts startup. Server-wide v1 (leaf 06) — a per-bucket
+	// override key is future work (README notes it).
+	ZfsVersioningReflinkRetention int `json:"zfs_versioning_reflink_retention,omitempty"`
 
 	// AuditLog configures the append-only request audit log (charter
 	// exception, decided 2026-10-02). nil/absent = disabled (default off).
@@ -366,14 +382,20 @@ func loadConfig(configPath string) error {
 		cfg.Region = defaultS3Region
 	}
 	// zfs_versioning: absent/empty -> default; anything outside the
-	// Contract 3 vocabulary is a loud startup failure (s3-versioning
-	// tree Contract 3) - a typo must never silently pick a mechanism.
+	// Contract 3 vocabulary (extended by leaf 06) is a loud startup
+	// failure (s3-versioning tree Contract 3) - a typo must never
+	// silently pick a mechanism.
 	switch cfg.ZfsVersioning {
 	case "":
 		cfg.ZfsVersioning = defaultZfsVersioning
-	case "snapshots", "sidecar", "both":
+	case "snapshots", "sidecar", "reflink", "both":
 	default:
-		return fmt.Errorf("invalid zfs_versioning %q (want \"snapshots\", \"sidecar\", or \"both\")", cfg.ZfsVersioning)
+		return fmt.Errorf("invalid zfs_versioning %q (want \"snapshots\", \"sidecar\", \"reflink\", or \"both\")", cfg.ZfsVersioning)
+	}
+	// zfs_versioning_reflink_retention: negative values abort startup
+	// (fail-loud per the leaf-06 contract); 0/unset = unlimited.
+	if cfg.ZfsVersioningReflinkRetention < 0 {
+		return fmt.Errorf("invalid zfs_versioning_reflink_retention %d (must be >= 0; 0 = unlimited)", cfg.ZfsVersioningReflinkRetention)
 	}
 	// Absent/empty frontends array == S3 on the default listener (leaf 03
 	// backward-compatibility rule).
@@ -398,20 +420,21 @@ func loadConfig(configPath string) error {
 // A null buckets value fails with the bucket's name in the message.
 func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	type alias struct {
-		DataDir       string                `json:"dataDir"`
-		ListenAddr    string                `json:"listenAddr"`
-		CertFile      string                `json:"certFile"`
-		KeyFile       string                `json:"keyFile"`
-		Frontends     []FrontendConfig      `json:"frontends"`
-		Backends      map[string]BackendCfg `json:"backends"`
-		Buckets       bucketsRaw            `json:"buckets"`
-		AuditLog      *AuditLogConfig       `json:"auditLog"`
-		Identities    []auth.IdentityConfig `json:"identities"`
-		Auth          AuthConfig            `json:"auth"`
-		ZmetadDBPath  string                `json:"zmetad_db_path"`
-		ZmetadBinary  string                `json:"zmetad_binary"`
-		Region        string                `json:"region"`
-		ZfsVersioning string                `json:"zfs_versioning"`
+		DataDir                       string                `json:"dataDir"`
+		ListenAddr                    string                `json:"listenAddr"`
+		CertFile                      string                `json:"certFile"`
+		KeyFile                       string                `json:"keyFile"`
+		Frontends                     []FrontendConfig      `json:"frontends"`
+		Backends                      map[string]BackendCfg `json:"backends"`
+		Buckets                       bucketsRaw            `json:"buckets"`
+		AuditLog                      *AuditLogConfig       `json:"auditLog"`
+		Identities                    []auth.IdentityConfig `json:"identities"`
+		Auth                          AuthConfig            `json:"auth"`
+		ZmetadDBPath                  string                `json:"zmetad_db_path"`
+		ZmetadBinary                  string                `json:"zmetad_binary"`
+		Region                        string                `json:"region"`
+		ZfsVersioning                 string                `json:"zfs_versioning"`
+		ZfsVersioningReflinkRetention int                   `json:"zfs_versioning_reflink_retention"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
@@ -431,6 +454,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	c.ZmetadBinary = a.ZmetadBinary
 	c.Region = a.Region
 	c.ZfsVersioning = a.ZfsVersioning
+	c.ZfsVersioningReflinkRetention = a.ZfsVersioningReflinkRetention
 	c.AuditLog = a.AuditLog
 	a.Buckets.apply(c)
 	return c.bucketsErr

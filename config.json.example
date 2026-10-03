@@ -99,12 +99,22 @@
   // "zmetad_db_path": "/var/lib/zfs/zmetad.db",
   // "zmetad_binary": "zmetad",
 
-  // ZFS-bucket versioning mechanism: "snapshots" (default - faux
-  // versioning from the dataset's existing snapshots), "sidecar" (true
-  // per-write versioning + delete markers), or "both" (merged). Applies
-  // to ZFS-backed buckets only; non-ZFS buckets always use the sidecar
-  // mechanism. See the README "S3 Versioning" section.
-  // "zfs_versioning": "snapshots",
+  // ZFS-bucket versioning mechanism: "reflink" (default - FICLONE
+  // block-clone per-write versions under .metadata/.versions-r/, with
+  // the retention cap below; fail-soft on filesystems without block
+  // cloning), "sidecar" (true per-write versioning as rewritten
+  // copies), "snapshots" (faux versioning from the dataset's existing
+  // snapshots), or "both" (reflink merged with sidecar-layout
+  // history). Applies to ZFS-backed buckets only; non-ZFS buckets
+  // always use the sidecar mechanism. See the README "S3 Versioning"
+  // section.
+  // "zfs_versioning": "reflink",
+
+  // Reflink-mode version retention: the count of version DATA files
+  // retained PER KEY (newest N kept; oldest beyond the cap are pruned
+  // with their sidecar entries after each recorded version). 0/unset =
+  // unlimited. Server-wide (a per-bucket override is future work).
+  // "zfs_versioning_reflink_retention": 0,
 
   // Custom bucket name -> filesystem path mappings. These buckets appear in
   // ListBuckets alongside auto-discovered buckets, cannot be created or

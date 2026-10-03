@@ -18,8 +18,8 @@ func TestLoadConfig_ZfsVersioningKey(t *testing.T) {
 		if cfg.ZfsVersioning != defaultZfsVersioning {
 			t.Fatalf("ZfsVersioning = %q, want default %q", cfg.ZfsVersioning, defaultZfsVersioning)
 		}
-		if defaultZfsVersioning != "snapshots" {
-			t.Fatalf("default drifted from Contract 3: %q", defaultZfsVersioning)
+		if defaultZfsVersioning != "reflink" {
+			t.Fatalf("default drifted from leaf 06: %q", defaultZfsVersioning)
 		}
 	})
 
@@ -85,4 +85,38 @@ func TestUnmarshalJSON_AcceptsZfsVersioning(t *testing.T) {
 	if c.ZfsVersioning != "both" {
 		t.Fatalf("ZfsVersioning = %q, want both", c.ZfsVersioning)
 	}
+}
+
+// TestLoadConfig_ZfsVersioningReflink pins the leaf-06 config contract:
+// explicit "reflink" passes, the unknown-mode error names all four
+// vocabulary values, and the retention key round-trips.
+func TestLoadConfig_ZfsVersioningReflink(t *testing.T) {
+	t.Run("explicit reflink honored", func(t *testing.T) {
+		cfg := loadConfigForTest(t, writeTempConfig(t, `{"zfs_versioning":"reflink"}`))
+		if cfg.ZfsVersioning != "reflink" {
+			t.Fatalf("ZfsVersioning = %q, want reflink", cfg.ZfsVersioning)
+		}
+	})
+
+	t.Run("retention explicit honored", func(t *testing.T) {
+		cfg := loadConfigForTest(t, writeTempConfig(t, `{"zfs_versioning":"reflink","zfs_versioning_reflink_retention":2}`))
+		if cfg.ZfsVersioningReflinkRetention != 2 {
+			t.Fatalf("ZfsVersioningReflinkRetention = %d, want 2", cfg.ZfsVersioningReflinkRetention)
+		}
+	})
+
+	t.Run("retention absent is 0 (unlimited)", func(t *testing.T) {
+		cfg := loadConfigForTest(t, writeTempConfig(t, `{"zfs_versioning":"reflink"}`))
+		if cfg.ZfsVersioningReflinkRetention != defaultZfsVersioningReflinkRetention {
+			t.Fatalf("ZfsVersioningReflinkRetention = %d, want %d", cfg.ZfsVersioningReflinkRetention, defaultZfsVersioningReflinkRetention)
+		}
+	})
+
+	t.Run("retention negative aborts load", func(t *testing.T) {
+		if err := loadConfig(writeTempConfig(t, `{"zfs_versioning":"reflink","zfs_versioning_reflink_retention":-1}`)); err == nil {
+			t.Fatal("negative zfs_versioning_reflink_retention must fail loadConfig")
+		} else if !strings.Contains(err.Error(), "zfs_versioning_reflink_retention") {
+			t.Fatalf("error must name the offending key, got: %v", err)
+		}
+	})
 }
