@@ -49,6 +49,15 @@ const reflinkVersionsDirName = ".versions-r"
 // hookMu hook): the clone is a pure fs operation with no process state.
 var reflinkCloneFn = reflinkClone
 
+// reflinkCloneUnsupportedError marks the GOOS-level "no FICLONE here"
+// class (the non-linux arm returns it; linux reports filesystem-level
+// FICLONE rejections as plain wrapped errnos instead).
+type reflinkCloneUnsupportedError struct{}
+
+func (e *reflinkCloneUnsupportedError) Error() string {
+	return "s3: reflink (FICLONE) is not supported on this platform"
+}
+
 // reflinkVersionStore implements versionStore over the reflink layout.
 // ALL bookkeeping (State/SetState/sidecar read-modify-write/List/Open
 // bookkeeping half) is composed from sidecarVersionStore — the ONLY
@@ -180,9 +189,12 @@ func captureReflinkObjectVersion(bucketPath, objectName string) (*capturedReflin
 	f.Close() //nolint:errcheck // reflinkClone owns the error path; an empty file is removed on failure
 	if err := reflinkCloneFn(dst, meta.StoragePath); err != nil {
 		// Fail-soft (leaf-06 contract): remove the empty dest, log ONE
-		// WARN, skip the version record — never break the PUT.
+		// WARN, skip the version record — never break the PUT. The
+		// platform-vs-filesystem split in the log uses the clone arm's
+		// own identity (reflinkCloneUnsupportedError on non-linux; any
+		// other error is a filesystem-level FICLONE rejection).
 		os.Remove(dst) //nolint:errcheck // best-effort cleanup of the failed clone target
-		if errors.Is(err, errReflinkUnsupported) {
+		if _, isUnsupported := errors.AsType[*reflinkCloneUnsupportedError](err); isUnsupported {
 			log.Printf("reflink versioning unsupported on this platform (%s); version for %s skipped (fail-soft)", bucketPath, objectName)
 		} else {
 			log.Printf("reflink clone failed for %s (FICLONE unsupported on this filesystem?): version skipped (fail-soft): %v", objectName, err)
