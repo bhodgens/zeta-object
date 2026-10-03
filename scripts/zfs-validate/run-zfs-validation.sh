@@ -178,11 +178,11 @@ def _ssl():
     ctx.verify_mode = ssl.CERT_NONE
     return ctx
 
-def sign(method, path, query="", payload=b"", amz_meta=None, content_type=None):
+def _request(port, method, path, query="", payload=b"", amz_meta=None, content_type=None):
     t = datetime.now(timezone.utc)
     amzdate = t.strftime("%Y%m%dT%H%M%SZ"); datestamp = t.strftime("%Y%m%d")
     headers = {
-        "host": f"{HOST}:{PORT}",
+        "host": f"{HOST}:{port}",
         "x-amz-content-sha256": hashlib.sha256(payload).hexdigest(),
         "x-amz-date": amzdate,
     }
@@ -205,13 +205,25 @@ def sign(method, path, query="", payload=b"", amz_meta=None, content_type=None):
     hdrs = dict(headers)
     hdrs["Authorization"] = (f"AWS4-HMAC-SHA256 Credential={AK}/{scope}, "
                              f"SignedHeaders={signed}, Signature={sig}")
-    conn = http.client.HTTPSConnection(HOST, PORT, context=_ssl(), timeout=30)
+    conn = http.client.HTTPSConnection(HOST, port, context=_ssl(), timeout=30)
     conn.request(method, path + ("?"+query if query else ""),
                  body=payload if payload else None, headers=hdrs)
     r = conn.getresponse(); body = r.read()
     rh = {k.lower(): v for k, v in r.getheaders()}
     conn.close()
     return r.status, rh, body
+
+
+def sign(method, path, query="", payload=b"", amz_meta=None, content_type=None):
+    return _request(PORT, method, path, query=query, payload=payload,
+                    amz_meta=amz_meta, content_type=content_type)
+
+
+def sign_on(port, method, path, query="", payload=b"", amz_meta=None, content_type=None):
+    """Same signing against a DIFFERENT server phase/port (section 12's
+    zfs_bucket_datasets phase)."""
+    return _request(port, method, path, query=query, payload=payload,
+                    amz_meta=amz_meta, content_type=content_type)
 PYEOF
 
 # ------------------------------------------------------------- checks ------
@@ -950,6 +962,193 @@ print(f"TOTAL: {len(results) - len(failed)}/{len(results)}")
 sys.exit(1 if failed else 0)
 PYEOF
 
+# ------------------------------------------------- section 12: dataset buckets
+# zfs-bucket-datasets-2026-10 leaf 05. Runs as a SEPARATE probe script
+# (checks-zbd.py) against a SECOND server phase so checks.py and its
+# sections 0-11 stay byte-identical. Written into the harness AFTER the
+# checks.py heredoc but referenced by run_zbd_section() below.
+cat > "$WORK/checks-zbd.py" <<'PYEOF'
+# Section 12: per-bucket ZFS dataset provisioning over the wire
+# (zfs_bucket_datasets). Contracts under test (master.md Contract 3):
+#   create OK -> 200 + real child dataset under the parent
+#   delete empty -> 204 + dataset gone
+#   delete with snapshots -> 409 BucketHasSnapshots + count, dataset stays
+#   snapshot destroy -> delete 204, dataset gone
+#   dotted bucket name -> dataset round-trip
+#   zmetad datasets-table pickup within the poll window
+import json, os, subprocess, sys, time
+exec(open("probe.py").read())  # defines sign_on(), HOST
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+ZBD_PORT = int(os.environ.get("ZBD_PORT", "9708"))
+PARENT = "testpool/zval"   # scratch dataset == dataDir (/testpool/zval/) parent
+
+def sh(cmd, timeout=60):
+    r = subprocess.run(["ssh", "-o", "BatchMode=yes", HOST, cmd],
+                       capture_output=True, text=True, timeout=timeout)
+    return (r.stdout + r.stderr).strip()
+
+ZMETAD_DB = sh("echo $HOME") + "/zeta-validate/zmetad.db"
+
+def db_query(sql):
+    py = ("import sqlite3,json,sys;"
+          "c=sqlite3.connect('file:%s?mode=ro',uri=True);"
+          "c.row_factory=sqlite3.Row;"
+          "r=[dict(x) for x in c.execute(sys.argv[1])];"
+          "print(json.dumps(r))" % ZMETAD_DB)
+    out = sh(f"python3 -c {json.dumps(py)} {json.dumps(sql)}")
+    try:
+        return json.loads(out[out.index("["):out.rindex("]") + 1])
+    except Exception:
+        return None
+
+results = []
+def check(name, ok, detail=""):
+    results.append((name, bool(ok), str(detail)[:300]))
+
+def ds_exists(name):
+    return sh(f"zfs list -H -o name {name} 2>/dev/null").strip() != ""
+
+def parent_of(name):
+    out = sh(f"zfs list -H -o name {name} 2>/dev/null").strip()
+    return out.rsplit("/", 1)[0] if out else ""
+
+# --- 12a. PUT bucket -> 200 + real child dataset nested under the parent ----
+BKT = "zbd12"
+DS = f"{PARENT}/{BKT}"
+s, h, b = sign_on(ZBD_PORT, "PUT", f"/{BKT}", payload=b"")
+check("s12 PUT dataset bucket -> 200", s == 200, f"{s} {b[:150]}")
+out = sh(f"zfs list -H -o name {DS} 2>/dev/null")
+check("s12 dataset <parent>/zbd12 resolves on zfs list",
+      out.strip() == DS, f"zfs list: {out[:150]!r}")
+check("s12 dataset PARENT is the scratch dataset (nesting proof)",
+      parent_of(DS) == PARENT, f"parent={parent_of(DS)!r} want={PARENT!r}")
+mk = sh(f"test -d /{DS}/.metadata && echo yes || echo no")
+check("s12 .metadata dir exists inside the new dataset", mk == "yes", mk[:150])
+
+# --- 12b. object round-trip ON the dataset bucket ----------------------------
+s, h, b = sign_on(ZBD_PORT, "PUT", f"/{BKT}/obj.txt", payload=b"dataset-bucket-payload")
+check("s12 PUT object on dataset bucket -> 200", s == 200, f"{s} {b[:150]}")
+s, h, b = sign_on(ZBD_PORT, "GET", f"/{BKT}/obj.txt")
+check("s12 GET object round-trip exact bytes",
+      s == 200 and b == b"dataset-bucket-payload", f"{s} len={len(b)}")
+s, h, b = sign_on(ZBD_PORT, "DELETE", f"/{BKT}/obj.txt")
+check("s12 DELETE object -> 204", s == 204, f"{s} {b[:150]}")
+
+# --- 12c. zmetad datasets-table pickup (poll window, SIGUSR1-accelerated) ----
+# Full tracking = datasets row AND sync_state row for the child. The
+# sync_state guard is load-bearing: a ?events call that lands before the
+# child is fully polled resolves longest-prefix to the PARENT dataset
+# (ResolveDatasetByPath) and the provider positively caches that wrong
+# answer for the process lifetime (finding F-zbd-2) — so section 12d's
+# FIRST ?events must wait for full tracking, never race it.
+zbd_picked = None
+zbd_polled = False
+for _ in range(8):  # bounded re-poll within the harness poll window (2s poll)
+    sh("pkill -USR1 -f 'zmeta[d].*zeta-validate' 2>/dev/null; true")
+    time.sleep(1.5)
+    rows = db_query(f"SELECT dataset, mountpoint FROM datasets WHERE dataset = '{DS}'")
+    if rows:
+        zbd_picked = rows
+        st = db_query(f"SELECT dataset FROM sync_state WHERE dataset = '{DS}'")
+        if st:
+            zbd_polled = True
+            break
+check("s12 zmetad datasets table picked up the bucket dataset",
+      bool(zbd_picked), f"datasets rows for {DS}: {zbd_picked!r}")
+check("s12 zmetad sync_state row present (bucket dataset fully polled)",
+      zbd_polled, f"sync_state for {DS}: {zbd_polled}")
+
+# --- 12d. events attribution: writes carry the BUCKET's own dataset name -----
+s, h, b = sign_on(ZBD_PORT, "GET", f"/{BKT}/obj.txt", query="events")
+check("s12 ?events on the dataset bucket -> 200", s == 200, f"{s} {b[:150]}")
+try:
+    zbd_ev = json.loads(b)
+except Exception:
+    zbd_ev = {"events": []}
+check("s12 ?events dataset field == the bucket's own dataset",
+      zbd_ev.get("dataset") == DS, json.dumps(zbd_ev)[:250])
+ev_rows = db_query(
+    f"SELECT dataset, path, event_type FROM events WHERE dataset = '{DS}'")
+check("s12 events DB rows carry the bucket dataset name",
+      len(ev_rows or []) > 0, str(ev_rows)[:250])
+
+# --- 12e. DELETE empty -> 204 + dataset gone ----------------------------------
+s, h, b = sign_on(ZBD_PORT, "DELETE", f"/{BKT}")
+check("s12 DELETE empty dataset bucket -> 204", s == 204, f"{s} {b[:150]}")
+check("s12 dataset gone from zfs list after delete", not ds_exists(DS),
+      f"still present: {sh(f'zfs list -H -o name {DS} 2>/dev/null')!r}")
+
+# --- 12f. snapshot pin -> 409 BucketHasSnapshots + count, dataset survives ---
+s, h, b = sign_on(ZBD_PORT, "PUT", f"/{BKT}", payload=b"")
+check("s12 re-create bucket -> 200", s == 200, f"{s} {b[:150]}")
+s, h, b = sign_on(ZBD_PORT, "PUT", f"/{BKT}/obj.txt", payload=b"pinned")
+check("s12 PUT object (pre-pin) -> 200", s == 200, f"{s} {b[:150]}")
+s, h, b = sign_on(ZBD_PORT, "DELETE", f"/{BKT}/obj.txt")
+check("s12 DELETE object (bucket empty again) -> 204", s == 204, f"{s} {b[:150]}")
+PIN = "e2e-pin"
+# sudo zfs for the pin: the phase-2 server runs as root (unprivileged zfs
+# create cannot mount children on this host), so its bucket datasets are
+# root-owned and an unprivileged snapshot on them is permission-denied.
+snap_out = sh(f"sudo zfs snapshot {DS}@{PIN} && echo SNAP_OK")
+check("s12 pin snapshot taken", "SNAP_OK" in snap_out, snap_out[:150])
+s, h, b = sign_on(ZBD_PORT, "DELETE", f"/{BKT}")
+check("s12 DELETE with snapshots -> 409", s == 409, f"{s} {b[:200]}")
+check("s12 409 body code BucketHasSnapshots", b"<Code>BucketHasSnapshots</Code>" in b,
+      b[:200])
+check("s12 409 body carries the snapshot count (1 snapshot(s))", b"1 snapshot(s)" in b,
+      b[:200])
+check("s12 409 body names the dataset", DS.encode() in b, b[:250])
+check("s12 dataset STILL exists after 409 refusal", ds_exists(DS),
+      sh(f"zfs list -H -o name {DS} 2>/dev/null")[:150])
+
+# --- 12g. destroy pin -> DELETE -> 204 + dataset gone -------------------------
+sh(f"sudo zfs destroy {DS}@{PIN}")
+s, h, b = sign_on(ZBD_PORT, "DELETE", f"/{BKT}")
+check("s12 DELETE after snapshot destroy -> 204", s == 204, f"{s} {b[:150]}")
+check("s12 dataset gone after successful delete", not ds_exists(DS),
+      sh(f"zfs list -H -o name {DS} 2>/dev/null")[:150])
+
+# --- 12h. dotted bucket name -> dataset round-trip ----------------------------
+BKT_DOT = "zbd12.dot.bkt"
+DS_DOT = f"{PARENT}/{BKT_DOT}"
+s, h, b = sign_on(ZBD_PORT, "PUT", f"/{BKT_DOT}", payload=b"")
+check("s12 PUT dotted bucket zbd12.dot.bkt -> 200", s == 200, f"{s} {b[:150]}")
+out = sh(f"zfs list -H -o name {DS_DOT} 2>/dev/null")
+check("s12 dotted dataset <parent>/zbd12.dot.bkt resolves",
+      out.strip() == DS_DOT, f"zfs list: {out[:150]!r}")
+s, h, b = sign_on(ZBD_PORT, "PUT", f"/{BKT_DOT}/d.txt", payload=b"dot")
+check("s12 dotted bucket object round-trip PUT -> 200", s == 200, f"{s} {b[:120]}")
+s, h, b = sign_on(ZBD_PORT, "GET", f"/{BKT_DOT}/d.txt")
+check("s12 dotted bucket GET exact bytes", s == 200 and b == b"dot", f"{s} len={len(b)}")
+s, h, b = sign_on(ZBD_PORT, "DELETE", f"/{BKT_DOT}/d.txt")
+check("s12 dotted bucket object DELETE -> 204", s == 204, f"{s} {b[:120]}")
+s, h, b = sign_on(ZBD_PORT, "DELETE", f"/{BKT_DOT}")
+check("s12 DELETE dotted bucket -> 204", s == 204, f"{s} {b[:150]}")
+check("s12 dotted dataset gone after delete", not ds_exists(DS_DOT),
+      sh(f"zfs list -H -o name {DS_DOT} 2>/dev/null")[:150])
+
+# --- cleanup (finally-path semantics): never wedge the scratch parent ---------
+# A snapshot-holding child dataset BLOCKS `zfs destroy -r` of the parent, so
+# this runs unconditionally: destroy the pin snapshot and any leftover bucket
+# dataset the section may have leaked on a failure path.
+cleanup = sh(
+    f"sudo zfs destroy {DS}@{PIN} 2>/dev/null; "
+    f"sudo zfs destroy {DS_DOT}@{PIN} 2>/dev/null; "
+    f"sudo zfs destroy {DS} 2>/dev/null; "
+    f"sudo zfs destroy {DS_DOT} 2>/dev/null; "
+    f"zfs list -H -o name -r {PARENT} 2>/dev/null | grep -c zbd12; true")
+leaked = cleanup.strip().splitlines()[-1].strip() if cleanup.strip() else "0"
+check("s12 no zbd12 dataset/snapshot leaks under the scratch parent", leaked == "0",
+      cleanup[:200])
+
+failed = [(n, d) for n, ok, d in results if not ok]
+for n, ok, d in results:
+    print(f"{'PASS' if ok else 'FAIL'} | {n}" + (f" | {d}" if not ok else ""))
+print(f"ZBD_TOTAL: {len(results) - len(failed)}/{len(results)}")
+sys.exit(1 if failed else 0)
+PYEOF
+
 # --------------------------------------------------------------- run -------
 log "Running validation checks against $HOST:$PORT"
 set +e
@@ -957,10 +1156,104 @@ set +e
 RC=$?
 set -e
 
+# ---- section 12 launcher (option (b): second server phase) -------------------
+# The phase-2 server gets zfs_bucket_datasets:true + dataDir /testpool/zval/
+# (parent == the SCRATCH dataset; with dataDir /testpool/ the startup parent
+# would resolve to the POOL ROOT). On this host an unprivileged `zfs create`
+# cannot mount children ("may only be mounted by root"), so the phase-2
+# server runs under sudo — the harness's established sudo-zfs pattern. The
+# starter is killed by OBSERVED pid (pgrep -af first); every pkill pattern is
+# one-char bracketed so it can never match the ssh channel itself.
+run_zbd_section() {
+  ZBD_PORT=9708
+  ZBD_DATADIR="/$(echo "$DATASET" | tr -d '\n')/"
+  log "Section 12: zfs_bucket_datasets phase on :$ZBD_PORT (dataDir $ZBD_DATADIR)"
+
+  cat > "$WORK/start-zbd.sh" <<EOF
+#!/usr/bin/env bash
+cd '$REMOTE_DIR'
+# kill by OBSERVED pid — never a broad pkill that could self-match
+ZBD_PIDS=\$(pgrep -af 'zeta-serve[r]' | awk '{print \$1}')
+[ -n "\$ZBD_PIDS" ] && kill \$ZBD_PIDS 2>/dev/null
+# stale ROOT-owned instance from a previous crashed run (unkillable
+# unprivileged; bracketed pattern cannot self-match this script)
+sudo -n pkill -f '[.]/zeta-serve[r]' 2>/dev/null || true
+sleep 0.5
+cat > '$REMOTE_DIR/config-zbd.json' <<ZCFG
+{
+  "dataDir": "$ZBD_DATADIR",
+  "listenAddr": ":$ZBD_PORT",
+  "certFile": "cert.pem",
+  "keyFile": "key.pem",
+  "zfs_versioning": "snapshots",
+  "zfs_bucket_datasets": true,
+  "zmetad_db_path": "$REMOTE_DIR/zmetad.db",
+  "zmetad_binary": "/usr/local/sbin/zmetad",
+  "identities": [
+    { "name": "val", "accessKey": "$AK", "secretKey": "$SK", "grants": { "*": "readwrite" } }
+  ],
+  "frontends": []
+}
+ZCFG
+export ZETAOBJECT_CONFIG='$REMOTE_DIR/config-zbd.json'
+setsid nohup sudo -n -E ./zeta-server < /dev/null >> zbd-server.log 2>&1 &
+ZBD_PID=\$!
+echo \$ZBD_PID > '$REMOTE_DIR/zbd-server.pid'
+for i in \$(seq 1 60); do
+  if timeout 2 bash -c "echo > /dev/tcp/127.0.0.1/$ZBD_PORT" 2>/dev/null; then
+    echo "ZBD_SERVER_UP"; exit 0
+  fi
+  sleep 0.2
+done
+echo "ZBD_SERVER_FAILED"; tail -20 zbd-server.log; exit 1
+EOF
+  scp -q "$WORK/start-zbd.sh" "$HOST:$REMOTE_DIR/start-zbd.sh"
+
+  ZBD_UP=$(ssh -o BatchMode=yes "$HOST" "bash $REMOTE_DIR/start-zbd.sh") \
+    || die "zbd phase-2 server did not come up on :$ZBD_PORT: $ZBD_UP"
+  echo "$ZBD_UP"
+
+  set +e
+  ( cd "$WORK" && ZBD_PORT=$ZBD_PORT python3 checks-zbd.py )
+  ZBD_RC=$?
+  set -e
+
+  # teardown: kill by OBSERVED pid from the pidfile (the phase-2 server
+  # runs as root with its config in an env var — invisible to pkill -f
+  # and unkillable unprivileged). pgrep -af is printed first for the log.
+  ssh -o BatchMode=yes "$HOST" "
+    pgrep -af 'zeta-serve[r]' || true
+    if [ -f $REMOTE_DIR/zbd-server.pid ]; then
+      ZBD_PID=\$(cat $REMOTE_DIR/zbd-server.pid)
+      kill \$ZBD_PID 2>/dev/null || sudo -n kill \$ZBD_PID 2>/dev/null || true
+    fi
+    sleep 0.5
+    # belt-and-braces: the phase-2 server is ROOT-owned with an env-var
+    # config (invisible to unprivileged pkill -f patterns), so finish
+    # with a sudo'd bracketed pkill on './zeta-server' — safe here: the
+    # bracket cannot self-match and phase-1 is already gone.
+    sudo -n pkill -f '[.]/zeta-serve[r]' 2>/dev/null || true
+    pgrep -af 'zeta-serve[r]' || true
+  " || true
+  # double-guard: the section's own finally-path already destroyed its
+  # datasets; nothing else to clean here.
+  return $ZBD_RC
+}
+
+ZBD_RC=0
+run_zbd_section || ZBD_RC=$?
+
 # ------------------------------------------------------------- cleanup -----
+# Section 12's result participates in the run's exit status.
+if [[ $ZBD_RC -ne 0 ]]; then RC=$ZBD_RC; fi
 if [[ $RC -ne 0 || $KEEP_SERVER -eq 0 ]]; then
   log "Cleanup: stopping server + zmetad, destroying $DATASET"
+  # A ROOT-owned phase-2 server cannot die by unprivileged pkill (its
+  # config lives in an env var, invisible to -f matching) — and a live
+  # bucket-dataset server would recreate datasets under the parent. Kill
+  # it with sudo FIRST, then stop everything else and destroy.
   ssh -o BatchMode=yes "$HOST" "
+    sudo -n pkill -f '[.]/zeta-serve[r]' 2>/dev/null || true
     pkill -f '[.]/zeta-serve[r]' 2>/dev/null || true
     pkill -f 'zmeta[d].*zeta-validate' 2>/dev/null || true
     sudo zfs destroy -r '$DATASET' 2>/dev/null || true
