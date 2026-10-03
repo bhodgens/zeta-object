@@ -183,6 +183,33 @@ func TestListSnapshots_EmptyAndErrorForms(t *testing.T) {
 	}
 }
 
+// TestListSnapshots_MinuteResolutionCreationForm pins the REAL zfs
+// `list -o creation` wire form (found by the zfs-validate section 10
+// probe on zfs-meta's zfs 2.4.1): ctime() at MINUTE resolution —
+// "Sat Oct  3  2:11 2026", no seconds, single-digit hour space-padded.
+// The seconds-only layouts parsed this to zero, collapsing the
+// newest-first ordering to zfs name order (older snapshots first on
+// ties). Name-sorted input must still come back newest-first.
+func TestListSnapshots_MinuteResolutionCreationForm(t *testing.T) {
+	scriptZfsSnapshotRunner(t,
+		"pool/bkt@s1val	Sat Oct  3  2:09 2026\n"+
+			"pool/bkt@s2val	Sat Oct  3  2:11 2026\n", nil)
+	snaps, err := ListSnapshots(t.Context(), "pool/bkt")
+	if err != nil {
+		t.Fatalf("ListSnapshots: %v", err)
+	}
+	if len(snaps) != 2 {
+		t.Fatalf("got %d snapshots, want 2", len(snaps))
+	}
+	if snaps[0].Short != "s2val" || snaps[1].Short != "s1val" {
+		t.Errorf("order = [%s %s], want [s2val s1val] (minute-resolution creation must sort)",
+			snaps[0].Short, snaps[1].Short)
+	}
+	if snaps[0].Creation.IsZero() || snaps[1].Creation.IsZero() {
+		t.Errorf("creations parsed to zero: %v / %v", snaps[0].Creation, snaps[1].Creation)
+	}
+}
+
 // ---------- List: newest-first existence walk ----------
 
 func TestZfsSnapshotVersionStore_List_NewestFirstExistenceWalk(t *testing.T) {
