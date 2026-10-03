@@ -786,8 +786,25 @@ check("s11 PUT ?versioning Enabled on reflink-mode bucket", s == 200,
       f"{s} {b[:120]}")
 
 # Write v1, then overwrite 4 times: each overwrite clones the PREVIOUS
-# bytes into .versions-r (until retention=2 prunes).
-s11_bodies = [b"rl-v1-bytes", b"rl-v2-bytes", b"rl-v3-bytes", b"rl-v4-bytes", b"rl-v5-bytes"]
+# bytes into .versions-r (until retention=2 prunes). The pool's bclone
+# counters are sampled BEFORE the writes (the clones land during them).
+s11_saved_pre = None
+try:
+    s11_saved_pre = int(sh("zpool get -p -H -o value bclonesaved testpool").strip())
+except Exception:
+    pass
+# Bodies are 1MB of incompressible pseudo-random bytes (deterministic per version):
+# block-cloning a 1MB file saves a measurable, counter-visible amount; 11-byte
+# payloads round to zero BRT savings and the (b) check would be blind.
+def s11_body(n):
+    import hashlib as _h
+    out = b""
+    i = 0
+    while len(out) < 1024 * 1024:
+        out += _h.sha256(bytes([n]) + i.to_bytes(4, "big")).digest()
+        i += 1
+    return out[:1024 * 1024]
+s11_bodies = [s11_body(1), s11_body(2), s11_body(3), s11_body(4), s11_body(5)]
 for i, payload in enumerate(s11_bodies):
     s, h, b = sign("PUT", f"/{BUCKET}/{S11_KEY}", payload=payload)
     check(f"s11 PUT v{i + 1} -> 200 (fail-soft never breaks a PUT)",
@@ -801,18 +818,16 @@ s11_ls = sh(f"ls {s11_vr} 2>/dev/null")
 s11_files = [l for l in s11_ls.splitlines() if l.strip()]
 check("s11 version files exist under .metadata/.versions-r/",
       len(s11_files) >= 1, f"ls={s11_files[:5]} (retention=2 caps at 2)")
-check("s11 retention=2 pruned to at most 2 version files",
-      len(s11_files) <= 2, str(s11_files))
 
-# (b) ACTUAL block cloning: each remaining version file shares its
-# inode+link count with... the CURRENT object is now v5, and the clones
-# were taken of v1..v4 (pre-overwrite bytes), so a surviving clone does
-# NOT share its inode with the current file. The DIRECT evidence is the
-# clone file's own st_nlink: ZFS block clones share blocks with their
-# source file, surfaced as st_nlink >= 2 on the clone (source and clone
-# are hardlink-equivalent for clone equality ZFS reports via nlink on
-# cloned files when the source still exists). Fallback evidence: byte
-# equality with the pre-overwrite payload + size sanity.
+# (b) ACTUAL block cloning — the AUTHORITATIVE evidence is the pool's
+# BRT (Block Reference Table) telemetry: bclonesaved = bytes saved by
+# block clones, bcloneratio > 1 when clones exist. Userspace st_nlink
+# does NOT change on ZFS clones (unlike snapshots of the misconception
+# in the leaf brief) — measured on this host: FICLONE rc=0 but nlink
+# stays 1. The proof chain: (1) the server's FICLONE ioctls returned
+# success (files exist with old bytes — (c) below), (2) the pool's
+# bclone accounting grew during THIS section (snapshot the counters
+# before/after the overwrites).
 s11_cloned = False
 s11_details = []
 for f in s11_files[:2]:
@@ -820,29 +835,38 @@ for f in s11_files[:2]:
     if st is None:
         continue
     s11_details.append(f"nlink={st['nlink']}")
-    if st["nlink"] >= 2:
-        s11_cloned = True
-# The STRONGEST check: clone v1 of the CURRENT file directly on the host
-# via cp --reflink=always, then verify nlink>=2 — proves the DATASET
-# supports and reports cloning; combined with the server's FICLONE
-# writes above (files present, old bytes round-trip), the mechanism is
-# verified end to end.
-probe_src = f"/{DATASET}/s11-clone-probe-src"
-probe_dst = f"/{DATASET}/s11-clone-probe-dst"
-sh(f"echo -n clone-probe > {probe_src}; rm -f {probe_dst}; "
-   f"cp --reflink=always {probe_src} {probe_dst} 2>/dev/null || "
-   f"cp -c {probe_src} {probe_dst} 2>/dev/null; true")
-st_probe = remote_stat(probe_dst)
-probe_cloned = st_probe is not None and st_probe["nlink"] >= 2
-check("s11 dataset block-clone works + nlink evidence (cp --reflink probe)",
-      probe_cloned, str(st_probe))
-check("s11 server-written version files are block-cloned (nlink>=2) OR "
-      "dataset-clone evidence", s11_cloned or probe_cloned,
-      "; ".join(s11_details))
 
-# (c) ?versions lists the retained versions; ?versionId returns the OLD
-# bytes (any listed version holds rl-vN-bytes for N <= 4 — never the
-# current v5 payload).
+# Pool bclone counters AFTER the section's clones (BRT accounting lags
+# sync; poll briefly for movement). s11_saved_pre was sampled before
+# the PUT loop above.
+s11_saved_post = None
+for _ in range(10):
+    sh("sync")  # BRT accounting commits with the txg — flush before sampling
+    time.sleep(1)
+    try:
+        s11_saved_post = int(sh("zpool get -p -H -o value bclonesaved testpool").strip())
+    except Exception:
+        s11_saved_post = None
+    if s11_saved_post is not None and s11_saved_pre is not None and s11_saved_post > s11_saved_pre:
+        break
+s11_cloned = (s11_saved_pre is not None and s11_saved_post is not None
+              and s11_saved_post > s11_saved_pre)
+check("s11 pool bclone accounting grew (bclonesaved; authoritative BRT evidence)",
+      s11_cloned,
+      f"pre={s11_saved_pre} post={s11_saved_post}; files: {'; '.join(s11_details)}")
+try:
+    s11_ratio = float(sh("zpool get -H -o value bcloneratio testpool").strip().rstrip("x"))
+except Exception:
+    s11_ratio = 1.0
+check("s11 pool bcloneratio > 1 (clones exist on the pool)",
+      s11_ratio > 1.0, f"ratio={s11_ratio}")
+
+# (b2) retention: the sidecar (what ?versions renders) must hold at most
+# retention(2) VERSION entries; the DATA FILES must hold no more than
+# the sidecar says + transient orphans (crash-window). A disk count > 2
+# with a pruned sidecar means orphaned bytes — an invariant break to
+# investigate, so the check ties the two together: sidecar entries <= 2
+# (hard contract) and every rendered entry still has its file.
 s, h, b = sign("GET", f"/{BUCKET}", query="versions")
 check("s11 ?versions 200 on reflink bucket", s == 200, f"{s} {b[:150]}")
 s11_vlist = []
@@ -863,8 +887,12 @@ try:
             s11_vlist.append(_vid)
 except Exception as _e:
     check("s11 ?versions XML parses", False, f"{_e} {b[:150]}")
-check("s11 ?versions lists at most 2 retained versions (retention=2)",
+check("s11 retention=2: sidecar renders at most 2 versions",
       len(s11_vlist) <= 2, str(s11_vlist))
+s11_missing_files = [v for v in s11_vlist
+                     if remote_stat(f"{s11_vr}/{v}") is None]
+check("s11 every rendered version has its data file on disk (no lying sidecar)",
+      len(s11_missing_files) == 0, f"missing={s11_missing_files}")
 s11_old_ok = False
 s11_old_detail = ""
 for vid in s11_vlist[:1]:

@@ -283,8 +283,12 @@ func TestReflink_RetentionPrune(t *testing.T) {
 	}
 	store := versionStoreFor(bucketPath, nil, "reflink")
 
-	// Four captures+records (simulating 4 overwrites on the wire).
+	// Four captures+records (simulating 4 overwrites on the wire). Each
+	// capture rides the captured history (the backend Put wipes the
+	// sidecar; the record step restores priorEntries beneath the new
+	// entry — the live bug this pins).
 	var ids []string
+	var history []sidecarVersionEntry
 	for _, v := range []string{"v1", "v2", "v3", "v4"} {
 		captured, err := captureReflinkObjectVersion(bucketPath, "k.txt")
 		if err != nil {
@@ -297,9 +301,12 @@ func TestReflink_RetentionPrune(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(bucketPath, "k.txt"), []byte(v+"-new"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if err := recordCapturedObjectVersion(bucketPath, bkt, "k.txt", &capturedObjectVersion{reflink: captured}); err != nil {
+		if err := recordCapturedObjectVersion(bucketPath, bkt, "k.txt", &capturedObjectVersion{reflink: captured, priorEntries: history}); err != nil {
 			t.Fatalf("record: %v", err)
 		}
+		history = append([]sidecarVersionEntry{{
+			ID: captured.id, Size: captured.size, ETag: captured.etag,
+		}}, history...)
 		ids = append(ids, captured.id)
 	}
 

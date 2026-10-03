@@ -333,7 +333,7 @@ func recordCapturedObjectVersion(bucketPath, bucketName, objectName string, capt
 		if !captured.reflink.cloneOK {
 			return nil
 		}
-		if err := recordCapturedReflinkObjectVersion(bucketPath, objectName, captured.reflink); err != nil {
+		if err := recordCapturedReflinkObjectVersion(bucketPath, objectName, captured.reflink, captured.priorEntries); err != nil {
 			return err
 		}
 		pruneReflinkVersions(bucketPath, objectName)

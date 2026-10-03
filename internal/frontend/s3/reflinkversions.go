@@ -207,30 +207,28 @@ func captureReflinkObjectVersion(bucketPath, objectName string) (*capturedReflin
 // recordCapturedReflinkObjectVersion writes the sidecar bookkeeping
 // entry for a capture-time clone (called AFTER the successful backend
 // Put — the backend owns and rewrites the sidecar wholesale, so the
-// pre-write history must ride the capture exactly as in sidecar mode).
-// The DATA file already exists (the capture-time clone); this is
-// sidecar-only work: entry prepended newest-first under lockObject.
-func recordCapturedReflinkObjectVersion(bucketPath, objectName string, captured *capturedReflinkVersion) error {
+// pre-write history must ride the capture in priorEntries and be
+// RESTORED beneath the new entry, exactly as the sidecar record path
+// does; a plain read-modify-write would start from an already-wiped
+// sidecar and collapse the history to one entry). The DATA file already
+// exists (the capture-time clone); this is sidecar-only work: entry
+// prepended newest-first under lockObject.
+func recordCapturedReflinkObjectVersion(bucketPath, objectName string, captured *capturedReflinkVersion, priorEntries []sidecarVersionEntry) error {
 	s := reflinkVersionStore{sidecarVersionStore{bucketPath: bucketPath}}
 	unlock := lockObject(s.sidecarPath(objectName))
 	defer unlock()
 
-	vs, err := s.readVersionedSidecar(objectName)
-	if err != nil {
-		if !isNoSuchKeyErr(err) {
-			return err
-		}
-		vs = versionedSidecar{}
-	}
 	entry := sidecarVersionEntry{
 		ID:           captured.id,
 		Size:         captured.size,
 		ETag:         captured.etag,
 		LastModified: time.Now().UTC(),
 	}
-	vs.Versioning = versioningEnabled
-	vs.Versions = append([]sidecarVersionEntry{entry}, vs.Versions...)
-	vs.CurrentVersionID = captured.id
+	vs := versionedSidecar{
+		Versioning:       versioningEnabled,
+		Versions:         append([]sidecarVersionEntry{entry}, priorEntries...),
+		CurrentVersionID: captured.id,
+	}
 	return s.writeVersionedSidecar(objectName, vs)
 }
 
