@@ -71,6 +71,7 @@ func installS3Seams() {
 	// snapshots-mode resolution fails per request with the store's
 	// honest not-tracked error - never a silent degradation.
 	s3.InstallZfsVersioningMode(serverConfig.ZfsVersioning)
+	s3.InstallZfsVersioningReflinkRetention(serverConfig.ZfsVersioningReflinkRetention)
 	if db, dbErr := metadata.OpenZmetadDB(context.Background(), serverConfig.ZmetadDBPath); dbErr == nil {
 		s3.InstallZmetadDB(db)
 	} else {

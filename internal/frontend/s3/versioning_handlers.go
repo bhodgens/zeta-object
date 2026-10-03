@@ -336,6 +336,7 @@ func recordCapturedObjectVersion(bucketPath, bucketName, objectName string, capt
 		if err := recordCapturedReflinkObjectVersion(bucketPath, objectName, captured.reflink); err != nil {
 			return err
 		}
+		pruneReflinkVersions(bucketPath, objectName)
 		return nil
 	}
 	s := sidecarVersionStore{bucketPath: bucketPath}

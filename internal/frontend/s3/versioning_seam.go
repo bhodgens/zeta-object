@@ -58,3 +58,24 @@ func zfsVersioningModeFor() string {
 	defer hookMu.RUnlock()
 	return zfsVersioningMode
 }
+
+// zfsVersioningReflinkRetention is the configured
+// zfs_versioning_reflink_retention value (leaf 06): the per-key count of
+// retained reflink version files; 0 = unlimited. Guarded by hookMu.
+var zfsVersioningReflinkRetention int
+
+// InstallZfsVersioningReflinkRetention installs the configured reflink
+// retention (exported wiring entry). Called once from installS3Seams;
+// the config loader has already validated non-negativity.
+func InstallZfsVersioningReflinkRetention(n int) {
+	hookMu.Lock()
+	defer hookMu.Unlock()
+	zfsVersioningReflinkRetention = n
+}
+
+// reflinkRetentionFor returns the installed retention under a read lock.
+func reflinkRetentionFor() int {
+	hookMu.RLock()
+	defer hookMu.RUnlock()
+	return zfsVersioningReflinkRetention
+}

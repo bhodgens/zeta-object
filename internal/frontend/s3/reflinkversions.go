@@ -226,7 +226,9 @@ func recordCapturedReflinkObjectVersion(bucketPath, objectName string, captured 
 // frozen Contract 1 write surface; the handler's hot path uses the
 // capture/record pair above). The data file is a plain atomic write
 // into the .versions-r layout (no source file exists to clone — this
-// form is for tests and callers that already hold the bytes).
+// form is for tests and callers that already hold the bytes). Retention
+// applies here too (the store-level write surface must uphold the same
+// per-key cap).
 func (s reflinkVersionStore) PutVersion(bucket, key string, r io.Reader, size int64, etag string) (VersionEntry, error) {
 	data, err := io.ReadAll(io.LimitReader(r, size))
 	if err != nil {
@@ -265,7 +267,108 @@ func (s reflinkVersionStore) PutVersion(bucket, key string, r io.Reader, size in
 	if err := s.writeVersionedSidecar(key, vs); err != nil {
 		return VersionEntry{}, err
 	}
+	pruneReflinkVersions(s.bucketPath, key)
 	return VersionEntry{ID: id, IsLatest: true, Size: size, ETag: etag, LastModified: now}, nil
+}
+
+// ---------- retention pruning (leaf 06, zfs_versioning_reflink_retention) ----------
+
+// pruneReflinkVersions enforces the per-key retention cap after a
+// successful capture+record: keep the NEWEST N version entries (N =
+// reflinkRetentionFor(); 0 = unlimited), delete the OLDEST version DATA
+// files beyond the cap AND then rewrite the sidecar without their
+// entries.
+//
+// Counting: VERSIONS only — delete-marker entries are never counted and
+// never pruned (markers are history truth, hold no data file).
+//
+// Crash-safe order (the recordCapturedObjectVersion invariant): data
+// files FIRST, sidecar rewrite SECOND — a crash between the two leaves
+// orphaned bytes on disk, never a sidecar entry whose data file is
+// already gone (a lying sidecar). Prune failures are logged and never
+// propagate: housekeeping must not fail a PUT that already succeeded.
+func pruneReflinkVersions(bucketPath, key string) {
+	retention := reflinkRetentionFor()
+	if retention <= 0 {
+		return // 0/unset = unlimited
+	}
+	s := reflinkVersionStore{sidecarVersionStore{bucketPath: bucketPath}}
+	unlock := lockObject(s.sidecarPath(key))
+	defer unlock()
+
+	vs, err := s.readVersionedSidecar(key)
+	if err != nil {
+		if !isNoSuchKeyErr(err) {
+			log.Printf("reflink retention: reading sidecar for %s: %v (skipping prune)", key, err)
+		}
+		return
+	}
+	// Collect the version (non-marker) entries beyond the newest N.
+	// Versions array is newest-first; markers pass through untouched.
+	var prunedIDs []string
+	kept := 0
+	keptVersions := make([]sidecarVersionEntry, 0, len(vs.Versions))
+	for _, e := range vs.Versions {
+		if e.IsDeleteMarker {
+			keptVersions = append(keptVersions, e)
+			continue
+		}
+		if kept < retention {
+			kept++
+			keptVersions = append(keptVersions, e)
+			continue
+		}
+		prunedIDs = append(prunedIDs, e.ID)
+	}
+	if len(prunedIDs) == 0 {
+		return
+	}
+	// 1. Data files FIRST: after this loop the bytes are gone; the
+	// sidecar still lists them until step 2 (briefly listing entries
+	// whose bytes are gone beats the reverse: a lying sidecar is the
+	// invariant violation, transient orphans are not).
+	for _, id := range prunedIDs {
+		if err := os.Remove(s.versionDataPath(key, id)); err != nil && !os.IsNotExist(err) {
+			// The rewrite below keeps the entry when its data file
+			// could not be removed (never lie about readable data).
+			log.Printf("reflink retention: removing version data %s/%s: %v (entry kept)", key, id, err)
+			prunedIDs = pruneDropID(prunedIDs, id)
+		}
+	}
+	// 2. Sidecar rewrite WITHOUT the pruned entries (only ids whose
+	// data file is actually gone).
+	if len(prunedIDs) == 0 {
+		return
+	}
+	byID := make(map[string]struct{}, len(prunedIDs))
+	for _, id := range prunedIDs {
+		byID[id] = struct{}{}
+	}
+	filtered := make([]sidecarVersionEntry, 0, len(keptVersions))
+	for _, e := range keptVersions {
+		if _, drop := byID[e.ID]; drop {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	vs.Versions = filtered
+	if err := s.writeVersionedSidecar(key, vs); err != nil {
+		// Entries whose bytes are gone may linger in the sidecar (a
+		// subsequent Open answers NoSuchKey honestly — no current-data
+		// substitution); the next prune pass retries.
+		log.Printf("reflink retention: rewriting sidecar for %s: %v (pruned entries may linger until the next pass)", key, err)
+	}
+}
+
+// pruneDropID removes id from prunedIDs (order-preserving).
+func pruneDropID(ids []string, id string) []string {
+	out := ids[:0]
+	for _, v := range ids {
+		if v != id {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // ---------- reflinkBothVersionStore ("both" mode, leaf 06) ----------

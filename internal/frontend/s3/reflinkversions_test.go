@@ -260,6 +260,124 @@ func TestReflinkBoth_Merge(t *testing.T) {
 	}
 }
 
+// TestReflink_RetentionPrune pins the leaf-06 retention contract: with
+// retention=2, a 4th recorded version prunes the OLDEST version data
+// file and its sidecar entry; delete markers are never counted and
+// never pruned; the crash-safety invariant holds (every remaining
+// sidecar entry's data file exists — never a lying sidecar).
+func TestReflink_RetentionPrune(t *testing.T) {
+	env := setupS3TestEnv(t)
+	bkt := "reflink-retain"
+	_ = env.setupBucket(t, bkt)
+	bucketPath := filepath.Join(env.dataDir, bkt)
+	installReflinkMode(t, 0)
+	InstallZfsVersioningReflinkRetention(2)
+	t.Cleanup(func() { InstallZfsVersioningReflinkRetention(0) })
+	fakeClone(t)
+
+	if err := os.WriteFile(filepath.Join(bucketPath, "k.txt"), []byte("v0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTestSidecar(t, bucketPath, "k.txt"); err != nil {
+		t.Fatal(err)
+	}
+	store := versionStoreFor(bucketPath, nil, "reflink")
+
+	// Four captures+records (simulating 4 overwrites on the wire).
+	var ids []string
+	for _, v := range []string{"v1", "v2", "v3", "v4"} {
+		captured, err := captureReflinkObjectVersion(bucketPath, "k.txt")
+		if err != nil {
+			t.Fatalf("capture: %v", err)
+		}
+		if !captured.cloneOK {
+			t.Fatalf("clone failed unexpectedly")
+		}
+		// Simulate the new write landing before the record step.
+		if err := os.WriteFile(filepath.Join(bucketPath, "k.txt"), []byte(v+"-new"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := recordCapturedObjectVersion(bucketPath, bkt, "k.txt", &capturedObjectVersion{reflink: captured}); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+		ids = append(ids, captured.id)
+	}
+
+	// A delete marker exists in the history: never counted, never pruned.
+	if _, err := store.PutDeleteMarker(bkt, "k.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := store.List(bkt, "k.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	markers, versions := 0, 0
+	for _, e := range list {
+		if e.IsDeleteMarker {
+			markers++
+		} else {
+			versions++
+		}
+	}
+	if markers != 1 {
+		t.Fatalf("markers = %d, want 1 (retention never prunes markers)", markers)
+	}
+	if versions != 2 {
+		t.Fatalf("versions = %d, want 2 (retention=2)", versions)
+	}
+
+	// The OLDEST data files are gone (v1, v2 clones), the newest two remain.
+	for _, gone := range ids[:2] {
+		if _, err := os.Stat(filepath.Join(bucketPath, ".metadata", reflinkVersionsDirName, keySha("k.txt"), gone)); !os.IsNotExist(err) {
+			t.Fatalf("oldest version data %s must be pruned", gone)
+		}
+	}
+	for _, keep := range ids[2:] {
+		if _, err := os.Stat(filepath.Join(bucketPath, ".metadata", reflinkVersionsDirName, keySha("k.txt"), keep)); err != nil {
+			t.Fatalf("kept version data %s must exist: %v", keep, err)
+		}
+	}
+
+	// Crash-safety invariant: EVERY remaining sidecar entry either is a
+	// marker (no data) or has its data file on disk — never a lying
+	// sidecar.
+	vs, err := (reflinkVersionStore{sidecarVersionStore{bucketPath: bucketPath}}).readVersionedSidecar("k.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range vs.Versions {
+		if e.IsDeleteMarker {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(bucketPath, ".metadata", reflinkVersionsDirName, keySha("k.txt"), e.ID)); err != nil {
+			t.Fatalf("lying sidecar: entry %s has no data file: %v", e.ID, err)
+		}
+	}
+}
+
+// TestReflink_RetentionZeroUnlimited pins 0/unset = unlimited (no
+// pruning at any count).
+func TestReflink_RetentionZeroUnlimited(t *testing.T) {
+	if reflinkRetentionFor() != 0 {
+		t.Fatalf("default retention = %d, want 0 (unlimited)", reflinkRetentionFor())
+	}
+	bp := t.TempDir()
+	s := reflinkVersionStore{sidecarVersionStore{bucketPath: bp}}
+	for range 5 {
+		if _, err := s.PutVersion("b", "k.txt", strings.NewReader("x"), 1, "e"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list, err := s.List("b", "k.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 5 {
+		t.Fatalf("versions = %d, want 5 (unlimited)", len(list))
+	}
+}
+
 // TestReflink_DeleteMarkerSuppression pins the delete contract through
 // the real dispatch: versionStoreForBucket in reflink mode + Enabled
 // state suppresses the plain delete (deleteObjectVersionedMarker).
