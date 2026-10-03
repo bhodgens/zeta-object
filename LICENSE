@@ -1,0 +1,36 @@
+Zeta-object Public License (MIT + commercial-use notification)
+Based on the MIT License, with one additional condition.
+Copyright (c) 2026 Ben Hodgens
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+1. The above copyright notice and this permission notice shall be
+   included in all copies or substantial portions of the Software.
+
+2. Commercial Use Notification. Any use of the Software by a commercial
+   or business entity - a for-profit organization, or any use in the
+   course of a trade or business - requires that the deploying
+   organization notify the copyright holder of such use, once, by email
+   to ben@hodgens.net, stating the organization name and a contact
+   address. Notification must occur within 30 days of first production
+   deployment. This condition applies to the deploying organization,
+   not to individual developers, and it does not restrict any other
+   exercise of the rights granted above.
+
+3. The above copyright notice, this permission notice, and condition 2
+   shall be included in all copies or substantial portions of the
+   Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
