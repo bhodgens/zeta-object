@@ -45,6 +45,11 @@ const (
 	// defaultZfsVersioningReflinkRetention is the zfs_versioning_reflink_retention
 	// default: 0 = unlimited (no pruning).
 	defaultZfsVersioningReflinkRetention = 0
+
+	// defaultZfsBinary is the zfs_binary default: the zfs CLI resolved
+	// via PATH, same convention as defaultZmetadBinary (zfs bucket
+	// datasets leaf 01).
+	defaultZfsBinary = "zfs"
 )
 
 // authModeNone is the opt-in zero-auth dev mode value for auth.mode
@@ -123,6 +128,21 @@ type ServerConfig struct {
 	// value aborts startup. Server-wide v1 (leaf 06) — a per-bucket
 	// override key is future work (README notes it).
 	ZfsVersioningReflinkRetention int `json:"zfs_versioning_reflink_retention,omitempty"`
+
+	// ZfsBucketDatasets enables ZFS bucket datasets (zfs-bucket-
+	// datasets leaf 01): when true, S3 CreateBucket under dataDir
+	// creates a child ZFS dataset (<dataDir dataset>/<bucket>) instead
+	// of a plain directory, and DeleteBucket destroys it. Absent =>
+	// false (plain directories everywhere, exact pre-feature
+	// behavior). When true, startup ABORTS unless dataDir is a ZFS
+	// mountpoint whose dataset name resolves (validateZfsBucketDatasets
+	// in zfs_startup.go) — never a lazy first-request failure.
+	ZfsBucketDatasets bool `json:"zfs_bucket_datasets"`
+
+	// ZfsBinary is the zfs CLI binary used for all dataset operations
+	// (PATH lookup, same convention as ZmetadBinary). Absent/empty ->
+	// defaultZfsBinary ("zfs") at config load - one place owns it.
+	ZfsBinary string `json:"zfs_binary"`
 
 	// AuditLog configures the append-only request audit log (charter
 	// exception, decided 2026-10-02). nil/absent = disabled (default off).
@@ -325,6 +345,9 @@ func defaultServerConfig() ServerConfig {
 		ZmetadBinary:  defaultZmetadBinary,
 		Region:        defaultS3Region,
 		ZfsVersioning: defaultZfsVersioning,
+		// ZfsBucketDatasets defaults to false (zero value) - plain
+		// directories everywhere unless explicitly enabled.
+		ZfsBinary: defaultZfsBinary,
 	}
 }
 
@@ -374,6 +397,11 @@ func loadConfig(configPath string) error {
 	}
 	if cfg.ZmetadBinary == "" {
 		cfg.ZmetadBinary = defaultZmetadBinary
+	}
+	// zfs_binary: absent/empty -> default (config load owns the default;
+	// dataset ops receive a concrete value, zfs bucket datasets leaf 01).
+	if cfg.ZfsBinary == "" {
+		cfg.ZfsBinary = defaultZfsBinary
 	}
 	// Region: absent/empty -> default; lowercased (SigV4 regions are
 	// lowercase; region-config-2026-10 leaf 01).
@@ -435,6 +463,8 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 		Region                        string                `json:"region"`
 		ZfsVersioning                 string                `json:"zfs_versioning"`
 		ZfsVersioningReflinkRetention int                   `json:"zfs_versioning_reflink_retention"`
+		ZfsBucketDatasets             bool                  `json:"zfs_bucket_datasets"`
+		ZfsBinary                     string                `json:"zfs_binary"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
@@ -455,6 +485,8 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	c.Region = a.Region
 	c.ZfsVersioning = a.ZfsVersioning
 	c.ZfsVersioningReflinkRetention = a.ZfsVersioningReflinkRetention
+	c.ZfsBucketDatasets = a.ZfsBucketDatasets
+	c.ZfsBinary = a.ZfsBinary
 	c.AuditLog = a.AuditLog
 	a.Buckets.apply(c)
 	return c.bucketsErr

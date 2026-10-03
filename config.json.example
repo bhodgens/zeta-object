@@ -110,6 +110,16 @@
   // section.
   // "zfs_versioning": "reflink",
 
+  // When true, S3 CreateBucket under dataDir creates a child ZFS dataset
+  // (<dataDir dataset>/<bucket>) instead of a plain directory, and
+  // DeleteBucket destroys it. Startup aborts unless dataDir is a ZFS
+  // mountpoint. Requires the zfs CLI (and permission to create datasets)
+  // on the server host. Default false = plain directories everywhere.
+  // "zfs_bucket_datasets": true,
+
+  // Path or name of the zfs CLI binary (default "zfs" on PATH).
+  // "zfs_binary": "zfs",
+
   // Reflink-mode version retention: the count of version DATA files
   // retained PER KEY (newest N kept; oldest beyond the cap are pruned
   // with their sidecar entries after each recorded version). 0/unset =

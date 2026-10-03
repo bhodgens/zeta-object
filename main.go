@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"log"
 	"net/http"
@@ -62,6 +63,14 @@ func main() {
 	serverConfigPath = configPath
 	if err := loadConfig(configPath); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
+	}
+	// ZFS bucket datasets (zfs-bucket-datasets leaf 01): when
+	// zfs_bucket_datasets is enabled, startup ABORTS unless the zfs
+	// binary resolves on PATH, dataDir passes the DetectZFS statfs probe,
+	// and its dataset name resolves. Fail-loud — never a lazy
+	// first-request 500. ZETAOBJECT_ASSUME_ZFS does not bypass this.
+	if _, err := validateZfsBucketDatasets(context.Background(), &serverConfig); err != nil {
+		log.Fatalf("ZFS bucket datasets validation failed: %v", err)
 	}
 	// Explicitly load credentials from environment (warn on empty values)
 	loadCredentials()
