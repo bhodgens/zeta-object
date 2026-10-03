@@ -49,6 +49,16 @@ func s3ErrorFrom(err error) (code, message string, status int) {
 	switch {
 	case errors.Is(err, backend.ErrNotSupported):
 		return "NotImplemented", "The requested operation is not implemented.", http.StatusNotImplemented
+	case errors.Is(err, ErrDeleteMarkersUnsupported):
+		// Snapshots-mode DELETE on a versioning-enabled bucket: the
+		// store refuses to fabricate a delete marker (the snapshot
+		// window is the history). A 4xx conflict, never a 500 — found
+		// by the zfs-validate section 10 probe (leaf 05).
+		return "Conflict", "Delete markers are not supported by this bucket's versioning mechanism.", http.StatusConflict
+	case errors.Is(err, ErrSnapshotsReadOnly):
+		// Snapshots are host policy: per-write version records cannot
+		// be created in snapshots mode. Same 4xx reasoning as above.
+		return "Conflict", "This bucket's versioning mechanism is read-only.", http.StatusConflict
 	default:
 		return "InternalError", "Internal Server Error", http.StatusInternalServerError
 	}
