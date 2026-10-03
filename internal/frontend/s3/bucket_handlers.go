@@ -282,12 +282,18 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 		return
 	}
 
+	// .zfs is the ZFS control directory at every dataset mountpoint (it
+	// carries the hidden snapshot view). OpenZFS 2.3+ returns it from
+	// readdir, so a dataset-backed bucket always lists it; it is never
+	// user data and must not block DeleteBucket (zfs-bucket-datasets
+	// live validation, 2026-10-03).
 	for _, file := range files {
-		if file.Name() != ".metadata" && file.Name() != ".bucket-actions" {
-			log.Printf("Attempted to delete non-empty bucket: %s", strconv.Quote(bucketName))
-			writeS3Error(w, "BucketNotEmpty", "The bucket you tried to delete is not empty.", http.StatusConflict)
-			return
+		if file.Name() == ".metadata" || file.Name() == ".bucket-actions" || file.Name() == ".zfs" {
+			continue
 		}
+		log.Printf("Attempted to delete non-empty bucket: %s (offending entry: %q)", strconv.Quote(bucketName), file.Name())
+		writeS3Error(w, "BucketNotEmpty", "The bucket you tried to delete is not empty.", http.StatusConflict)
+		return
 	}
 
 	// Leaf 2.4 fix 10: in-flight multipart uploads count as non-empty
