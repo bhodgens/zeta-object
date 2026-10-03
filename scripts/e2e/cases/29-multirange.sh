@@ -33,6 +33,8 @@ for want in 'Content-Range: bytes 0-99/4096' 'Content-Range: bytes 200-299/4096'
 		assert_eq "multipart body contains $want" 0 1
 	fi
 done
+# Exactly one part per requested span (grep -cF counts whole lines).
+assert_eq '3-span response has exactly 3 parts' 3 "$(grep -cF 'Content-Range:' "$BODY" | tr -d ' ')"
 
 # Span bytes verified: each requested window must appear verbatim in the body.
 for win in 0 200 1000; do
@@ -74,7 +76,19 @@ MFS=$(curl -sk -o "$MFST" -w '%{http_code}' \
 	--user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" \
 	-H 'Range: bytes=abc' "$BASE_URL/$BKT/m.bin" 2>/dev/null)
 assert_eq 'malformed range → 200' 200 "$MFS"
+assert_eq 'malformed range → full 4096-byte body' 4096 "$(wc -c < "$MFST" | tr -d ' ')"
 rm -f "$MFST"
+
+# Zero valid spans (all beyond EOF) → 416, not a 200/206 fallback.
+# (RFC 9110 §14.2: when NO byte-range-spec overlaps, the server MUST
+# respond 416. Fixed 2026-10-02: ParseMultiRange now distinguishes
+# "no VALID spec" (200) from "no SATISFIABLE span" (416).
+# Single-span `bytes=5000-` (case 06) already 416'd.)
+ZVS=$(curl -sk -o /dev/null -w '%{http_code}' \
+	--aws-sigv4 "aws:amz:us-east-1:s3" \
+	--user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" \
+	-H 'Range: bytes=5000-5100,6000-6100' "$BASE_URL/$BKT/m.bin" 2>/dev/null)
+assert_eq 'zero valid spans → 416' 416 "$ZVS"
 
 # Over-cap (101 disjoint spans) → 200 full body
 BIGSPEC=$(python3 -c "print(','.join(f'{i*40}-{i*40+1}' for i in range(101)))")
@@ -84,7 +98,20 @@ OCS=$(curl -sk -o "$OCT" -w '%{http_code}' \
 	--user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" \
 	-H "Range: bytes=$BIGSPEC" "$BASE_URL/$BKT/m.bin" 2>/dev/null)
 assert_eq '101 spans (over cap) → 200 full body' 200 "$OCS"
+assert_eq 'over cap → full 4096-byte body' 4096 "$(wc -c < "$OCT" | tr -d ' ')"
 rm -f "$OCT"
+
+# Exact cap (100 disjoint 2-byte spans) → 206 multipart/byteranges.
+CAPSPEC=$(python3 -c "print(','.join(f'{i*40}-{i*40+1}' for i in range(100)))")
+CHDRS=$(mktemp /tmp/e2e29.XXXXXX)
+CCS=$(curl -sk -o /dev/null -D "$CHDRS" -w '%{http_code}' \
+	--aws-sigv4 "aws:amz:us-east-1:s3" \
+	--user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" \
+	-H "Range: bytes=$CAPSPEC" "$BASE_URL/$BKT/m.bin" 2>/dev/null)
+assert_eq '100 spans (exact cap) → 206' 206 "$CCS"
+CAP_CT=$(sed -n 's/^[Cc]ontent-[Tt]ype: //p' "$CHDRS" | head -1 | tr -d '\r')
+assert_contains 'exact cap response is multipart/byteranges' "$CAP_CT" 'multipart/byteranges'
+rm -f "$CHDRS"
 
 rm -f "$TMP"
 aws s3 rb "s3://$BKT" --endpoint-url "$ENDPOINT" --no-verify-ssl --force >/dev/null 2>&1

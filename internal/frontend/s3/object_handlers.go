@@ -446,6 +446,68 @@ func serveObjectRange(w http.ResponseWriter, file *os.File, rr rangeRequest, act
 	}
 }
 
+// serveMultiRangeIfNeeded handles the multi-span Range path (issue #9):
+// multi-span -> 206 multipart (over-cap -> 200 full body via cok=false);
+// zero-satisfiable-span -> 416 (RFC 9110 14.2); single-span and
+// malformed -> false (caller falls through to the single-range path
+// UNCHANGED). srcRC stays unconsumed when false is returned.
+func serveMultiRangeIfNeeded(w http.ResponseWriter, r *http.Request, bucketName, objectName, bucketPath, objectMetadataPath string, srcRC io.ReadCloser, actualSize int64, contentType string, meta objectmodel.Object) bool {
+	spans, ok := ParseMultiRange(r.Header.Get("Range"), actualSize)
+	if !ok {
+		return false
+	}
+	if len(spans) == 0 {
+		// Specs were present but none satisfiable (RFC 9110 14.2):
+		// 416 InvalidRange, same as the single-span path.
+		serveObjectRangeFrom(r.Context(), w, srcRC, rangeRequest{Outcome: rangeUnsatisfiable}, actualSize, false, fmt.Sprintf("GetObject %s/%s multi-range unsatisfiable", bucketName, objectName))
+		return true
+	}
+	if len(spans) <= 1 {
+		return false
+	}
+	coalesced, cok := CoalesceRanges(spans, MultiRangePartsMax)
+	if !cok {
+		return false // over cap: 200 full body via the single-range path
+	}
+	// fetch mirrors the single-range read primitive: reopen the
+	// object through the Backend seam per span, drain the leading
+	// bytes, and window [off, end). The original srcRC stays
+	// unconsumed and is closed by the deferred Close.
+	fetch := func(off, end int64) (io.ReadCloser, error) {
+		rc, _, err := backendCallBucket2(bucketName, func(b backend.Backend) (io.ReadCloser, objectmodel.Object, error) {
+			return b.Get(r.Context(), bucketName, objectName, objectmodel.GetOptions{})
+		})
+		if err != nil {
+			return nil, err
+		}
+		if off > 0 {
+			if _, err := io.CopyN(io.Discard, rc, off); err != nil {
+				rc.Close()
+				return nil, fmt.Errorf("s3: seeking to offset %d: %w", off, err)
+			}
+		}
+		return struct {
+			io.Reader
+			io.Closer
+		}{io.LimitReader(rc, end-off), rc}, nil
+	}
+	if err := WriteMultipartByteranges(w, bucketName+"/"+objectName, actualSize, contentType, coalesced, fetch); err != nil {
+		log.Printf("Error serving multipart/byteranges for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), err)
+	}
+	log.Printf("Served multi-range request for object %s/%s (%s)", strconv.Quote(bucketName), strconv.Quote(objectName), strconv.Quote(r.Header.Get("Range"))) //nolint:gosec // G706: Range is strconv.Quote-escaped.
+	go triggerActions("after_download", ActionContext{
+		FilePath:     objectDataPathFor(bucketPath, objectName),
+		MetadataPath: objectMetadataPath,
+		BucketName:   bucketName,
+		BucketPath:   bucketPath,
+		ObjectKey:    objectName,
+		ContentType:  meta.ContentType,
+		ETag:         meta.ETag,
+		Size:         meta.Size,
+	})
+	return true
+}
+
 func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
 	bucketPath := getBucketPath(bucketName)
 	objectMetadataPath := filepath.Join(bucketPath, ".metadata", objectName+".meta")
@@ -523,46 +585,8 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	// multi-span -> multipart; single-span and malformed fall through to
 	// the existing single-range path UNCHANGED; an over-cap span count
 	// (CoalesceRanges returns false) falls through to the 200 full body.
-	if spans, ok := ParseMultiRange(r.Header.Get("Range"), actualSize); ok && len(spans) > 1 {
-		if coalesced, cok := CoalesceRanges(spans, MultiRangePartsMax); cok {
-			// fetch mirrors the single-range read primitive: reopen the
-			// object through the Backend seam per span, drain the leading
-			// bytes, and window [off, end). The original srcRC stays
-			// unconsumed and is closed by the deferred Close.
-			fetch := func(off, end int64) (io.ReadCloser, error) {
-				rc, _, err := backendCallBucket2(bucketName, func(b backend.Backend) (io.ReadCloser, objectmodel.Object, error) {
-					return b.Get(r.Context(), bucketName, objectName, objectmodel.GetOptions{})
-				})
-				if err != nil {
-					return nil, err
-				}
-				if off > 0 {
-					if _, err := io.CopyN(io.Discard, rc, off); err != nil {
-						rc.Close()
-						return nil, fmt.Errorf("s3: seeking to offset %d: %w", off, err)
-					}
-				}
-				return struct {
-					io.Reader
-					io.Closer
-				}{io.LimitReader(rc, end-off), rc}, nil
-			}
-			if err := WriteMultipartByteranges(w, bucketName+"/"+objectName, actualSize, contentType, coalesced, fetch); err != nil {
-				log.Printf("Error serving multipart/byteranges for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), err)
-			}
-			log.Printf("Served multi-range request for object %s/%s (%s)", strconv.Quote(bucketName), strconv.Quote(objectName), strconv.Quote(r.Header.Get("Range"))) //nolint:gosec // G706: Range is strconv.Quote-escaped.
-			go triggerActions("after_download", ActionContext{
-				FilePath:     objectDataPathFor(bucketPath, objectName),
-				MetadataPath: objectMetadataPath,
-				BucketName:   bucketName,
-				BucketPath:   bucketPath,
-				ObjectKey:    objectName,
-				ContentType:  meta.ContentType,
-				ETag:         meta.ETag,
-				Size:         meta.Size,
-			})
-			return
-		}
+	if handled := serveMultiRangeIfNeeded(w, r, bucketName, objectName, bucketPath, objectMetadataPath, srcRC, actualSize, contentType, meta); handled {
+		return
 	}
 
 	rr := parseRangeHeader(r.Header.Get("Range"), actualSize)

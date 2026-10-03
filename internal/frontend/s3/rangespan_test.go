@@ -38,8 +38,8 @@ func TestParseMultiRange(t *testing.T) {
 			want: []Span{{Start: 0, End: 1000}}, wantOK: true},
 		{name: "suffix zero dropped but other spec kept", header: "bytes=-0,0-99", size: 1000,
 			want: []Span{{Start: 0, End: 100}}, wantOK: true},
-		{name: "suffix zero only spec means no valid spec", header: "bytes=-0", size: 1000,
-			want: nil, wantOK: false},
+		{name: "suffix zero only spec means unsatisfiable 416", header: "bytes=-0", size: 1000,
+			want: nil, wantOK: true},
 		{name: "suffix negative malformed alone", header: "bytes=-abc", size: 1000,
 			want: nil, wantOK: false},
 
@@ -48,14 +48,14 @@ func TestParseMultiRange(t *testing.T) {
 			want: []Span{{Start: 100, End: 1000}}, wantOK: true},
 		{name: "open at last byte", header: "bytes=999-", size: 1000,
 			want: []Span{{Start: 999, End: 1000}}, wantOK: true},
-		{name: "open at size dropped", header: "bytes=1000-", size: 1000,
-			want: nil, wantOK: false},
-		{name: "open beyond size dropped", header: "bytes=1500-", size: 1000,
-			want: nil, wantOK: false},
+		{name: "open at size unsatisfiable", header: "bytes=1000-", size: 1000,
+			want: nil, wantOK: true},
+		{name: "open beyond size unsatisfiable", header: "bytes=1500-", size: 1000,
+			want: nil, wantOK: true},
 
 		// Closed forms vs size.
-		{name: "closed beyond size dropped", header: "bytes=1500-1600", size: 1000,
-			want: nil, wantOK: false},
+		{name: "closed beyond size unsatisfiable", header: "bytes=1500-1600", size: 1000,
+			want: nil, wantOK: true},
 		{name: "closed clamps end to size", header: "bytes=900-1999", size: 1000,
 			want: []Span{{Start: 900, End: 1000}}, wantOK: true},
 		{name: "single byte span", header: "bytes=0-0", size: 1000,
@@ -81,15 +81,15 @@ func TestParseMultiRange(t *testing.T) {
 		// Mixed valid + invalid: keep the valid, drop the invalid.
 		{name: "mixed valid invalid garbage", header: "bytes=1500-1600,0-99,abc,300-399", size: 1000,
 			want: []Span{{Start: 0, End: 100}, {Start: 300, End: 400}}, wantOK: true},
-		{name: "mixed all invalid", header: "bytes=1500-1600,abc,-0", size: 1000,
+		{name: "mixed all invalid unsatisfiable", header: "bytes=1500-1600,abc,-0", size: 1000,
 			want: nil, wantOK: false},
 		{name: "mixed dropped open and kept span", header: "bytes=1000-,200-299", size: 1000,
 			want: []Span{{Start: 200, End: 300}}, wantOK: true},
 
 		// Zero-size objects: every spec is unsatisfiable.
-		{name: "size zero closed spec", header: "bytes=0-99", size: 0, want: nil, wantOK: false},
-		{name: "size zero suffix", header: "bytes=-10", size: 0, want: nil, wantOK: false},
-		{name: "size zero open", header: "bytes=0-", size: 0, want: nil, wantOK: false},
+		{name: "size zero closed spec", header: "bytes=0-99", size: 0, want: nil, wantOK: true},
+		{name: "size zero suffix", header: "bytes=-10", size: 0, want: nil, wantOK: true},
+		{name: "size zero open", header: "bytes=0-", size: 0, want: nil, wantOK: true},
 
 		// One-byte objects.
 		{name: "size one closed single byte", header: "bytes=0-0", size: 1,
@@ -98,8 +98,8 @@ func TestParseMultiRange(t *testing.T) {
 			want: []Span{{Start: 0, End: 1}}, wantOK: true},
 		{name: "size one suffix whole object", header: "bytes=-1", size: 1,
 			want: []Span{{Start: 0, End: 1}}, wantOK: true},
-		{name: "size one open at size dropped", header: "bytes=1-", size: 1,
-			want: nil, wantOK: false},
+		{name: "size one open at size unsatisfiable", header: "bytes=1-", size: 1,
+			want: nil, wantOK: true},
 	}
 
 	for _, tt := range tests {
