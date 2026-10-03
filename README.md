@@ -638,6 +638,10 @@ Once enabled:
 
 `snapshots` mode requires zmetad tracking of the bucket's dataset (the same prerequisite as the `?events` endpoints); an untracked or unopenable zmetad database makes snapshot reads answer honestly-not-found, never a substitution of current data. No new ZFS capability is required — the mode works against any snapshot policy the host already runs. Upstream zfs-metadata#15 (snapshot-on-write) is the future densification: snapshot mode becomes data-true per-write with zero code change here.
 
+### Coverage
+
+The versioning surface is covered end to end: e2e case `scripts/e2e/cases/32-versioning.sh` drives the sidecar path over the wire (`?versioning` enable/echo, overwrite-records-old-bytes, `?versions` newest-first render, delete-marker 404/405 semantics, suspend, off), and section 10 of the ZFS validation harness (`scripts/zfs-validate/run-zfs-validation.sh`) proves snapshots-mode parity against a real OpenZFS host — manually-taken `sudo zfs snapshot`s become VersionIds, `?versions` lists them newest-first, `?versionId=<snapname>` reads the bytes as of that snapshot, and an unknown/expired snapshot answers an honest 404.
+
 ## Event Actions
 
 Configurable shell commands fire in response to S3 operations, via `.bucket-actions` files (JSON5) placed in bucket directories. Subdirectories inherit and can merge, override, or disable parent actions.
@@ -733,7 +737,7 @@ Every pull goes through the pre-commit chain (secrets scan, vet, error-pattern c
 *   Key rotation for `identities` is a SIGHUP reload (edit config.json → `kill -HUP`); the env pair still needs a restart. No OAuth/OIDC/token-based auth for S3 (SigV4 cannot express it).
 *   Region: defaults to `us-east-1`; set `region` in config.json to pin another region (strict credential-scope compare — a mismatch fails with `SignatureDoesNotMatch` naming the expected region). When `region` is left unset, default mode accepts any well-formed client region permissively with a log notice — a dev escape hatch; set `region` for a strict production posture.
 *   Object keys with `..` or `.metadata` path segments are rejected, and keys must be in canonical form (safety over S3 compatibility; no `a//b` aliasing).
-*   S3 versioning `?versions` listing stays unversioned-shaped (each object = one `null` version); versioned listing render (Version/DeleteMarker XML entries from the version store) is planned next. The ZFS-events-derived version listing remains an extension, not S3 versioning.
+*   S3 versioning snapshots mode (ZFS buckets) is windowed by the host's snapshot policy: only writes that predate an existing snapshot are version-visible, and snapshot reads require zmetad tracking (an untracked dataset answers honestly-not-found). The ZFS-events-derived version listing (`?events&versions`) remains a separate extension, not S3 versioning.
 
 ## Roadmap
 

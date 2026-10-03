@@ -103,6 +103,20 @@ INTEROP_EXPECT_DATA="$PAYLOAD_HASH"
 scenario_pass boto3 copy_object "$BKT" dst.txt "$BKT" plain.txt
 INTEROP_EXPECT_DATA=''
 
+# --- object tagging smoke (parity: case 30, audit must-add item n) ------------
+# put_object_tagging -> get_object_tagging -> delete_object_tagging on the
+# existing plain.txt (delete asserts the tag set is actually emptied).
+scenario_pass boto3 tagging_put "$BKT" plain.txt
+INTEROP_EXPECT_DATA='yes'
+scenario_pass boto3 tagging_get "$BKT" plain.txt
+INTEROP_EXPECT_DATA=''
+# delete_object_tagging returns 204; the follow-up GET then answers
+# 404 NoSuchTagSet (case-30 parity) — the runner maps that to data
+# 'NoSuchTagSet', which is the observable "tags are gone" here.
+INTEROP_EXPECT_DATA='NoSuchTagSet'
+scenario_pass boto3 tagging_delete "$BKT" plain.txt
+INTEROP_EXPECT_DATA=''
+
 # --- batch delete (parity: case 08: 2 exist + 1 missing → 3 deleted) ---------
 INTEROP_EXPECT_DATA=3
 scenario_pass boto3 batch_delete "$BKT" plain.txt dst.txt ghost.txt

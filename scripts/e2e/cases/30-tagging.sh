@@ -18,6 +18,19 @@ assert_eq 'put with x-amz-tagging → 200' 200 "$S3_STATUS"
 s3req PUT "/$BKT/plain.txt" --data-binary "@$TMP"
 assert_eq 'put untagged control → 200' 200 "$S3_STATUS"
 
+# GET ?tagging on a nonexistent key → 404 NoSuchKey (not NoSuchTagSet).
+s3req GET "/$BKT/no-such-key.txt?tagging"
+assert_eq 'GET ?tagging nonexistent key → 404' 404 "$S3_STATUS"
+assert_s3code 'GET ?tagging nonexistent key → NoSuchKey' 'NoSuchKey'
+
+# 0-byte object PUT with x-amz-tagging → 200; tags round-trip via GET ?tagging.
+s3req PUT "/$BKT/empty.bin" -H 'x-amz-tagging: kind=empty' --data-binary ''
+assert_eq 'put 0-byte object with x-amz-tagging → 200' 200 "$S3_STATUS"
+s3req GET "/$BKT/empty.bin?tagging"
+assert_eq '0-byte object GET ?tagging → 200' 200 "$S3_STATUS"
+assert_contains '0-byte object tag key round-trips' "$S3_BODY" '<Key>kind</Key>'
+assert_contains '0-byte object tag value round-trips' "$S3_BODY" '<Value>empty</Value>'
+
 # --- TagCount on HEAD ----------------------------------------------------------
 aws_ok 'head tagged object' s3api head-object --bucket "$BKT" --key 'tagged.txt'
 TC=$(aws s3api head-object --bucket "$BKT" --key 'tagged.txt' --endpoint-url "$ENDPOINT" --no-verify-ssl 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin).get("TagCount",""))')
@@ -64,6 +77,8 @@ s3req GET "/$BKT/copy-dst.txt?tagging"
 assert_eq 'COPY default: GET ?tagging → 200' 200 "$S3_STATUS"
 assert_contains 'COPY default: origin tag copied' "$S3_BODY" '<Key>origin</Key>'
 assert_contains 'COPY default: tag value copied' "$S3_BODY" '<Value>alpha</Value>'
+TCC=$(aws s3api head-object --bucket "$BKT" --key 'copy-dst.txt' --endpoint-url "$ENDPOINT" --no-verify-ssl 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin).get("TagCount",""))')
+assert_eq 'COPY default: HEAD TagCount on copy = 1' 1 "$TCC"
 
 # --- COPY REPLACE: tags replaced ---------------------------------------------------
 aws_ok 'copy-object REPLACE directive' s3api copy-object --bucket "$BKT" --key 'copy-repl.txt' \
@@ -72,6 +87,12 @@ s3req GET "/$BKT/copy-repl.txt?tagging"
 assert_eq 'COPY REPLACE: GET ?tagging → 200' 200 "$S3_STATUS"
 assert_contains 'COPY REPLACE: new tag present' "$S3_BODY" '<Value>beta</Value>'
 assert_eq 'COPY REPLACE: old tag value gone' 0 "$(printf '%s' "$S3_BODY" | grep -c '<Value>alpha</Value>')"
+# REPLACE negative (audit item h): the old tag set is REPLACED, not merged —
+# the replacement reuses the key `origin`, so exactly ONE origin key may
+# remain and HEAD TagCount must be 1 (a merge would yield 2 tags).
+assert_eq 'COPY REPLACE: tag set holds exactly one origin key' 1 "$(printf '%s' "$S3_BODY" | grep -c '<Key>origin</Key>')"
+TCR=$(aws s3api head-object --bucket "$BKT" --key 'copy-repl.txt' --endpoint-url "$ENDPOINT" --no-verify-ssl 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin).get("TagCount",""))')
+assert_eq 'COPY REPLACE: HEAD TagCount = 1 (no merge)' 1 "$TCR"
 
 # --- InvalidTag: reserved aws: prefix → 400 -----------------------------------------
 s3req PUT "/$BKT/bad.txt" -H 'x-amz-tagging: aws:reserved=true' --data-binary "@$TMP"

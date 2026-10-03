@@ -111,6 +111,38 @@ r30_req ap-southeast-2 GET "/$R30_BKT"
 assert_eq '30b third-region scope also rejected' 403 "$R30_STATUS"
 r30_expect_code '30b third-region error code is SignatureDoesNotMatch' 'SignatureDoesNotMatch'
 
+# --- 30d: presigned URLs honor the server's region -----------------------------
+# aws s3 presign is offline signing (no request reaches the server at presign
+# time), so only the GET is wire-visible. Seed a small object with a
+# matching-scope signed PUT first (r30_req cannot carry a body).
+PST=$(mktemp /tmp/e2e30-presign.XXXXXX)
+printf 'presign-payload-30' > "$PST"
+R30_PS_STATUS=$(curl -sk -o /dev/null -w '%{http_code}' \
+	--aws-sigv4 "aws:amz:eu-west-1:s3" \
+	--user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" \
+	-X PUT --data-binary @"$PST" "$R30_URL/$R30_BKT/presigned.txt" 2>/dev/null)
+assert_eq '30d seeded object for presign PUT -> 200' 200 "$R30_PS_STATUS"
+rm -f "$PST"
+
+# Matching region: presign eu-west-1, plain (signature-free) GET -> 200.
+# (Direct aws call, NOT aws_cap: aws_cap appends --endpoint-url "$ENDPOINT"
+# for the SUITE server, which would collide with the private server's URL.)
+R30_PSURL_OK=$(aws s3 presign "s3://$R30_BKT/presigned.txt" \
+	--region eu-west-1 --endpoint-url "$R30_URL" 2>/dev/null)
+R30_PSGOOD=$(curl -sk -o /dev/null -w '%{http_code}' "$R30_PSURL_OK" 2>/dev/null)
+assert_eq '30d eu-west-1 presigned GET -> 200' 200 "$R30_PSGOOD"
+
+# Mismatched region: presign us-east-1 against the eu-west-1 server -> 403.
+R30_PSURL_BAD=$(aws s3 presign "s3://$R30_BKT/presigned.txt" \
+	--region us-east-1 --endpoint-url "$R30_URL" 2>/dev/null)
+R30_PSBAD=$(curl -sk -o /dev/null -w '%{http_code}' "$R30_PSURL_BAD" 2>/dev/null)
+assert_eq '30d us-east-1 presigned GET against eu-west-1 server -> 403' 403 "$R30_PSBAD"
+
+# Remove the seeded object so the case-bucket cleanup below sees an empty
+# bucket (mode 2 reuses this dataDir and performs the DELETE).
+r30_req eu-west-1 DELETE "/$R30_BKT/presigned.txt"
+assert_eq '30d presign seed object removed' 204 "$R30_STATUS"
+
 kill -TERM "$R30_PID" 2>/dev/null
 for _ in 1 2 3 4 5 6 7 8 9 10; do
 	kill -0 "$R30_PID" 2>/dev/null || break

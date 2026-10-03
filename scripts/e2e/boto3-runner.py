@@ -215,6 +215,29 @@ def run(c, scenario, args):
         r = c.delete_objects(Bucket=args[0], Delete={
             "Objects": [{"Key": k} for k in args[1:]], "Quiet": False})
         return True, 200, "", str(len(r.get("Deleted", []))), ""
+    # --- object tagging smoke (parity: case 30) --------------------------------
+    if scenario == "tagging_put":
+        c.put_object_tagging(Bucket=args[0], Key=args[1], Tagging={
+            "TagSet": [{"Key": "interop", "Value": "yes"}]})
+        return True, 200, "", "", ""
+    if scenario == "tagging_get":
+        r = c.get_object_tagging(Bucket=args[0], Key=args[1])
+        tags = {t["Key"]: t["Value"] for t in r.get("TagSet", [])}
+        return True, r["ResponseMetadata"]["HTTPStatusCode"], "", \
+            tags.get("interop", ""), ""
+    if scenario == "tagging_delete":
+        c.delete_object_tagging(Bucket=args[0], Key=args[1])
+        # Post-delete GET: the server answers 404 NoSuchTagSet (case-30
+        # parity) — that IS the emptied state; return it as observable data.
+        try:
+            r = c.get_object_tagging(Bucket=args[0], Key=args[1])
+            return True, r["ResponseMetadata"]["HTTPStatusCode"], "", \
+                str(len(r.get("TagSet", []))), ""
+        except ClientError as e:
+            code = e.response["Error"].get("Code", "")
+            if code == "NoSuchTagSet":
+                return True, 200, "", code, ""
+            raise
     return False, 0, "", "", "unknown scenario: " + scenario
 
 

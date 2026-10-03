@@ -59,6 +59,10 @@ scenario_expect() {
 	presigned_get)        printf '200 -' ;;
 	copy_object)          printf '200 -' ;;
 	batch_delete)         printf '200 -' ;;
+	# ... extended for the tagging smoke (parity: case 30, audit item n).
+	tagging_put)          printf '200 -' ;;
+	tagging_get)          printf '200 -' ;;
+	tagging_delete)       printf '200 -' ;;
 	*)                    printf '? ?' ;;
 	esac
 }

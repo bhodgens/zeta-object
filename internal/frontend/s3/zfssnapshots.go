@@ -149,14 +149,25 @@ func parseZfsSnapshotList(stdout []byte) []SnapInfo {
 
 // parseZfsCreation parses `zfs list -o creation` output: the epoch form
 // (`zfs list -p`) and the locale `date` form both occur; anything else
-// is a zero time (the name remains a valid handle).
+// is a zero time (the name remains a valid read handle).
 func parseZfsCreation(tok string) time.Time {
 	if epoch, err := strconv.ParseInt(tok, 10, 64); err == nil {
 		return time.Unix(epoch, 0).UTC()
 	}
-	// `zfs list` (non -p) formats creation with ctime(): "Mon Oct  2
-	// 17:30:00 2026". Parse with the reference layout; year-only locale
-	// variations degrade to zero.
+	// `zfs list` (non -p) formats creation with ctime(): "%a %b %e
+	// %H:%M %Y" — MINUTE resolution, no seconds ("Mon Oct  2 17:30
+	// 2026", single-digit hours space-padded). Both the _2 and double-
+	// space day forms are accepted; year-only locale variations
+	// degrade to zero. (Found by the zfs-validate section 10 probe:
+	// zfs-meta's zfs 2.4.1 emits exactly this form, and the seconds
+	// layouts parsed it to zero — collapsing newest-first ordering to
+	// zfs name order.)
+	if ts, err := time.Parse("Mon Jan _2 15:04 2006", tok); err == nil {
+		return ts.UTC()
+	}
+	if ts, err := time.Parse("Mon Jan  2 15:04 2006", tok); err == nil {
+		return ts.UTC()
+	}
 	if ts, err := time.Parse("Mon Jan _2 15:04:05 2006", tok); err == nil {
 		return ts.UTC()
 	}
