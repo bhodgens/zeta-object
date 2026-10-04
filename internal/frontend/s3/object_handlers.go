@@ -1394,6 +1394,13 @@ func validateObjectKey(key string) error {
 		if seg == ".metadata" {
 			return fmt.Errorf("object key cannot contain %q path segments", ".metadata")
 		}
+		if seg == ".zfs" {
+			// .zfs is the ZFS control directory at every dataset
+			// mountpoint (hidden snapshot view). On dataset-backed
+			// buckets a key segment .zfs would collide with it - reject
+			// like .metadata (zfs-bucket-datasets, 2026-10-03).
+			return fmt.Errorf("object key cannot contain %q path segments", ".zfs")
+		}
 	}
 	return nil
 }

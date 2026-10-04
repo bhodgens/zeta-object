@@ -1053,6 +1053,9 @@ func TestValidateObjectKey_Traversal(t *testing.T) {
 		{"metadata segment", ".metadata/steal"},
 		{"metadata mid-path", "a/.metadata/b"},
 		{"metadata suffix segment", ".metadata/foo"},
+		{"zfs control segment", ".zfs/snap"},
+		{"zfs control mid-path", "a/.zfs/b"},
+		{"zfs control bare", ".zfs"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

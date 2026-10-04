@@ -45,7 +45,16 @@ func TestValidateKeyRejectsNonCanonicalForms(t *testing.T) {
 			t.Errorf("validateKey(%q) = nil, want rejection (aliases a Clean-collapsed path)", key)
 		}
 	}
-	accepts := []string{"a", "a/b", "a/b/c", "x.txt", "dir/file.tar.gz", "a b/c d"}
+	// .zfs control-dir segments (zfs-bucket-datasets, 2026-10-03): on a
+	// dataset-backed bucket the key would collide with the ZFS control
+	// directory - rejected exactly like ".metadata" segments.
+	zfsRejects := []string{".zfs", ".zfs/snap", "a/.zfs/b", "dir/.zfs"}
+	for _, key := range zfsRejects {
+		if err := validateKey(key); err == nil {
+			t.Errorf("validateKey(%q) = nil, want rejection (collides with the ZFS control directory)", key)
+		}
+	}
+	accepts := []string{"a", "a/b", "a/b/c", "x.txt", "dir/file.tar.gz", "a b/c d", "x.zfs", "a/zfs.txt"}
 	for _, key := range accepts {
 		if err := validateKey(key); err != nil {
 			t.Errorf("validateKey(%q) = %v, want nil", key, err)

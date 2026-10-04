@@ -125,6 +125,12 @@ func validateKey(key string) error {
 		if seg == ".metadata" {
 			return keyInvalidError(`object key cannot contain ".metadata" path segments`)
 		}
+		if seg == ".zfs" {
+			// .zfs is the ZFS control directory at every dataset
+			// mountpoint; reject like .metadata (zfs-bucket-datasets,
+			// 2026-10-03).
+			return keyInvalidError(`object key cannot contain ".zfs" path segments`)
+		}
 	}
 	// CANONICAL FORM (bughunt B5 fix): reject keys that Clean would collapse
 	// ("a//b", "a/./b", "/a", "a/", "a/b/"). filepath.Clean silently folds
