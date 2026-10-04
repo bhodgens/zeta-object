@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -491,6 +492,91 @@ func TestZmetadDB_HasDataset(t *testing.T) {
 	}
 	if has {
 		t.Error("HasDataset(pool/absent) = true, want false")
+	}
+}
+
+// TestZmetadDB_ResolveMountpointByPath pins the mountpoint half of the
+// resolve pair (added with the snapshot-version store, dfa2681). Same
+// fixture shape as TestZmetadDB_ResolveDatasetByPath: longest "/"-rooted
+// mountpoint containing the path; "none"/"legacy" rows never match;
+// no match -> *DatasetNotTrackedError.
+func TestZmetadDB_ResolveMountpointByPath(t *testing.T) {
+	path, conn := writeFullTestDB(t)
+	for ds, mp := range map[string]string{
+		"testpool":         "/testpool",
+		"testpool/scratch": "/testpool/scratch",
+		"unmounted":        "none",
+		"legacypool":       "legacy",
+	} {
+		if _, err := conn.Exec("INSERT INTO datasets (dataset, mountpoint) VALUES (?, ?)",
+			ds, mp); err != nil {
+			t.Fatalf("insert dataset: %v", err)
+		}
+	}
+
+	db, err := OpenZmetadDB(context.Background(), path)
+	if err != nil {
+		t.Fatalf("OpenZmetadDB: %v", err)
+	}
+	defer db.Close()
+
+	tests := []struct {
+		name    string
+		path    string
+		want    string
+		wantErr bool
+	}{
+		{name: "exact mountpoint", path: "/testpool", want: "/testpool"},
+		{name: "shallow child falls to parent", path: "/testpool/a/b", want: "/testpool"},
+		{name: "longest matching ancestor wins", path: "/testpool/scratch/x", want: "/testpool/scratch"},
+		{name: "scratch exact", path: "/testpool/scratch", want: "/testpool/scratch"},
+		{name: "separator guard", path: "/testpoolx", wantErr: true},
+		{name: "unrelated path", path: "/opt/other", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := db.ResolveMountpointByPath(tc.path)
+			if tc.wantErr {
+				if _, ok := errors.AsType[*DatasetNotTrackedError](err); !ok {
+					t.Fatalf("expected *DatasetNotTrackedError, got %T: %v", err, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveMountpointByPath(%q): %v", tc.path, err)
+			}
+			if got != tc.want {
+				t.Errorf("ResolveMountpointByPath(%q) = %q, want %q", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestZmetadDB_ResolveMountpointByPath_NoRows pins the empty-table shape.
+func TestZmetadDB_ResolveMountpointByPath_NoRows(t *testing.T) {
+	path, _ := writeFullTestDB(t)
+	db, err := OpenZmetadDB(context.Background(), path)
+	if err != nil {
+		t.Fatalf("OpenZmetadDB: %v", err)
+	}
+	defer db.Close()
+	_, err = db.ResolveMountpointByPath("/anything")
+	if _, ok := errors.AsType[*DatasetNotTrackedError](err); !ok {
+		t.Fatalf("empty datasets table: expected *DatasetNotTrackedError, got %T: %v", err, err)
+	}
+}
+
+// TestTypedErrorStrings restores the platform-neutral typed-error pin
+// (originally zfs_cmd_test.go, deleted with the CLI transport in leaf 04).
+// PathStatError methods were otherwise uncovered in CI (no zfs), which is
+// what dropped the package below its coverage floor.
+func TestTypedErrorStrings(t *testing.T) {
+	statErr := &PathStatError{Path: "/buckets/a", Err: os.ErrPermission}
+	if got := statErr.Error(); got == "" {
+		t.Error("PathStatError.Error() returned empty string")
+	}
+	if !errors.Is(statErr, os.ErrPermission) {
+		t.Error("PathStatError.Unwrap() does not surface the wrapped error")
 	}
 }
 

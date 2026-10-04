@@ -244,3 +244,15 @@ func TestZmetadProviderAssumeZFSGate(t *testing.T) {
 		t.Fatalf("Probe of untracked dir with assume-ZFS = %+v, want unavailable 'not tracked by zmetad'", res)
 	}
 }
+
+// TestSetZmetadBinary pins the exported promotion of the unexported
+// setter (frozen single-arg constructor contract): applies to the zmetad
+// events provider, no-ops on other providers, empty keeps the default.
+func TestSetZmetadBinary(t *testing.T) {
+	p := NewZmetadEventsProvider("/tmp/does-not-matter.db")
+	SetZmetadBinary(p, "/usr/local/sbin/zmetad")
+
+	var notZmetad MetadataProvider = &fakeProvider{name: "fake"}
+	SetZmetadBinary(notZmetad, "/x") // must not panic
+	SetZmetadBinary(p, "")           // empty keeps the PATH default
+}
