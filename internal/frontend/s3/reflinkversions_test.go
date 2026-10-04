@@ -424,3 +424,105 @@ func TestReflink_DeleteMarkerSuppression(t *testing.T) {
 		t.Fatalf("List after delete = %+v, want one delete marker", list)
 	}
 }
+
+// TestReflinkRetention_PerBucketOverride (leaf 07): a bucket's own
+// reflinkRetention overrides the server-wide fallback; buckets without
+// one fall back; an explicit per-bucket 0 keeps zero version copies even
+// when the server-wide key is nonzero.
+func TestReflinkRetention_PerBucketOverride(t *testing.T) {
+	env := setupS3TestEnv(t)
+	InstallZfsVersioningReflinkRetention(2) // server-wide fallback
+	t.Cleanup(func() { InstallZfsVersioningReflinkRetention(0) })
+	InstallServerConfigView(ServerConfigView{
+		Buckets:          map[string]string{"b-3": env.dataDir + "/b-3", "b-0": env.dataDir + "/b-0", "b-fb": env.dataDir + "/b-fb"},
+		DataDir:          env.dataDir,
+		ReflinkRetention: map[string]int{"b-3": 3, "b-0": 0}, // b-fb absent → fallback 2
+	})
+	t.Cleanup(func() { InstallServerConfigView(ServerConfigView{DataDir: env.dataDir}) })
+	fakeClone(t)
+
+	for _, b := range []string{"b-3", "b-0", "b-fb"} {
+		if err := os.MkdirAll(env.dataDir+"/"+b, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(env.dataDir, b, "k.txt"), []byte("v0"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeTestSidecar(t, env.dataDir+"/"+b, "k.txt"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	overwrite := func(bucket string) {
+		captured, err := captureReflinkObjectVersion(env.dataDir+"/"+bucket, "k.txt")
+		if err != nil {
+			t.Fatalf("%s capture: %v", bucket, err)
+		}
+		if !captured.cloneOK {
+			t.Fatalf("%s clone failed", bucket)
+		}
+		if err := os.WriteFile(filepath.Join(env.dataDir, bucket, "k.txt"), []byte("new-"+bucket), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// Prior history rides the capture (the backend Put wipes the
+		// sidecar; the record step restores it — the live-bug invariant).
+		st := reflinkVersionStore{sidecarVersionStore{bucketPath: env.dataDir + "/" + bucket}}
+		prior, err := st.readVersionedSidecar("k.txt")
+		if err != nil && !isNoSuchKeyErr(err) {
+			t.Fatalf("%s read sidecar: %v", bucket, err)
+		}
+		if err := recordCapturedObjectVersion(env.dataDir+"/"+bucket, bucket, "k.txt", &capturedObjectVersion{reflink: captured, priorEntries: prior.Versions}); err != nil {
+			t.Fatalf("%s record: %v", bucket, err)
+		}
+	}
+
+	// b-0 has per-bucket 0: the first recorded version is pruned
+	// immediately (keep zero copies) even though the fallback is 2.
+	overwrite("b-0")
+	s0 := reflinkVersionStore{sidecarVersionStore{bucketPath: env.dataDir + "/b-0"}}
+	vs0, err := s0.readVersionedSidecar("k.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countVersionEntries(vs0); n != 0 {
+		t.Fatalf("b-0 (per-bucket 0): got %d version entries, want 0 (explicit zero overrides fallback)", n)
+	}
+
+	// b-3 keeps 3 versions despite overwriting 3 times (fallback would
+	// have pruned to 2).
+	for range 3 {
+		overwrite("b-3")
+	}
+	sbs := reflinkVersionStore{sidecarVersionStore{bucketPath: env.dataDir + "/b-3"}}
+	vs3, err := sbs.readVersionedSidecar("k.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countVersionEntries(vs3); n != 3 {
+		t.Fatalf("b-3 (per-bucket 3): got %d version entries, want 3", n)
+	}
+
+	// b-fb (no per-bucket value) falls back to the server-wide 2.
+	for range 3 {
+		overwrite("b-fb")
+	}
+	sfb := reflinkVersionStore{sidecarVersionStore{bucketPath: env.dataDir + "/b-fb"}}
+	vsfb, err := sfb.readVersionedSidecar("k.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countVersionEntries(vsfb); n != 2 {
+		t.Fatalf("b-fb (fallback 2): got %d version entries, want 2", n)
+	}
+}
+
+// countVersionEntries counts non-marker version entries.
+func countVersionEntries(vs versionedSidecar) int {
+	n := 0
+	for _, e := range vs.Versions {
+		if !e.IsDeleteMarker {
+			n++
+		}
+	}
+	return n
+}

@@ -79,3 +79,16 @@ func reflinkRetentionFor() int {
 	defer hookMu.RUnlock()
 	return zfsVersioningReflinkRetention
 }
+
+// reflinkRetentionForBucket resolves the retention cap for ONE bucket
+// (versioning leaf 07): the bucket's own reflinkRetention when the
+// config view carries one (a present 0 = keep zero version copies),
+// else the server-wide zfs_versioning_reflink_retention fallback.
+// The bool distinguishes "explicit per-bucket 0" (prune-to-zero) from
+// "fall back to the server-wide value" (0 there = unlimited).
+func reflinkRetentionForBucket(bucket string) (int, bool) {
+	if r, ok := currentServerConfig().ReflinkRetention[bucket]; ok {
+		return r, true
+	}
+	return reflinkRetentionFor(), false
+}

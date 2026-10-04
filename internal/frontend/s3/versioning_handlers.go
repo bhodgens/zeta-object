@@ -336,7 +336,10 @@ func recordCapturedObjectVersion(bucketPath, bucketName, objectName string, capt
 		if err := recordCapturedReflinkObjectVersion(bucketPath, objectName, captured.reflink, captured.priorEntries); err != nil {
 			return err
 		}
-		pruneReflinkVersions(bucketPath, objectName)
+		// NOTE: the record step already holds the sidecar lock via
+		// recordCapturedReflinkObjectVersion... which released it on
+		// return; this call site does NOT hold the lock, so pass a no-op.
+		pruneReflinkVersions(bucketPath, bucketName, objectName, func() {})
 		return nil
 	}
 	s := sidecarVersionStore{bucketPath: bucketPath}

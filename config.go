@@ -43,7 +43,9 @@ const (
 	defaultZfsVersioning = "reflink"
 
 	// defaultZfsVersioningReflinkRetention is the zfs_versioning_reflink_retention
-	// default: 0 = unlimited (no pruning).
+	// default: 0 = unlimited (no pruning). NOTE (leaf 07): this is now the
+	// FALLBACK for buckets that do not set their own reflinkRetention;
+	// per-bucket values (1, 3, 5, ...) override it per bucket.
 	defaultZfsVersioningReflinkRetention = 0
 
 	// defaultZfsBinary is the zfs_binary default: the zfs CLI resolved
@@ -83,6 +85,14 @@ type ServerConfig struct {
 	// user.zeta.reader.<key> breadcrumb, first read only. Absent ⇒ false
 	// (zero read-path overhead — design 2b phase 1).
 	BucketAuditReads map[string]bool `json:"-"`
+
+	// BucketReflinkRetention records each bucket's reflinkRetention cap
+	// (versioning leaf 07): count of version data files retained PER KEY
+	// in that bucket. Absent bucket ⇒ fall back to the server-wide
+	// ZfsVersioningReflinkRetention. Present 0 = keep zero version
+	// copies (every overwrite discards the previous data) — the pointer
+	// on the bucketCfg side distinguishes that from "not configured".
+	BucketReflinkRetention map[string]int `json:"-"`
 
 	// Identities is the multi-identity auth config (pluggable-
 	// authentication tree leaf 01). Absent ⇒ only the env-pair identity
@@ -220,6 +230,14 @@ type bucketCfg struct {
 	Path       string `json:"path"`
 	Backend    string `json:"backend"`
 	AuditReads bool   `json:"auditReads,omitempty"`
+	// ReflinkRetention is the per-bucket reflink version-retention cap
+	// (versioning leaf 07): count of version data files retained PER KEY
+	// in THIS bucket. Absent/nil = fall back to the server-wide
+	// zfs_versioning_reflink_retention; a present value must be >= 0
+	// (negative aborts startup, naming the bucket). The pointer
+	// distinguishes "not configured" from an explicit 0 (= keep zero
+	// version copies: every overwrite discards the previous data).
+	ReflinkRetention *int `json:"reflinkRetention,omitempty"`
 }
 
 // UnmarshalJSON accepts both encodings. The legacy string form decodes to
@@ -303,6 +321,9 @@ func (m bucketsRaw) apply(cfg *ServerConfig) {
 	if cfg.BucketAuditReads == nil {
 		cfg.BucketAuditReads = make(map[string]bool)
 	}
+	if cfg.BucketReflinkRetention == nil {
+		cfg.BucketReflinkRetention = make(map[string]int)
+	}
 	for name, bc := range m {
 		if bc.Path == "" && bc.Backend == "" {
 			// The bucket's UnmarshalJSON already rejected a literal null;
@@ -317,6 +338,13 @@ func (m bucketsRaw) apply(cfg *ServerConfig) {
 		}
 		if bc.AuditReads {
 			cfg.BucketAuditReads[name] = true
+		}
+		if bc.ReflinkRetention != nil {
+			if *bc.ReflinkRetention < 0 {
+				cfg.bucketsErr = fmt.Errorf("bucket %q: reflinkRetention %d is negative (0 = keep zero version copies)", name, *bc.ReflinkRetention)
+				return
+			}
+			cfg.BucketReflinkRetention[name] = *bc.ReflinkRetention
 		}
 	}
 }

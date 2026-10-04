@@ -27,6 +27,12 @@ type serverConfigView struct {
 	// extensions leaf 10). Absent bucket ⇒ false (off = zero read-path
 	// overhead, design 2b).
 	AuditReads map[string]bool
+	// ReflinkRetention carries the per-bucket reflink version-retention
+	// cap (versioning leaf 07): count of version data files retained PER
+	// KEY in that bucket. Absent bucket ⇒ the caller falls back to the
+	// installed server-wide zfs_versioning_reflink_retention.
+	// Present 0 = keep zero version copies in that bucket.
+	ReflinkRetention map[string]int
 }
 
 // installedServerConfig is the injected config view; nil falls back to an
@@ -52,9 +58,13 @@ func installServerConfigView(cfg serverConfigView) {
 	if auditReads == nil {
 		auditReads = map[string]bool{}
 	}
+	reflinkRetention := cfg.ReflinkRetention
+	if reflinkRetention == nil {
+		reflinkRetention = map[string]int{}
+	}
 	configViewMu.Lock()
 	defer configViewMu.Unlock()
-	installedServerConfig = &serverConfigView{Buckets: buckets, DataDir: cfg.DataDir, AuditReads: auditReads}
+	installedServerConfig = &serverConfigView{Buckets: buckets, DataDir: cfg.DataDir, AuditReads: auditReads, ReflinkRetention: reflinkRetention}
 }
 
 // currentServerConfig returns the installed view (never nil), re-mirroring

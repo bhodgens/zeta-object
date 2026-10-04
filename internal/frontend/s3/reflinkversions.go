@@ -252,7 +252,7 @@ func (s reflinkVersionStore) PutVersion(bucket, key string, r io.Reader, size in
 		return VersionEntry{}, err
 	}
 	unlock := lockObject(s.sidecarPath(key))
-	defer unlock()
+	unlock() // NO caller-held lock across the prune: pruneReflinkVersions re-locks the same mutex and would self-deadlock
 
 	// Data file first: a crash between the two writes leaves a data file
 	// with no sidecar entry — orphaned bytes, never a lying sidecar.
@@ -277,17 +277,27 @@ func (s reflinkVersionStore) PutVersion(bucket, key string, r io.Reader, size in
 	if err := s.writeVersionedSidecar(key, vs); err != nil {
 		return VersionEntry{}, err
 	}
-	pruneReflinkVersions(s.bucketPath, key)
+	pruneReflinkVersions(s.bucketPath, bucket, key, func() {})
 	return VersionEntry{ID: id, IsLatest: true, Size: size, ETag: etag, LastModified: now}, nil
 }
 
-// ---------- retention pruning (leaf 06, zfs_versioning_reflink_retention) ----------
+// ---------- retention pruning (leaf 06/07, reflink retention) ----------
 
 // pruneReflinkVersions enforces the per-key retention cap after a
 // successful capture+record: keep the NEWEST N version entries (N =
-// reflinkRetentionFor(); 0 = unlimited), delete the OLDEST version DATA
-// files beyond the cap AND then rewrite the sidecar without their
-// entries.
+// reflinkRetentionForBucket(bucket): the bucket's own reflinkRetention
+// when set, else the server-wide zfs_versioning_reflink_retention), and
+// delete the OLDEST version DATA files beyond the cap, then rewrite the
+// sidecar without their entries. N = 0 means keep ZERO version copies:
+// every recorded version is pruned on the next write (explicit per-bucket
+// zero — the fallback default is also 0 = unlimited, distinguished by
+// the config presence check, not the value).
+//
+// alreadyLocked: the CALLER's sidecar lock release func. PutVersion (and
+// the record path) hold the sidecar lock when they call this; the prune
+// re-locks internally, so the caller's lock must be released first —
+// passing the unlock func lets prune release-and-reacquire atomically
+// instead of deadlocking on the same mutex.
 //
 // Counting: VERSIONS only — delete-marker entries are never counted and
 // never pruned (markers are history truth, hold no data file).
@@ -297,11 +307,17 @@ func (s reflinkVersionStore) PutVersion(bucket, key string, r io.Reader, size in
 // orphaned bytes on disk, never a sidecar entry whose data file is
 // already gone (a lying sidecar). Prune failures are logged and never
 // propagate: housekeeping must not fail a PUT that already succeeded.
-func pruneReflinkVersions(bucketPath, key string) {
-	retention := reflinkRetentionFor()
-	if retention <= 0 {
-		return // 0/unset = unlimited
+func pruneReflinkVersions(bucketPath, bucket, key string, alreadyLocked func()) {
+	alreadyLocked() // release the caller's sidecar lock: the prune re-locks below
+	retention, perBucketSet := reflinkRetentionForBucket(bucket)
+	if retention < 0 {
+		return // defensive: config validation rejects negatives
 	}
+	if retention == 0 && !perBucketSet {
+		return // server-wide 0 = unlimited (no pruning)
+	}
+	// per-bucket 0 = keep zero version copies (every recorded version is
+	// pruned); per-bucket N > 0 = keep the newest N.
 	s := reflinkVersionStore{sidecarVersionStore{bucketPath: bucketPath}}
 	unlock := lockObject(s.sidecarPath(key))
 	defer unlock()
