@@ -253,6 +253,13 @@ func (s sidecarVersionStore) SetState(bucket, state string) error {
 	default:
 		return fmt.Errorf("s3: invalid versioning state %q", state)
 	}
+	// Custom-configured buckets are pre-created plain dirs with no
+	// .metadata (the create path only makes it for API-created buckets);
+	// the state marker's atomic write needs the directory to exist.
+	//nolint:gosec // G703: statePath is bucketPath (resolved bucket root, never client input) + fixed ".metadata/.versioning".
+	if err := os.MkdirAll(filepath.Dir(s.statePath()), 0o755); err != nil {
+		return fmt.Errorf("s3: creating metadata dir for %s: %w", bucket, err)
+	}
 	sc := stateSidecar{State: state}
 	if err := writeFileAtomicJSON(s.statePath(), sc, 0o644); err != nil {
 		return fmt.Errorf("s3: writing versioning state for %s: %w", bucket, err)

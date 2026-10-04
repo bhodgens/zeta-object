@@ -49,9 +49,10 @@ func (mainCredentialSource) SecretKey(accessKeyID string) (string, bool) {
 func installS3Seams() {
 	// Configuration view.
 	s3.InstallServerConfigView(s3.ServerConfigView{
-		Buckets:    serverConfig.Buckets,
-		DataDir:    serverConfig.DataDir,
-		AuditReads: serverConfig.BucketAuditReads,
+		Buckets:          serverConfig.Buckets,
+		DataDir:          serverConfig.DataDir,
+		AuditReads:       serverConfig.BucketAuditReads,
+		ReflinkRetention: serverConfig.BucketReflinkRetention,
 	})
 
 	// SigV4 verification region (region-config-2026-10 leaf 02): the

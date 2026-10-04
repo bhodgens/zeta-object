@@ -123,7 +123,8 @@
   // Reflink-mode version retention: the count of version DATA files
   // retained PER KEY (newest N kept; oldest beyond the cap are pruned
   // with their sidecar entries after each recorded version). 0/unset =
-  // unlimited. Server-wide (a per-bucket override is future work).
+  // unlimited. This is the FALLBACK for buckets that do not set their
+  // own per-bucket reflinkRetention (see the buckets object form).
   // "zfs_versioning_reflink_retention": 0,
 
   // Custom bucket name -> filesystem path mappings. These buckets appear in
@@ -132,6 +133,14 @@
   //
   // Each bucket may also select its storage backend with the object form:
   //   "photos": { "path": "/mnt/storage/photos", "backend": "fs" }
+  // The object form also carries the per-bucket reflink version-retention
+  // cap (reflinkRetention): the count of version files retained PER KEY
+  // in THIS bucket. Absent = the server-wide
+  // zfs_versioning_reflink_retention fallback; explicit 0 = keep zero
+  // version copies (every overwrite discards the previous data);
+  // negative aborts startup. Bare-string buckets always use the
+  // server-wide value.
+  //   "photos": { "path": "/mnt/storage/photos", "backend": "fs", "reflinkRetention": 3 }
   // The legacy bare-string form and the object form can be mixed freely.
   // "backend" absent or "" selects the default backend ("fs").
   "buckets": {

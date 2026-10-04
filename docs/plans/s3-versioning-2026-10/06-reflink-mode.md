@@ -39,13 +39,20 @@ log, the version is skipped, the PUT never breaks.
 //   default "reflink" (defaultZfsVersioning); unknown value aborts startup.
 // zfs_versioning_reflink_retention: int, count of version DATA files
 //   retained PER KEY (newest N kept); 0/unset = unlimited; negative
-//   value aborts startup. Server-wide v1 — per-bucket override is a
-//   future key (README documents this).
+//   value aborts startup. FALLBACK for buckets without their own value.
+// buckets object form: reflinkRetention (int, >= 0) — the PER-BUCKET
+//   override (leaf 07). Present 0 = keep zero version copies in that
+//   bucket; absent = the server-wide fallback above.
 ```
 
 The s3 package receives retention through the seam
 `InstallZfsVersioningReflinkRetention(int)` (same pattern as
-`InstallZfsVersioningMode`).
+`InstallZfsVersioningMode`) plus the per-bucket map on `ServerConfigView`
+(`ReflinkRetention map[string]int`, AuditReads precedent). Resolution:
+`reflinkRetentionForBucket(bucket) (int, perBucketSet)` — per-bucket
+value when present, else the server-wide fallback. The two zeros are
+distinguished by the perBucketSet bool: server-wide 0 = unlimited;
+per-bucket 0 = prune-to-zero.
 
 ### Contract R2: on-disk layout (owner: reflinkversions.go; consumer: none outside the s3 package)
 

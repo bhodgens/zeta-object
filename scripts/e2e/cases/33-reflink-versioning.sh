@@ -42,7 +42,7 @@ PY
 openssl req -x509 -newkey rsa:2048 -keyout "$V33_CERT/key.pem" -out "$V33_CERT/cert.pem" \
 	-days 1 -nodes -subj '/CN=localhost' \
 	-addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' >/dev/null 2>&1
-mkdir -p "$V33_ROOT/data"
+mkdir -p "$V33_ROOT/data/$BKT" "$V33_ROOT/data/e2e-33-fb" "$V33_ROOT/data/e2e-33-pb3" "$V33_ROOT/data/e2e-33-pb0"
 
 v33_cleanup() {
 	if [ -n "${V33_PID:-}" ] && kill -0 "$V33_PID" 2>/dev/null; then
@@ -53,6 +53,8 @@ v33_cleanup() {
 		done
 		kill -9 "$V33_PID" 2>/dev/null
 	fi
+	mkdir -p /tmp/e2e33-keep
+	cp "$V33_ROOT/server.log" /tmp/e2e33-keep/last-server.log 2>/dev/null || true
 	rm -rf "$V33_ROOT" "$V33_CERT"
 }
 trap v33_cleanup EXIT
@@ -64,7 +66,13 @@ cat > "$V33_ROOT/config.json" <<EOF
   "certFile": "$V33_CERT/cert.pem",
   "keyFile": "$V33_CERT/key.pem",
   "zfs_versioning": "reflink",
-  "zfs_versioning_reflink_retention": 2
+  "zfs_versioning_reflink_retention": 2,
+  "buckets": {
+    "$BKT": "$V33_ROOT/data/$BKT",
+    "e2e-33-fb": "$V33_ROOT/data/e2e-33-fb",
+    "e2e-33-pb3": { "path": "$V33_ROOT/data/e2e-33-pb3", "reflinkRetention": 3 },
+    "e2e-33-pb0": { "path": "$V33_ROOT/data/e2e-33-pb0", "reflinkRetention": 0 }
+  }
 }
 EOF
 : > "$V33_ROOT/server.log"
@@ -206,5 +214,53 @@ else
 fi
 
 rm -f "$V33_LIST"
+
+# --- 33f: PER-BUCKET reflinkRetention override (leaf 07) --------------------
+# Three extra buckets in the same config: e2e-33-fb (no per-bucket value =
+# server-wide fallback 2), e2e-33-pb3 (per-bucket 3), e2e-33-pb0
+# (per-bucket 0 = keep zero version copies). 4 overwrites each; the
+# ?versions VERSION count must respect the bucket's OWN cap (on a
+# fail-soft FS no versions are recorded at all and every assert is the
+# honest 0-window — the bounds still hold trivially).
+for PB in e2e-33-fb e2e-33-pb3 e2e-33-pb0; do
+	v33_req PUT "/$PB"
+	assert_eq "33f setup: create-bucket $PB" 200 "$V33_STATUS"
+	v33_req PUT "/$PB?versioning" -H 'Content-Type: application/xml' --data-binary "$V33XML_ENABLED"
+	assert_eq "33f setup: $PB versioning Enabled" 200 "$V33_STATUS"
+	# A first PUT creates the .metadata tree that ?versioning's atomic
+	# state write needs (custom buckets are pre-created empty dirs).
+	v33_req PUT "/$PB/seed.txt" --data-binary "seed"
+	assert_eq "33f setup: $PB seed object -> 200" 200 "$V33_STATUS"
+	v33_req PUT "/$PB?versioning" -H 'Content-Type: application/xml' --data-binary "$V33XML_ENABLED"
+	assert_eq "33f setup: $PB versioning Enabled (after .metadata exists)" 200 "$V33_STATUS"
+	for i in 1 2 3 4; do
+		v33_req PUT "/$PB/rl.txt" --data-binary "pb-$PB-$i"
+		assert_eq "33f $PB overwrite $i -> 200" 200 "$V33_STATUS"
+	done
+	v33_req GET "/$PB?versions"
+	printf '%s' "$(cat "$V33_BODY")" > "$V33_LIST"
+	PB_COUNT=$(printf '%s\n' "$(v33_parse "$V33_LIST")" | grep -c '^Version ' | tr -d ' ')
+	case $PB in
+		e2e-33-pb3)
+			if [ "$PB_COUNT" -le 3 ]; then
+				assert_eq '33f per-bucket reflinkRetention=3 bounds ?versions to at most 3' 0 0
+			else
+				assert_eq '33f per-bucket reflinkRetention=3 bounds ?versions to at most 3' 0 1
+			fi ;;
+		e2e-33-pb0)
+			if [ "$PB_COUNT" -le 0 ]; then
+				assert_eq '33f per-bucket reflinkRetention=0 keeps ZERO version copies (overrides fallback 2)' 0 0
+			else
+				assert_eq '33f per-bucket reflinkRetention=0 keeps ZERO version copies (overrides fallback 2)' 0 1
+			fi ;;
+		*)
+			if [ "$PB_COUNT" -le 2 ]; then
+				assert_eq '33f fallback bucket (no override) respects server-wide retention=2' 0 0
+			else
+				assert_eq '33f fallback bucket (no override) respects server-wide retention=2' 0 1
+			fi ;;
+	esac
+done
+
 # Cleanup: best-effort bucket delete (create/cleanup pairing).
 v33_req DELETE "/$BKT"
