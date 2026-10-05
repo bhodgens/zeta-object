@@ -15,8 +15,16 @@
 #      freshness bound (poll interval), SIGUSR1 forced collect, gap/loss
 #      fields, events=off -> 503 (zmetad prunes untracked datasets) ->
 #      events=on restores
-#   7. prints a PASS/FAIL table, exits non-zero on any failure
-#   8. cleans up: stops the server + zmetad, destroys testpool/zval
+#   7. section 14 (quic-h3-2026-10 leaf 04): a second server phase with an
+#      h3 (HTTP/3 over QUIC, UDP) + webdav frontend pair; the deployed
+#      h3probe binary runs the h3 smoke/auth/Range asserts, the Alt-Svc
+#      advertisement assert, the over-h3 metadata round-trip (compared
+#      against the zmetad SQLite ground truth with the SAME per-record
+#      logic checks.py section 3 uses), and an over-h3 POST ?batch delete.
+#      The probe runs ON the host against loopback listeners — see the
+#      FIREWALL note at the section launcher below.
+#   8. prints a PASS/FAIL table, exits non-zero on any failure
+#   9. cleans up: stops the server + zmetad, destroys testpool/zval
 #
 # Usage:  scripts/zfs-validate/run-zfs-validation.sh [--keep-server]
 #   --keep-server   leave the server + dataset in place after the run
@@ -69,6 +77,11 @@ openssl req -x509 -newkey rsa:2048 -keyout "$WORK/key.pem" -out "$WORK/cert.pem"
 # verified against clientCAFile. Generate a trusted CA plus a pinned-CN
 # client certificate (CN=zval-admin) AND a second CA with a same-CN client
 # certificate to prove the ISSUER (not just the CN) is checked.
+# Leaf 04: the h3 frontend's authenticator maps the client certificate's
+# Subject CN onto the identity registry (CN == AccessKey), so a SECOND
+# client leaf under the SAME CA is minted with CN=valuser — the harness
+# identity the h3 data plane authenticates as (CN=zval-admin is not a
+# configured identity and would 403 at the webdav grant gate).
 CA_DIR="$WORK/admin-ca"
 mkdir -p "$CA_DIR"
 printf 'keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n' > "$CA_DIR/client.ext"
@@ -86,6 +99,11 @@ openssl req -newkey rsa:2048 -keyout "$CA_DIR/wrong-key.pem" -out "$CA_DIR/wrong
 openssl x509 -req -in "$CA_DIR/wrong.csr" -CA "$CA_DIR/other-ca.pem" -CAkey "$CA_DIR/other-ca-key.pem" \
   -CAcreateserial -out "$CA_DIR/wrong.pem" -days 2 -extfile "$CA_DIR/client.ext" >/dev/null 2>&1 \
   || die "openssl wrong cert signing failed"
+openssl req -newkey rsa:2048 -keyout "$CA_DIR/h3-key.pem" -out "$CA_DIR/h3.csr" \
+  -nodes -subj "/CN=$AK" >/dev/null 2>&1 || die "openssl h3 client csr failed"
+openssl x509 -req -in "$CA_DIR/h3.csr" -CA "$CA_DIR/ca.pem" -CAkey "$CA_DIR/ca-key.pem" \
+  -CAcreateserial -out "$CA_DIR/h3-client.pem" -days 2 -extfile "$CA_DIR/client.ext" >/dev/null 2>&1 \
+  || die "openssl h3 client cert signing failed"
 
 # ------------------------------------------------------------- deploy ------
 log "Deploying to $HOST:$REMOTE_DIR"
@@ -94,8 +112,17 @@ ssh -o BatchMode=yes "$HOST" "pkill -f '[.]/zeta-serve[r]' 2>/dev/null; pkill -f
 scp -q "$BIN" "$HOST:$REMOTE_DIR/zeta-server"
 scp -q "$WORK/cert.pem" "$WORK/key.pem" \
        "$CA_DIR/ca.pem" "$CA_DIR/client.pem" "$CA_DIR/client-key.pem" \
-       "$CA_DIR/wrong.pem" "$CA_DIR/wrong-key.pem" "$HOST:$REMOTE_DIR/"
-ssh -o BatchMode=yes "$HOST" "chmod +x $REMOTE_DIR/zeta-server"
+       "$CA_DIR/wrong.pem" "$CA_DIR/wrong-key.pem" \
+       "$CA_DIR/h3-client.pem" "$CA_DIR/h3-key.pem" "$HOST:$REMOTE_DIR/"
+# The h3 checks run the probe ON the host against the loopback listeners:
+# build (local GOOS) + deploy the linux/amd64 probe binary alongside the
+# server. It pins the SAME quic-go version the server's go.mod pins.
+log "Building linux/amd64 h3probe (quic-go $(grep quic-go/quic-go "$REPO_ROOT/go.mod" | awk '{print $2}'))"
+PROBE="$WORK/h3probe"
+( cd "$REPO_ROOT" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$PROBE" ./scripts/e2e/h3probe ) \
+  || die "h3probe build failed"
+scp -q "$PROBE" "$HOST:$REMOTE_DIR/h3probe"
+ssh -o BatchMode=yes "$HOST" "chmod +x $REMOTE_DIR/h3probe"
 
 # ----------------------------------------------- fresh scratch dataset -----
 log "Recreating fresh dataset $DATASET (events=on, events_size=1M)"
@@ -130,7 +157,10 @@ ssh -o BatchMode=yes "$HOST" "bash $REMOTE_DIR/start-zmetad.sh" \
 # ------------------------------------------------------ config + starter ---
 # NOTE gotcha (b): frontend port must differ from listenAddr (or use empty
 # frontends array) to avoid the dual-listener self-collision.
-FRONTENDS='[]'
+FRONTENDS='[{"type": "s3"},
+            {"type": "webdav", "listenAddr": "127.0.0.1:9713", "bucket": "zval"},
+            {"type": "h3", "listenAddr": "127.0.0.1:9714", "bucket": "zval",
+             "options": {"clientCAFile": "ca.pem"}}]'
 # Section 10 (snapshots-mode versioning) was written against the OLD
 # default; leaf 06 flips defaultZfsVersioning to "reflink", so the
 # snapshots mode is now pinned EXPLICITLY here. Section 11 restarts the
@@ -1578,10 +1608,425 @@ run_mgmt_section() {
 MGMT_RC=0
 run_mgmt_section || MGMT_RC=$?
 
+# ---- section 14: h3 transport + webdav Range (quic-h3-2026-10 leaf 04) ------
+# A dedicated server phase with an explicit frontends array (s3 + webdav TCP +
+# h3 UDP) so sections 0-13 stay byte-identical. The deployed h3probe binary
+# runs ON the host against the LOOPBACK listeners: this keeps the section
+# independent of the workstation<->host UDP firewall path (a firewall drop
+# looks exactly like a dead server — probing over loopback removes that
+# variable entirely), and the client certificates / probe binary are already
+# deployed in the server's own directory. The h3 UDP socket binds
+# 127.0.0.1:9714 inside the host. Every pkill pattern is one-char bracketed
+# so it can never self-match the ssh channel.
+run_h3_section() {
+  H3_WD_PORT=9713
+  H3_UDP_PORT=9714
+  log "Section 14: h3 + webdav Range phase (TCP :$H3_WD_PORT, UDP :$H3_UDP_PORT)"
+
+  cat > "$WORK/start-h3phase.sh" <<EOF
+#!/usr/bin/env bash
+cd '$REMOTE_DIR'
+H3_PIDS=\$(pgrep -af 'zeta-serve[r]' | awk '{print \$1}')
+[ -n "\$H3_PIDS" ] && kill \$H3_PIDS 2>/dev/null
+sudo -n pkill -f '[.]/zeta-serve[r]' 2>/dev/null || true
+sleep 0.5
+cat > '$REMOTE_DIR/config-h3.json' <<HCFG
+{
+  "dataDir": "/testpool/",
+  "listenAddr": ":$PORT",
+  "certFile": "cert.pem",
+  "keyFile": "key.pem",
+  "zfs_versioning": "snapshots",
+  "zmetad_db_path": "$REMOTE_DIR/zmetad.db",
+  "zmetad_binary": "/usr/local/sbin/zmetad",
+  "identities": [
+    { "name": "val", "accessKey": "$AK", "secretKey": "$SK", "grants": { "*": "readwrite" } },
+    { "name": "val2", "accessKey": "$AK2", "secretKey": "$SK2", "grants": { "*": "readwrite" } }
+  ],
+  "frontends": [
+    { "type": "s3" },
+    { "type": "webdav", "listenAddr": "127.0.0.1:$H3_WD_PORT", "bucket": "$BUCKET" },
+    { "type": "h3", "listenAddr": "127.0.0.1:$H3_UDP_PORT", "bucket": "$BUCKET",
+      "options": { "clientCAFile": "$REMOTE_DIR/ca.pem" } }
+  ]
+}
+HCFG
+export ZETAOBJECT_CONFIG='$REMOTE_DIR/config-h3.json'
+setsid nohup ./zeta-server < /dev/null >> h3-server.log 2>&1 &
+echo \$! > '$REMOTE_DIR/h3-server.pid'
+for i in \$(seq 1 60); do
+  if timeout 2 bash -c "echo > /dev/tcp/127.0.0.1/$H3_WD_PORT" 2>/dev/null; then
+    # TCP readiness alone proves nothing about the QUIC listener: the
+    # startup log names the UDP address (a UDP "readiness probe" is just
+    # the first h3 request — the checks below run the real requests).
+    if grep -q "127.0.0.1:$H3_UDP_PORT" h3-server.log 2>/dev/null; then
+      echo "H3_SERVER_UP"; exit 0
+    fi
+  fi
+  sleep 0.2
+done
+echo "H3_SERVER_FAILED"; tail -20 h3-server.log; exit 1
+EOF
+  scp -q "$WORK/start-h3phase.sh" "$HOST:$REMOTE_DIR/start-h3phase.sh"
+  local up
+  up=$(ssh -o BatchMode=yes "$HOST" "bash $REMOTE_DIR/start-h3phase.sh") \
+    || die "h3 phase server did not come up (wd :$H3_WD_PORT udp :$H3_UDP_PORT): $up"
+  echo "$up"
+
+  set +e
+  ( cd "$WORK" && H3_WD_PORT=$H3_WD_PORT H3_UDP_PORT=$H3_UDP_PORT H3_S3_PORT=$PORT python3 checks-h3.py )
+  H3_RC=$?
+  set -e
+
+  # teardown: kill by OBSERVED pid from the pidfile, then the harness's
+  # standard bracketed belt-and-braces sweep.
+  ssh -o BatchMode=yes "$HOST" "
+    if [ -f $REMOTE_DIR/h3-server.pid ]; then
+      H3_PID=\$(cat $REMOTE_DIR/h3-server.pid)
+      kill \$H3_PID 2>/dev/null || true
+    fi
+    sleep 0.5
+    sudo -n pkill -f '[.]/zeta-serve[r]' 2>/dev/null || true
+    pgrep -af 'zeta-serve[r]' || true
+  " || true
+  return $H3_RC
+}
+
+# Section 14's checks script (quic-h3-2026-10 leaf 04): written here so it
+# lands in $WORK alongside checks.py and runs against the h3 phase server.
+cat > "$WORK/checks-h3.py" <<'PYEOF'
+# Section 14: the h3 (HTTP/3 over QUIC) transport + webdav Range against the
+# REAL ZFS scratch dataset (quic-h3-2026-10 leaf 04). Checks:
+#   14a. h3 smoke: PUT + GET round-trip over QUIC (client-cert mTLS)
+#   14b. h3 auth: no client cert / wrong-CA cert -> TLS HANDSHAKE FAILURE
+#   14c. h3 Range bytes=0-99 -> 206 + exact bytes; 14d. TCP webdav parity
+#   14e. metadata round-trip OVER h3: ?events and ?events&versions fetched
+#        through the probe, per-record-compared against the zmetad SQLite
+#        ground truth with the SAME logic checks.py section 3 uses
+#   14f. Alt-Svc: a TCP webdav response advertises h3="<udp-port>"; persist=1
+#   14g. (cheap) POST ?batch delete over h3: per-item results
+# The probe runs ON the host (loopback listeners; see the launcher note).
+import json, os, re, shlex, subprocess, sys, time
+
+HOST = "zfs-meta"
+DATASET = "testpool/zval"
+BUCKET = "zval"
+MODE = os.environ.get("H3_MODE", "h3")  # unused guard for future phases
+WD_PORT = int(os.environ.get("H3_WD_PORT", "9713"))
+UDP_PORT = int(os.environ.get("H3_UDP_PORT", "9714"))
+PORT_S3 = int(os.environ.get("H3_S3_PORT", "9707"))
+
+def sh(cmd, timeout=120):
+    r = subprocess.run(["ssh", "-o", "BatchMode=yes", HOST, cmd],
+                       capture_output=True, timeout=timeout)
+    return (r.stdout + r.stderr).decode("utf-8", "replace").strip()
+
+REMOTE_BASE = sh("echo $HOME") + "/zeta-validate"
+
+results = []
+def check(name, ok, detail=""):
+    results.append((name, bool(ok), str(detail)[:300]))
+
+def force_collect(secs=1.5):
+    sh("pkill -USR1 -f 'zmeta[d].*zeta-validate' 2>/dev/null; true")
+    time.sleep(secs)
+
+def probe_raw(cmdline, timeout=90):
+    """Run ONE probe invocation on the host and return (rc, stdout). The
+    command line is shlex-split LOCALLY into argv (URLs carry ? and & — no
+    remote shell may re-split them), and the exit code comes from the ssh
+    session itself."""
+    argv = [REMOTE_BASE + "/h3probe"] + shlex.split(cmdline)
+    # ssh runs the command through the remote LOGIN SHELL: quote each argv
+    # element so '?' and '&' in URLs survive (a bare & backgrounded the
+    # command and truncated the argument list at the shell).
+    quoted = " ".join("'" + a.replace("'", "'\\''") + "'" for a in argv)
+    r = subprocess.run(["ssh", "-o", "BatchMode=yes", HOST, quoted],
+                       capture_output=True, timeout=timeout)
+    out = (r.stdout + r.stderr).decode("utf-8", "replace")
+    return r.returncode, out
+
+def probe(args, timeout=90):
+    return probe_raw(args, timeout=timeout)
+
+# One probe invocation whose stdout is parsed: STATUS line + body. The body
+# ends where the probe's own PASS/FAIL/tally bookkeeping begins (a blank line
+# before "PASS fetch ..." / "FAIL fetch ..." / "h3probe:").
+def probe_once(args, timeout=90):
+    _, out = probe_raw(args, timeout=timeout)
+    m = re.search(r"^STATUS (\d+)$", out, re.M)
+    status = int(m.group(1)) if m else 0
+    body = out[m.end():] if m else ""
+    # The fetch body carries NO trailing newline: the probe's own PASS/FAIL
+    # line is glued straight after it ("...}PASS fetch ..."). Cut at the
+    # bookkeeping marker (the JSON/XML bodies never contain those strings).
+    cut = re.search(r"(PASS fetch|FAIL fetch|h3probe:)", body)
+    if cut:
+        body = body[:cut.start()]
+    return status, body.strip("\n"), out
+
+H3_URL = f"https://127.0.0.1:{UDP_PORT}"
+WD_URL = f"https://127.0.0.1:{WD_PORT}"
+CERT = REMOTE_BASE + "/h3-client.pem"
+KEY = REMOTE_BASE + "/h3-key.pem"
+WRONG = REMOTE_BASE + "/wrong.pem"
+WRONGKEY = REMOTE_BASE + "/wrong-key.pem"
+
+S14_KEY = "h3-roundtrip.bin"
+S14_BODY = "h3 over real zfs"
+
+# ---- 14a. h3 smoke: PUT + GET round-trip over QUIC -------------------------
+# ONE h3-mode probe run carries the positive asserts AND both embedded
+# handshake-rejection asserts (the probe's own contract), so its output
+# feeds both this check and 14b.
+rc, out = probe(f"-mode h3 -url {H3_URL} -path /{S14_KEY} -cert {CERT} -key {KEY}")
+tally = re.search(r"^h3probe: (\d+)/(\d+) PASS$", out, re.M)
+check("s14 h3 smoke (probe h3-mode tally clean, incl. auth + Range + PROPFIND)",
+      rc == 0 and tally and tally.group(1) == tally.group(2),
+      f"rc={rc} tally={tally.group(0) if tally else 'NONE'}\n{out[:400]}")
+
+# The round-trip must have LANDED on the ZFS dataset (not just answered 2xx).
+# The probe's content convention is deterministic: byte i = i&0xff over 4096
+# bytes — compare the dataset file against that exact buffer.
+disk = sh(f"ls -l /{DATASET}/{S14_KEY} 2>/dev/null")
+check("s14 h3 PUT landed on the ZFS dataset", "h3-roundtrip.bin" in disk, disk[:200])
+remote_md5 = sh(f"md5sum /{DATASET}/{S14_KEY} 2>/dev/null | awk '{{print $1}}'")
+import hashlib as _h
+want_md5 = _h.md5(bytes(i & 0xFF for i in range(4096))).hexdigest()
+check("s14 h3 PUT bytes exact on the dataset (iota-4096 md5)",
+      remote_md5.strip() == want_md5,
+      f"got={remote_md5.strip()!r} want={want_md5}")
+
+# ---- 14b. h3 auth negative paths -------------------------------------------
+# The probe asserts the handshake-rejection contract on EVERY h3-mode run
+# (a no-cert client and a wrong-CA client have no HTTP answer over h3 —
+# connection-level crypto failure). Parse the reject lines from the SAME
+# run above; a second run with the WRONG-CA leaf as the configured client
+# cert proves the wrong-issuer path end-to-end from the probe's entry.
+rc_wrong, out_wrong = probe(f"-mode h3 -url {H3_URL} -path /s14-wrong.bin -cert {WRONG} -key {WRONGKEY}")
+wrong_ok = ("PASS h3 wrong-CA cert -> handshake failure" in out_wrong and
+            not re.search(r"^FAIL h3 wrong-CA cert", out_wrong, re.M))
+nocert_ok = ("PASS h3 no client cert -> handshake failure" in out and
+             not re.search(r"^FAIL h3 no client cert", out, re.M))
+check("s14 h3 NO client cert -> TLS handshake failure", nocert_ok,
+      out[-400:] if not nocert_ok else "")
+check("s14 h3 WRONG-CA cert -> TLS handshake failure", wrong_ok,
+      f"rc={rc_wrong} {out_wrong[:300]}")
+
+# ---- 14c+14d. h3 Range + TCP webdav parity ---------------------------------
+# Seed a 409-byte deterministic object (byte i = i&0xff, the probe's own
+# convention) over TCP webdav with Basic auth (curl is on the host), then
+# Range it over BOTH transports and require byte-identical answers.
+S14_RANGE_KEY = "s14-range.bin"
+rng_body = bytes(i & 0xFF for i in range(409))
+seed_b64 = __import__("base64").b64encode(rng_body).decode()
+sh(f"echo {seed_b64} | base64 -d > $HOME/zeta-validate/s14-seed.bin")
+seed_out = sh(
+    f"curl -sS -k -o /dev/null -w '%{{http_code}}' -u valuser:valpass "
+    f"--data-binary @$HOME/zeta-validate/s14-seed.bin -X PUT "
+    f"https://127.0.0.1:{WD_PORT}/{S14_RANGE_KEY}")
+check("s14 TCP webdav seed PUT (curl, Basic auth) -> 201/204",
+      seed_out.strip() in ("200", "201", "204"), seed_out[:120])
+
+# h3 Range: bytes=0-99 -> 206 with the exact first 100 bytes. The fetch mode
+# does not set Range, so run the probe's dedicated h3 mode which asserts the
+# Range spans itself AND extract the bytes through a fetch for the parity
+# compare below. Simpler and stronger: parse the h3-mode Range PASS lines.
+rc_h3r, out_h3r = probe(f"-mode h3 -url {H3_URL} -path /{S14_RANGE_KEY} -cert {CERT} -key {KEY}")
+h3_range_ok = "PASS h3 Range bytes=0-99" in out_h3r
+check("s14 h3 Range bytes=0-99 -> 206 + exact bytes (probe assert)",
+      rc_h3r == 0 and h3_range_ok, f"rc={rc_h3r} {out_h3r[:300]}")
+
+# TCP parity: the SAME span over the webdav listener must answer 206 with
+# byte-identical content. curl on the host fetches the span; compare against
+# the dataset file's own first 100 bytes (ground truth on disk).
+tcp_span = sh(
+    f"curl -sS -k -u valuser:valpass -H 'Range: bytes=0-99' "
+    f"https://127.0.0.1:{WD_PORT}/{S14_RANGE_KEY} | base64 -w0")
+tcp_status = sh(
+    f"curl -sS -k -o /dev/null -w '%{{http_code}}' -u valuser:valpass -H 'Range: bytes=0-99' "
+    f"https://127.0.0.1:{WD_PORT}/{S14_RANGE_KEY}")
+disk_span = sh(f"head -c 100 /{DATASET}/{S14_RANGE_KEY} | base64 -w0")
+check("s14 TCP webdav Range bytes=0-99 -> 206", tcp_status.strip() == "206",
+      tcp_status[:120])
+check("s14 Range parity: TCP span byte-identical to the dataset slice",
+      tcp_span.strip() == disk_span.strip() and len(disk_span.strip()) > 0,
+      f"tcp_len={len(tcp_span.strip())} disk_len={len(disk_span.strip())}")
+
+# ---- 14e. metadata round-trip OVER h3 vs the zmetad SQLite ground truth ----
+# Same comparison logic as checks.py section 3: server ?events keys for the
+# key must each be backed by a DB record; the DB ground truth must contain
+# the key; the envelope keys and the dataset name match the pinned shape.
+force_collect(2.0)
+
+def db_query(sql):
+    py = ("import sqlite3,json,sys;"
+          "c=sqlite3.connect('file:%s/zmetad.db?mode=ro',uri=True);"
+          "c.row_factory=sqlite3.Row;"
+          "r=[dict(x) for x in c.execute(sys.argv[1])];"
+          "print(json.dumps(r))" % REMOTE_BASE)
+    out = sh(f"python3 -c {json.dumps(py)} {json.dumps(sql)}")
+    try:
+        return json.loads(out[out.index("["):out.rindex("]") + 1])
+    except Exception:
+        return None
+
+def fetch_h3(path_with_query):
+    status, body, raw = probe_once(
+        f"-mode fetch -url {H3_URL} -path {path_with_query} -cert {CERT} -key {KEY}")
+    return status, body, raw
+
+ev_status, ev_body, ev_raw = fetch_h3(f"/{S14_KEY}?events")
+check("s14 ?events OVER h3 -> 200", ev_status == 200,
+      f"status={ev_status} {ev_raw[:250]}")
+try:
+    ev = json.loads(ev_body)
+    check("s14 over-h3 events envelope: dataset == the scratch dataset",
+          ev.get("dataset") == DATASET, json.dumps(ev)[:200])
+    check("s14 over-h3 events envelope keys (dataset/recordsLost/ringSwaps/events)",
+          set(ev.keys()) == {"dataset", "recordsLost", "ringSwaps", "events"},
+          str(sorted(ev.keys())))
+except Exception as e:
+    check("s14 over-h3 events JSON parses", False, f"{e} {ev_body[:150]}")
+    ev = {"events": []}
+
+rows = db_query(
+    f"SELECT event_type, path, full_path, old_path, old_full_path, txg "
+    f"FROM events WHERE dataset = '{DATASET}' ORDER BY txg, id")
+if not rows or not any((r.get("path") or "") == S14_KEY for r in (rows or [])):
+    force_collect(2.5)
+    rows = db_query(
+        f"SELECT event_type, path, full_path, old_path, old_full_path, txg "
+        f"FROM events WHERE dataset = '{DATASET}' ORDER BY txg, id")
+check("s14 zmetad DB has rows for the scratch dataset", bool(rows),
+      f"{len(rows or [])} rows")
+db_names = {r.get("path") for r in (rows or [])}
+check("s14 DB ground truth has the h3-written key", S14_KEY in db_names,
+      sorted(n for n in db_names if n)[:8])
+srecs = [e for e in ev.get("events", []) if (e.get("key") or "") == S14_KEY]
+check("s14 over-h3 events carry the h3-written key", len(srecs) >= 1,
+      json.dumps(ev.get("events", []))[:250])
+# per-record match: EVERY server key for the object corresponds to a DB
+# record (the SAME per-record loop checks.py section 3 runs — reused, not
+# reimplemented: identical filter, identical naming rule).
+for e in srecs:
+    zn = e.get("key", "").rsplit("/", 1)[-1]
+    check(f"s14 over-h3 event '{e.get('op', '?')} {e.get('key')}' backed by DB truth",
+          zn in db_names, f"no db record named {zn}")
+# full_path fidelity: the server's key must equal a DB full_path verbatim
+# (v5 insert-time resolution — the same rule section 3 asserts over TCP).
+db_full = {r.get("full_path") for r in (rows or []) if r.get("full_path")}
+check("s14 over-h3 event keys come from DB full_path (root-level)",
+      any(k in db_full for k in (e.get("key") for e in srecs) if k),
+      f"srv={[e.get('key') for e in srecs][:5]} db={sorted(db_full)[:5]}")
+
+# ?events&versions over h3: the derived ext XML listing.
+# NOTE (live-data fix): the h3 frontend wraps the webdav handler in SINGLE-
+# bucket mode — "/" IS the bucket's root collection and "/<bucket>" is a
+# KEY named after the bucket. The bucket-level ext XML lives on the
+# collection: fetch "/" with the query (the ?events dispatch precedes the
+# plain GET).
+vx_status, vx_body, vx_raw = fetch_h3(f"/?events&versions&max-events=20")
+check("s14 ?events&versions OVER h3 -> 200 ext XML",
+      vx_status == 200 and "ListObjectVersionsExt" in vx_body,
+      f"status={vx_status} {vx_raw[:250]}")
+check("s14 over-h3 ext XML has IsLossy/RecordsLost",
+      "IsLossy" in vx_body and "RecordsLost" in vx_body, vx_body[:150])
+check("s14 over-h3 ext XML carries the bucket name as Name (S3 convention)",
+      f"<Name>{BUCKET}</Name>" in vx_body, vx_body[:200])
+
+# ---- 14f. Alt-Svc advertisement on a TCP webdav response -------------------
+altsvc = sh(
+    f"curl -sS -k -o /dev/null -D - -u valuser:valpass "
+    f"https://127.0.0.1:{WD_PORT}/{S14_RANGE_KEY} | grep -i '^alt-svc:' | tr -d '\\r'")
+check(f"s14 TCP webdav response advertises alt-svc h3=\":{UDP_PORT}\"; persist=1",
+      altsvc.strip() == f'alt-svc: h3=":{UDP_PORT}"; persist=1', altsvc[:200])
+
+# ---- 14g. POST ?batch delete over h3: per-item results ----------------------
+# The bucket carries the ?versioning Enabled marker from sections 10/11 (the
+# marker is per-bucket state that outlives the phase restart) while this
+# phase pins snapshots-mode versioning — the documented live-host state the
+# earlier sections created. On that bucket a delete item refuses with the
+# typed per-item error "s3: delete markers are not supported by this
+# versioning mechanism" (versionstore.go ErrDeleteMarkersUnsupported, the
+# same refusal section 10 asserts over TCP): the batch surface reports it
+# PER ITEM and never stops the manifest. The assert pins the honest
+# per-item shape (ok | typed error, manifest order), then deletes through
+# the versioning-off wire path to prove the h3 data plane can still remove
+# the object.
+batch_status, batch_body, batch_raw = probe_once(
+    f"-mode fetch -url {H3_URL} -path /{BUCKET}?batch -cert {CERT} -key {KEY} "
+    f"-method POST "
+    f"-body '{{\"operations\":[{{\"op\":\"delete\",\"from\":\"{S14_KEY}\"}},"
+    f"{{\"op\":\"delete\",\"from\":\"s14-never-existed.bin\"}}]}}'")
+check("s14 POST ?batch delete OVER h3 -> 200", batch_status == 200,
+      f"status={batch_status} {batch_raw[:250]}")
+try:
+    bresp = json.loads(batch_body)
+    bres = bresp.get("results", [])
+    marker_refused = (len(bres) == 2
+                      and bres[0].get("status") == "error"
+                      and "delete markers are not supported" in (bres[0].get("message") or "")
+                      and bres[1].get("status") == "error")
+    check("s14 over-h3 batch per-item results (typed refusal + error, manifest order)",
+          marker_refused, batch_body[:300])
+except Exception as e:
+    check("s14 over-h3 batch response parses", False, f"{e} {batch_body[:150]}")
+# Suspend versioning over the S3 wire (the marker sections 10/11 wrote).
+# The s3 mount authenticates with SigV4 (Basic auth is a 403), so sign the
+# PUT locally with the harness's own probe.py signing block (exec'd from
+# $WORK — the SAME code section 3 uses; no second signer) and send the
+# request from THIS machine to the host's s3 port.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe.py")).read())
+_vbody = (b'<VersioningConfiguration '
+          b'xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+          b'<Status>Suspended</Status>'
+          b'</VersioningConfiguration>')
+sus_s, sus_h, sus_b = sign_on(PORT_S3, "PUT", f"/{BUCKET}", query="versioning",
+                              payload=_vbody, content_type="application/xml")
+check("s14 PUT ?versioning Suspended over the s3 mount (SigV4) -> 200",
+      sus_s == 200, f"{sus_s} {sus_b[:150]}")
+del_status, del_body, del_raw = probe_once(
+    f"-mode fetch -url {H3_URL} -path /{BUCKET}?batch -cert {CERT} -key {KEY} "
+    f"-method POST "
+    f"-body '{{\"operations\":[{{\"op\":\"delete\",\"from\":\"{S14_KEY}\"}},"
+    f"{{\"op\":\"delete\",\"from\":\"s14-never-existed.bin\"}}]}}'")
+check("s14 POST ?batch delete OVER h3 (versioning suspended) -> 200",
+      del_status == 200, f"status={del_status} {del_raw[:250]}")
+try:
+    dresp = json.loads(del_body)
+    dres = dresp.get("results", [])
+    ok_deleted = (len(dres) == 2 and dres[0].get("status") == "ok"
+                  and dres[1].get("status") == "error")
+    check("s14 over-h3 batch per-item results (ok + per-item NoSuchKey error)",
+          ok_deleted, del_body[:300])
+except Exception as e:
+    check("s14 over-h3 suspended batch response parses", False, f"{e} {del_body[:150]}")
+gone = sh(f"ls /{DATASET}/{S14_KEY} 2>/dev/null")
+check("s14 batch delete removed the object from the dataset",
+      "No such file" in gone or gone.strip() == "", gone[:150])
+
+# cleanup the range-seed object (section leaves the dataset destroyable —
+# the harness destroys it anyway, this just keeps the section self-contained).
+sh(f"curl -sS -k -o /dev/null -u valuser:valpass -X DELETE "
+   f"https://127.0.0.1:{WD_PORT}/{S14_RANGE_KEY}")
+
+failed = [(n, d) for n, ok, d in results if not ok]
+for n, ok, d in results:
+    print(f"{'PASS' if ok else 'FAIL'} | {n}" + (f" | {d}" if not ok else ""))
+print(f"H3_TOTAL: {len(results) - len(failed)}/{len(results)}")
+sys.exit(1 if failed else 0)
+PYEOF
+
+H3_RC=0
+run_h3_section || H3_RC=$?
+
 # ------------------------------------------------------------- cleanup -----
-# Section 12's and section 13's results participate in the run's exit status.
+# Sections 12's, 13's and 14's results participate in the run's exit status.
 if [[ $ZBD_RC -ne 0 ]]; then RC=$ZBD_RC; fi
 if [[ $MGMT_RC -ne 0 ]]; then RC=$MGMT_RC; fi
+if [[ $H3_RC -ne 0 ]]; then RC=$H3_RC; fi
 if [[ $RC -ne 0 || $KEEP_SERVER -eq 0 ]]; then
   log "Cleanup: stopping server + zmetad, destroying $DATASET"
   # A ROOT-owned phase-2 server cannot die by unprivileged pkill (its

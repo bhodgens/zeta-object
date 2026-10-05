@@ -13,6 +13,13 @@
 //	            frontend with Basic auth: 401 without credentials, the same
 //	            Range semantics (transport-independent), and the Alt-Svc
 //	            advertisement (h3="<port>"; persist=1) on every response.
+//	-mode fetch - ONE arbitrary request (default GET; -method/-body) over
+//	            HTTP/3 with the configured client certificate; prints
+//	            "STATUS <code>" then the raw body (quic-h3-2026-10 leaf 04):
+//	            the machine-readable form the ZFS validation harness parses
+//	            to fetch ?events / ?events&versions and POST ?batch over
+//	            the h3 transport. Additive — the e2e case's usage is
+//	            unchanged.
 //
 // Content is deterministic (byte i = i&0xff), so every Range assert compares
 // exact bytes, never lengths.
@@ -91,6 +98,8 @@ func main() {
 	portH3 := flag.String("port-h3", "", "UDP port expected in the tcp-mode alt-svc assert")
 	certFile := flag.String("cert", "", "client certificate PEM (h3 mode)")
 	keyFile := flag.String("key", "", "client private key PEM (h3 mode)")
+	method := flag.String("method", "GET", "HTTP method for -mode fetch (default GET)")
+	body := flag.String("body", "", "request body for -mode fetch (non-GET)")
 	flag.Parse()
 
 	if *url == "" {
@@ -107,6 +116,8 @@ func main() {
 		exitCode = probeH3(&c, base, objURL, *certFile, *keyFile)
 	case "tcp":
 		exitCode = probeTCP(&c, base, objURL, *user, *pass, *portH3)
+	case "fetch":
+		exitCode = probeFetch(&c, base, objURL, *certFile, *keyFile, *method, *body)
 	default:
 		fmt.Printf("FAIL unknown -mode %q (want h3|tcp)\n", *mode)
 		os.Exit(2)
@@ -456,6 +467,58 @@ func tcpRange(c *check, _ *http.Client, authedGet func(string, map[string]string
 	bodyOK := rerr == nil && string(got) == string(wantBody)
 	c.ok(label, resp.StatusCode == wantStatus && crOK && bodyOK,
 		fmt.Sprintf("status=%d content-range=%q len=%d err=%v", resp.StatusCode, resp.Header.Get("Content-Range"), len(got), rerr))
+}
+
+// probeFetch (quic-h3-2026-10 leaf 04) runs ONE arbitrary request over the
+// h3 transport with the configured client certificate and prints
+// "STATUS <code>" followed by the raw body — the form the ZFS validation
+// harness parses. Additive mode: h3/tcp are untouched.
+func probeFetch(c *check, base, objURL, certFile, keyFile, method, body string) int {
+	withCert, errOpen := loadClientCert(certFile, keyFile)
+	if errOpen != nil {
+		fmt.Printf("STATUS 0\n")
+		c.failErr("fetch "+method+" "+objURL, errOpen)
+		return 1
+	}
+	tlsCfg := &tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		InsecureSkipVerify: true, //nolint:gosec // harness: the server cert is self-signed
+		ServerName:         "localhost",
+		Certificates:       []tls.Certificate{withCert},
+	}
+	tr := &http3.Transport{TLSClientConfig: tlsCfg}
+	defer tr.Close()
+	client := &http.Client{Transport: tr, Timeout: 30 * time.Second}
+	var rdr io.Reader
+	if body != "" {
+		rdr = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, objURL, rdr)
+	if err != nil {
+		fmt.Printf("STATUS 0\n")
+		c.failErr("fetch "+method+" "+objURL, err)
+		return 1
+	}
+	if body != "" {
+		req.ContentLength = int64(len(body))
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("STATUS 0\n")
+		c.failErr("fetch "+method+" "+objURL, err)
+		return 1
+	}
+	defer resp.Body.Close()
+	b, rerr := io.ReadAll(resp.Body)
+	fmt.Printf("STATUS %d\n", resp.StatusCode)
+	_, _ = os.Stdout.Write(b)
+	ok := rerr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300
+	c.ok("fetch "+method+" "+objURL, ok,
+		fmt.Sprintf("status=%d err=%v", resp.StatusCode, rerr))
+	if !ok {
+		return 1
+	}
+	return 0
 }
 
 // baseLeaf returns the last path segment (the object name) of key.
