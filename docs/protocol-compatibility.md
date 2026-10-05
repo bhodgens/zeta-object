@@ -37,8 +37,8 @@ Reading the columns:
 
 | Operation | Status | Notes / proof |
 |---|---|---|
-| CreateBucket (`PUT /<bucket>`) | Implemented (opt-in) | Plain-dir mode: 200, mkdir + `.metadata/`. ZFS dataset mode (`zfs_bucket_datasets: true`): 200, the bucket becomes dataset `<dataDirDataset>/<bucket>` (`zfs create`); fail-loud 500 InternalError on provisioning failure - never a silent plain-dir fallback. e2e 34 (`scripts/e2e/cases/34-zfs-bucket-datasets.sh`), zfs-validate ([docs/validation-zfs-bucket-datasets-2026-10-06.md](validation-zfs-bucket-datasets-2026-10-06.md)) |
-| DeleteBucket (`DELETE /<bucket>`) | Implemented (opt-in) | Plain-dir mode: 204 + RemoveAll; empty-only (`409 BucketNotEmpty` otherwise). Dataset mode: 204, `zfs destroy <dataDirDataset>/<bucket>`; a dataset holding snapshots answers `409 BucketHasSnapshots` with the snapshot count and the `zfs destroy <ds>@<snapshot>` hint in the body - never a recursive destroy, snapshots are operator-removed. e2e 34 (`scripts/e2e/cases/34-zfs-bucket-datasets.sh`), zfs-validate ([docs/validation-zfs-bucket-datasets-2026-10-06.md](validation-zfs-bucket-datasets-2026-10-06.md)) |
+| CreateBucket (`PUT /<bucket>`) | Implemented (opt-in) | Plain-dir mode: 200, mkdir + `.metadata/`. ZFS dataset mode (`zfs_bucket_datasets: true`): 200, the bucket becomes dataset `<dataDirDataset>/<bucket>` (`zfs create`); fail-loud 500 InternalError on provisioning failure - never a silent plain-dir fallback. e2e 34 (`scripts/e2e/cases/34-zfs-bucket-datasets.sh`), zfs-validate ([docs/validation-zfs-bucket-datasets-2026-10-03.md](validation-zfs-bucket-datasets-2026-10-03.md)) |
+| DeleteBucket (`DELETE /<bucket>`) | Implemented (opt-in) | Plain-dir mode: 204 + RemoveAll; empty-only (`409 BucketNotEmpty` otherwise). Dataset mode: 204, `zfs destroy <dataDirDataset>/<bucket>`; a dataset holding snapshots answers `409 BucketHasSnapshots` with the snapshot count and the `zfs destroy <ds>@<snapshot>` hint in the body - never a recursive destroy, snapshots are operator-removed. e2e 34 (`scripts/e2e/cases/34-zfs-bucket-datasets.sh`), zfs-validate ([docs/validation-zfs-bucket-datasets-2026-10-03.md](validation-zfs-bucket-datasets-2026-10-03.md)) |
 | PUT / GET / HEAD / DELETE object | Implemented | HEAD carries full metadata; DELETE idempotent 204. e2e 02/03, conformance |
 | PUT ?uploads / parts / complete (multipart) | Implemented | parts 1-10000, expiry sweeper, `ETag` assembly. e2e 05, conformance |
 | ListObjectsV2 (+V1 shape) | Implemented | prefix/delimiter/continuation-token/`encoding-type=url`. e2e 04, conformance |
@@ -86,7 +86,7 @@ bytes. e2e 32 (sidecar), zfs-validate section 10 (snapshots, real ZFS).
 
 | Extension | Status | Proof |
 |---|---|---|
-| `GET ?events` - per-key / bucket event history | Implemented | served from zmetad's SQLite export (DB layout 5-6); insert-time-resolved `full_path` makes nested keys exact. e2e 18-zmetad, zfs-validate |
+| `GET ?events` - per-key / bucket event history | Implemented | served from zmetad's SQLite export (accepted DB layouts 5-8, events wire schema 2-3; the `extended-metadata` branch of [bhodgens/zfs-metadata](https://github.com/bhodgens/zfs-metadata) is where both the kernel event log and zmetad come from - see the README prerequisite); insert-time-resolved `full_path` makes nested keys exact. e2e 18-zmetad, zfs-validate |
 | `GET ?events&versions` - derived versions listing | Implemented | separate extension, NOT S3 versioning; carries `IsLossy`/`RecordsLost`/`RingSwaps`. e2e 17 |
 | Loss accounting | Implemented | `recordsLost` = lifetime known-lost (survives retention); `ringSwaps` = kernel-log identity swaps, never folded into record counts. zfs-validate |
 | Freshness | Degrades | events appear within one zmetad poll (default 30s); `SIGUSR1` forces an out-of-band collect |
@@ -210,7 +210,7 @@ management listener.
 | Atomic writes: a crash never truncates an object | temp + fsync + rename | unit tests |
 | Per-key write serialization | `lockObject` seam | unit + `-race` |
 | One identity registry across all frontends | shared registry | e2e 18/26/27 |
-| Path-traversal rejection (`..`, `.metadata` segments) | key validation | e2e 03/19 |
+| Path-traversal rejection (`..`, `.metadata` and `.zfs` segments) | key validation (`validateObjectKey` and the fsbackend twin) | e2e 03/19 |
 | Principal breadcrumbs (`user.zeta.*` xattrs) + optional append-only audit log | xattr stamping at the write path | e2e 28 |
 | Per-package coverage floors + conformance ratchet | CI + `make conformance` | `.github/workflows/check.yml` |
 
