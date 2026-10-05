@@ -64,12 +64,37 @@ BIN="$WORK/zeta-server"
 openssl req -x509 -newkey rsa:2048 -keyout "$WORK/key.pem" -out "$WORK/cert.pem" \
   -days 2 -nodes -subj "/CN=$HOST" >/dev/null 2>&1 || die "openssl failed"
 
+# -------- management-API (admin mTLS) client-certificate fixtures (s13) -----
+# The admin frontend authenticates every request by TLS CLIENT certificate,
+# verified against clientCAFile. Generate a trusted CA plus a pinned-CN
+# client certificate (CN=zval-admin) AND a second CA with a same-CN client
+# certificate to prove the ISSUER (not just the CN) is checked.
+CA_DIR="$WORK/admin-ca"
+mkdir -p "$CA_DIR"
+printf 'keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n' > "$CA_DIR/client.ext"
+openssl req -x509 -newkey rsa:2048 -keyout "$CA_DIR/ca-key.pem" -out "$CA_DIR/ca.pem" \
+  -days 2 -nodes -subj '/CN=zval-admin-ca' >/dev/null 2>&1 || die "openssl CA failed"
+openssl req -newkey rsa:2048 -keyout "$CA_DIR/client-key.pem" -out "$CA_DIR/client.csr" \
+  -nodes -subj '/CN=zval-admin' >/dev/null 2>&1 || die "openssl client csr failed"
+openssl x509 -req -in "$CA_DIR/client.csr" -CA "$CA_DIR/ca.pem" -CAkey "$CA_DIR/ca-key.pem" \
+  -CAcreateserial -out "$CA_DIR/client.pem" -days 2 -extfile "$CA_DIR/client.ext" >/dev/null 2>&1 \
+  || die "openssl client cert signing failed"
+openssl req -x509 -newkey rsa:2048 -keyout "$CA_DIR/other-ca-key.pem" -out "$CA_DIR/other-ca.pem" \
+  -days 2 -nodes -subj '/CN=zval-other-ca' >/dev/null 2>&1 || die "openssl other CA failed"
+openssl req -newkey rsa:2048 -keyout "$CA_DIR/wrong-key.pem" -out "$CA_DIR/wrong.csr" \
+  -nodes -subj '/CN=zval-admin' >/dev/null 2>&1 || die "openssl wrong csr failed"
+openssl x509 -req -in "$CA_DIR/wrong.csr" -CA "$CA_DIR/other-ca.pem" -CAkey "$CA_DIR/other-ca-key.pem" \
+  -CAcreateserial -out "$CA_DIR/wrong.pem" -days 2 -extfile "$CA_DIR/client.ext" >/dev/null 2>&1 \
+  || die "openssl wrong cert signing failed"
+
 # ------------------------------------------------------------- deploy ------
 log "Deploying to $HOST:$REMOTE_DIR"
 # stop any prior instance first - overwriting a running binary fails (ETXTBSY)
 ssh -o BatchMode=yes "$HOST" "pkill -f '[.]/zeta-serve[r]' 2>/dev/null; pkill -f 'zmeta[d].*zeta-validate' 2>/dev/null; sleep 0.5; mkdir -p $REMOTE_DIR; true"
 scp -q "$BIN" "$HOST:$REMOTE_DIR/zeta-server"
-scp -q "$WORK/cert.pem" "$WORK/key.pem" "$HOST:$REMOTE_DIR/"
+scp -q "$WORK/cert.pem" "$WORK/key.pem" \
+       "$CA_DIR/ca.pem" "$CA_DIR/client.pem" "$CA_DIR/client-key.pem" \
+       "$CA_DIR/wrong.pem" "$CA_DIR/wrong-key.pem" "$HOST:$REMOTE_DIR/"
 ssh -o BatchMode=yes "$HOST" "chmod +x $REMOTE_DIR/zeta-server"
 
 # ----------------------------------------------- fresh scratch dataset -----
@@ -1200,6 +1225,161 @@ print(f"ZBD_TOTAL: {len(results) - len(failed)}/{len(results)}")
 sys.exit(1 if failed else 0)
 PYEOF
 
+# --------------------------------------------- section 13: management API ---
+# management-api-2026-10 leaf 07. The admin frontend is an mTLS JSON surface
+# on its OWN loopback listener; it cannot be reached from this workstation,
+# so every request runs `curl` ON the host (the client certificate is
+# deployed alongside the server cert). Two server phases (both type admin):
+#   plain : zfs_bucket_datasets OFF -> mTLS/status/config + plain-bucket CRUD
+#   ds    : zfs_bucket_datasets ON  -> dataset bucket + the 409 refusal
+# The create path is unconditionally dataset-backed when the feature is on
+# (internal/bucketmanager Env.create), so a PLAIN bucket needs the feature
+# OFF — hence two phases.
+cat > "$WORK/checks-mgmt.py" <<'PYEOF'
+# Section 13: management API over mTLS (admin frontend).
+# MGMT_MODE=plain -> auth, /status, /config, plain-bucket create/delete.
+# MGMT_MODE=ds    -> dataset bucket create, DELETE refusal (409), survival,
+#                    host-side cleanup (the API must destroy nothing).
+import json, os, re, subprocess, sys, time
+
+HOST = "zfs-meta"
+PARENT = "testpool/zval"
+MODE = os.environ.get("MGMT_MODE", "plain")
+ADMIN_PORT = int(os.environ.get("MGMT_ADMIN_PORT", "9710"))
+# The harness config's literal secrets (identities): /config must mask them.
+SECRETS = ("valpass", "valpass2")
+
+def sh(cmd, timeout=60):
+    r = subprocess.run(["ssh", "-o", "BatchMode=yes", HOST, cmd],
+                       capture_output=True, text=True, timeout=timeout)
+    return (r.stdout + r.stderr).strip()
+
+REMOTE_BASE = sh("echo $HOME") + "/zeta-validate"
+
+results = []
+def check(name, ok, detail=""):
+    results.append((name, bool(ok), str(detail)[:300]))
+
+def _curl(method, path, cert, key, data=None):
+    parts = ["curl", "-sS", "-k", "--max-time", "20",
+             "-w", "\\n__HTTP__%{http_code}"]
+    if cert:
+        parts += ["--cert", REMOTE_BASE + "/" + cert]
+    if key:
+        parts += ["--key", REMOTE_BASE + "/" + key]
+    parts += ["-X", method]
+    if data is not None:
+        parts += ["-H", "Content-Type: application/json", "--data-binary", data]
+    parts += ["https://127.0.0.1:%d%s" % (ADMIN_PORT, path)]
+    cmd = " ".join("'" + p.replace("'", "'\\''") + "'" for p in parts)
+    cmd += " 2>/dev/null; echo __RC__${?}"
+    out = sh(cmd)
+    m = re.search(r"__HTTP__(\d+)", out)
+    status = int(m.group(1)) if m else 0
+    rcm = re.search(r"__RC__(\d+)", out)
+    rc = int(rcm.group(1)) if rcm else 0
+    body = re.split(r"__HTTP__|__RC__", out)[0]
+    return status, rc, body
+
+def admin(method, path, data=None, cert="client.pem", key="client-key.pem"):
+    """Authenticated management request (valid client certificate)."""
+    return _curl(method, path, cert, key, data=data)
+
+def admin_nocert(method, path, data=None):
+    """No client certificate at all (empty file path == no --cert/--key)."""
+    return _curl(method, path, None, None, data=data)
+
+def ds_exists(name):
+    return sh(f"zfs list -H -o name {name} 2>/dev/null").strip() != ""
+
+if MODE == "plain":
+    # --- 13a. mTLS authentication -------------------------------------------
+    s, rc, b = admin("GET", "/status")
+    check("s13 mTLS: valid client certificate -> 200 on /status",
+          s == 200, f"{s} rc={rc} {b[:150]}")
+
+    s, rc, b = admin_nocert("GET", "/status")
+    check("s13 mTLS: request with NO certificate rejected (handshake failure or 401)",
+          s in (0, 401) or rc != 0, f"status={s} rc={rc} {b[:150]}")
+
+    s, rc, b = admin("GET", "/status", cert="wrong.pem", key="wrong-key.pem")
+    check("s13 mTLS: certificate signed by a DIFFERENT CA rejected",
+          s in (0, 401) or rc != 0, f"status={s} rc={rc} {b[:150]}")
+
+    # --- 13b. /status reports the running frontends --------------------------
+    s, rc, b = admin("GET", "/status")
+    try:
+        st = json.loads(b)
+    except Exception:
+        st = {}
+    check("s13 /status reports running frontends including admin",
+          "admin" in (st.get("frontends") or []), json.dumps(st)[:250])
+
+    # --- 13c. PLAIN bucket create + delete THROUGH the API -------------------
+    BKT = "mgmt-plain"
+    BKT_DIR = f"/{PARENT}/{BKT}"
+    s, rc, b = admin("POST", "/buckets", data=json.dumps({"name": BKT}))
+    check("s13 POST /buckets (plain) -> 200 (bucket created)",
+          s == 200, f"{s} {b[:150]}")
+    exists = sh(f"test -d {BKT_DIR} && echo yes || echo no")
+    check("s13 plain bucket directory exists on the scratch mountpoint",
+          exists == "yes", f"{BKT_DIR}: {sh('ls -ld ' + BKT_DIR + ' 2>&1')[:150]}")
+    s, rc, b = admin("DELETE", "/buckets/" + BKT)
+    check("s13 DELETE plain bucket -> 200 (bucket deleted)",
+          s == 200, f"{s} {b[:150]}")
+    gone = sh(f"test -d {BKT_DIR} && echo present || echo gone")
+    check("s13 plain bucket directory gone after the API delete",
+          gone == "gone", gone[:150])
+
+    # --- 13d. /config masks secrets -----------------------------------------
+    s, rc, b = admin("GET", "/config")
+    check("s13 GET /config -> 200", s == 200, f"{s} {b[:120]}")
+    leaked = [x for x in SECRETS if x in b]
+    check("s13 /config body contains no harness secret value (masked)",
+          not leaked, ("LEAKED: " + b[:250]) if leaked else "no secret in body")
+
+elif MODE == "ds":
+    BKT = "mgmt-ds"
+    DS = f"{PARENT}/{BKT}"
+    try:
+        # --- 13e. create a bucket that IS a ZFS dataset ----------------------
+        s, rc, b = admin("POST", "/buckets", data=json.dumps({"name": BKT}))
+        check("s13 POST /buckets (dataset feature on) -> 200",
+              s == 200, f"{s} {b[:150]}")
+        out = sh(f"zfs list -H -o name {DS} 2>/dev/null")
+        check("s13 bucket is a real ZFS dataset under the scratch parent",
+              out.strip() == DS, f"zfs list: {out[:150]!r}")
+
+        # --- 13f. the API must REFUSE to destroy the dataset (user decision 5)
+        s, rc, b = admin("DELETE", "/buckets/" + BKT)
+        check("s13 DELETE dataset-backed bucket -> 409 (refused)",
+              s == 409, f"{s} {b[:200]}")
+        check("s13 409 body carries code DatasetBucketNotDeletable",
+              b"DatasetBucketNotDeletable" in b.encode(), b[:200])
+        proof = sh(f"zfs list -H -o name {DS} 2>/dev/null; echo '--- snapshots ---'; "
+                   f"zfs list -t snapshot -r {DS} 2>&1")
+        check("s13 dataset STILL exists after the API delete refusal (zfs list proof)",
+              ds_exists(DS), f"zfs list after 409: {proof[:250]!r}")
+
+        # --- 13g. nothing the API did destroyed it; cleanup is a HOST action --
+        check("s13 dataset still present at section end (the API destroyed nothing)",
+              ds_exists(DS), sh(f"zfs list -H -o name {DS} 2>/dev/null")[:150])
+        sh(f"sudo zfs destroy {DS} 2>/dev/null; true")
+        check("s13 dataset destroyed on the HOST via zfs destroy (cleanup, not the API)",
+              not ds_exists(DS), sh(f"zfs list -H -o name {DS} 2>&1")[:150])
+    finally:
+        # finally-path: never wedge the scratch parent even on failure.
+        sh(f"sudo zfs destroy {DS} 2>/dev/null; true")
+else:
+    check(f"s13 unknown MGMT_MODE {MODE!r}", False, "set MGMT_MODE=plain|ds")
+
+failed = [(n, d) for n, ok, d in results if not ok]
+for n, ok, d in results:
+    print(f"{'PASS' if ok else 'FAIL'} | {n}" + (f" | {d}" if not ok else ""))
+print(f"MGMT_TOTAL[{MODE}]: {len(results) - len(failed)}/{len(results)}")
+sys.exit(1 if failed else 0)
+PYEOF
+
 # --------------------------------------------------------------- run -------
 log "Running validation checks against $HOST:$PORT"
 set +e
@@ -1294,9 +1474,114 @@ EOF
 ZBD_RC=0
 run_zbd_section || ZBD_RC=$?
 
+# ---- section 13 launcher (management API, two admin phases) -----------------
+# Both phases serve the admin frontend (type admin) on its OWN loopback
+# listener with an mTLS client CA; that port is unreachable from this
+# workstation, so the checks run `curl` ON the host. The plain phase has the
+# dataset feature OFF (a plain bucket is a directory); the ds phase has it ON
+# (a bucket IS a dataset, and the API must refuse to destroy it — user
+# decision 5). Every pkill pattern is one-char bracketed so it can never
+# self-match the ssh channel.
+start_mgmt_phase() {
+  local mode="$1" s3="$2" adm="$3" feat="$4" usesudo="$5"
+  local launch="./zeta-server"
+  [[ "$usesudo" == "1" ]] && launch="sudo -n -E ./zeta-server"
+  cat > "$WORK/start-mgmt-$mode.sh" <<EOF
+#!/usr/bin/env bash
+cd '$REMOTE_DIR'
+MGMT_PIDS=\$(pgrep -af 'zeta-serve[r]' | awk '{print \$1}')
+[ -n "\$MGMT_PIDS" ] && kill \$MGMT_PIDS 2>/dev/null
+sudo -n pkill -f '[.]/zeta-serve[r]' 2>/dev/null || true
+sleep 0.5
+cat > '$REMOTE_DIR/config-mgmt-$mode.json' <<ZCFG
+{
+  "dataDir": "$MGMT_DATADIR",
+  "listenAddr": ":$s3",
+  "certFile": "cert.pem",
+  "keyFile": "key.pem",
+  "zfs_versioning": "snapshots",
+  "zfs_bucket_datasets": $feat,
+  "zmetad_db_path": "$REMOTE_DIR/zmetad.db",
+  "zmetad_binary": "/usr/local/sbin/zmetad",
+  "identities": [
+    { "name": "val", "accessKey": "$AK", "secretKey": "$SK", "grants": { "*": "readwrite" } }
+  ],
+  "frontends": [
+    { "type": "admin", "listenAddr": "127.0.0.1:$adm", "options": { "clientCAFile": "$REMOTE_DIR/ca.pem" } }
+  ]
+}
+ZCFG
+export ZETAOBJECT_CONFIG='$REMOTE_DIR/config-mgmt-$mode.json'
+setsid nohup $launch < /dev/null >> mgmt-$mode-server.log 2>&1 &
+echo \$! > '$REMOTE_DIR/mgmt-$mode.pid'
+for i in \$(seq 1 60); do
+  if timeout 2 bash -c "echo > /dev/tcp/127.0.0.1/$adm" 2>/dev/null; then
+    echo "MGMT_${mode}_UP"; exit 0
+  fi
+  sleep 0.2
+done
+echo "MGMT_FAILED"; tail -20 mgmt-$mode-server.log; exit 1
+EOF
+  scp -q "$WORK/start-mgmt-$mode.sh" "$HOST:$REMOTE_DIR/start-mgmt-$mode.sh"
+  local up
+  up=$(ssh -o BatchMode=yes "$HOST" "bash $REMOTE_DIR/start-mgmt-$mode.sh") \
+    || die "mgmt $mode server did not come up on admin :$adm: $up"
+  echo "$up"
+}
+
+stop_mgmt_phase() {
+  local mode="$1"
+  ssh -o BatchMode=yes "$HOST" "
+    if [ -f $REMOTE_DIR/mgmt-$mode.pid ]; then
+      MGMT_PID=\$(cat $REMOTE_DIR/mgmt-$mode.pid)
+      kill \$MGMT_PID 2>/dev/null || sudo -n kill \$MGMT_PID 2>/dev/null || true
+    fi
+    sleep 0.5
+    sudo -n pkill -f '[.]/zeta-serve[r]' 2>/dev/null || true
+    pgrep -af 'zeta-serve[r]' || true
+  " || true
+}
+
+run_mgmt_section() {
+  MGMT_DATADIR="/$(echo "$DATASET" | tr -d '\n')/"
+  log "Section 13: management API (admin mTLS) phases"
+  local S13_RC=0 rc1=0 rc2=0
+
+  # phase plain: dataset feature OFF -> mTLS, /status, /config, plain CRUD.
+  start_mgmt_phase plain 9709 9710 false 0
+  set +e
+  ( cd "$WORK" && MGMT_MODE=plain MGMT_ADMIN_PORT=9710 python3 checks-mgmt.py )
+  rc1=$?
+  set -e
+  stop_mgmt_phase plain
+  if [[ $rc1 -ne 0 ]]; then S13_RC=$rc1; fi
+
+  # phase ds: dataset feature ON (root, to mount children on this host).
+  start_mgmt_phase ds 9711 9712 true 1
+  set +e
+  ( cd "$WORK" && MGMT_MODE=ds MGMT_ADMIN_PORT=9712 python3 checks-mgmt.py )
+  rc2=$?
+  set -e
+  stop_mgmt_phase ds
+  if [[ $rc2 -ne 0 ]]; then S13_RC=$rc2; fi
+
+  # finally-path: host-side teardown of anything the section created (never
+  # through the API); keeps the shared scratch parent destroyable.
+  ssh -o BatchMode=yes "$HOST" "
+    sudo zfs destroy $DATASET/mgmt-ds 2>/dev/null || true
+    sudo rm -rf /$DATASET/mgmt-plain 2>/dev/null || true
+    true
+  " || true
+  return $S13_RC
+}
+
+MGMT_RC=0
+run_mgmt_section || MGMT_RC=$?
+
 # ------------------------------------------------------------- cleanup -----
-# Section 12's result participates in the run's exit status.
+# Section 12's and section 13's results participate in the run's exit status.
 if [[ $ZBD_RC -ne 0 ]]; then RC=$ZBD_RC; fi
+if [[ $MGMT_RC -ne 0 ]]; then RC=$MGMT_RC; fi
 if [[ $RC -ne 0 || $KEEP_SERVER -eq 0 ]]; then
   log "Cleanup: stopping server + zmetad, destroying $DATASET"
   # A ROOT-owned phase-2 server cannot die by unprivileged pkill (its
