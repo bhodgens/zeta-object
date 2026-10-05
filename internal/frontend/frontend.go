@@ -71,8 +71,21 @@ type TLSListenerFrontend interface {
 // over QUIC (HTTP/3). The caller (package main) opens a UDP socket on
 // Addr() and serves HTTP/3 with the pre-built TLS config from
 // TLSConfig(). The precedent is TLSListenerFrontend above it.
+//
+// IsQUICListener is a MARKER: both this interface and
+// TLSListenerFrontend consist of Addr + TLSConfig, so every
+// TLSListenerFrontend structurally satisfies this one (a Go interface
+// is structural). Without the marker the QUIC-first classification in
+// mountFrontends misroutes every TLS-listener frontend (the admin
+// frontend) to a UDP listener - the regression quic-h3-2026-10 leaf
+// 02 shipped and leaf 07's e2e run caught. Only a frontend that
+// explicitly opts in returns true; classification checks this FIRST.
 type QUICListenerFrontend interface {
 	Frontend
+	// IsQUICListener opts this frontend into QUIC (UDP/HTTP-3)
+	// listener classification. Structural coincidence with
+	// TLSListenerFrontend is not opt-in.
+	IsQUICListener() bool
 	// Addr returns this frontend's dedicated UDP listen address from
 	// its config ("" => config error, rejected at construction). An
 	// empty address is NEVER a shared-mux fallback.

@@ -30,7 +30,8 @@ func (f *stubQUICFrontend) Authenticator() auth.Authenticator { return nil }
 func (f *stubQUICFrontend) Capabilities() frontend.ProtocolCaps {
 	return frontend.ProtocolCaps{}
 }
-func (f *stubQUICFrontend) Addr() string { return f.addr }
+func (f *stubQUICFrontend) Addr() string         { return f.addr }
+func (f *stubQUICFrontend) IsQUICListener() bool { return true }
 func (f *stubQUICFrontend) TLSConfig() (*tls.Config, error) {
 	return nil, errors.New("not exercised by the middleware table")
 }

@@ -145,6 +145,11 @@ func (f *Frontend) Wrapped() *webdav.Frontend { return f.wrapped }
 // Addr returns the dedicated UDP listen address (QUICListenerFrontend).
 func (f *Frontend) Addr() string { return f.listenAddr }
 
+// IsQUICListener is the explicit marker (see the interface doc): a
+// structural Addr/TLSConfig match is NOT opt-in, so this must return
+// true here and only here.
+func (f *Frontend) IsQUICListener() bool { return true }
+
 // TLSConfig builds the QUIC listener's TLS configuration: the process cert
 // pair as the listener's own certificate, TLS 1.3 minimum (HTTP/3
 // requires it), client certificates REQUIRED and verified against the

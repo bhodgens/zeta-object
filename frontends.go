@@ -436,7 +436,7 @@ func mountFrontends(mux *http.ServeMux, mounts []frontendMount) (shared []fronte
 			continue
 		}
 		spec := listenerSpec{frontend: m.frontend, addr: m.listenAddr}
-		if q, ok := m.frontend.(frontend.QUICListenerFrontend); ok {
+		if q, ok := m.frontend.(frontend.QUICListenerFrontend); ok && q.IsQUICListener() {
 			cfg, err := q.TLSConfig()
 			if err != nil {
 				return nil, nil, fmt.Errorf("frontend %q: building QUIC listener config: %w", q.Name(), err)

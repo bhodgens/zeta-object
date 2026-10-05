@@ -42,7 +42,8 @@ func (f *fakeQUICFrontend) Authenticator() auth.Authenticator { return nil }
 func (f *fakeQUICFrontend) Capabilities() frontend.ProtocolCaps {
 	return frontend.ProtocolCaps{}
 }
-func (f *fakeQUICFrontend) Addr() string { return f.addr }
+func (f *fakeQUICFrontend) Addr() string         { return f.addr }
+func (f *fakeQUICFrontend) IsQUICListener() bool { return true }
 func (f *fakeQUICFrontend) TLSConfig() (*tls.Config, error) {
 	if f.tlsFail {
 		return nil, errors.New("no certificate pair configured")
@@ -153,6 +154,43 @@ func TestMountFrontends_QUICDedicatedListenerSpec(t *testing.T) {
 		t.Fatal("spec.tlsConfig must stay nil for a QUIC frontend (it is not a TCP TLS listener)")
 	}
 }
+
+// A TLSListenerFrontend that has NOT opted in (IsQUICListener false or
+// absent marker semantics) is classified as a TCP TLS listener even
+// though its Addr/TLSConfig methods structurally satisfy
+// QUICListenerFrontend - the admin-frontend regression quic-h3-2026-10
+// leaf 07's e2e run caught (admin was misrouted to UDP, its mTLS TCP
+// listener never opened).
+func TestMountFrontends_TLSFrontendWithoutQUICOptInStaysTCP(t *testing.T) {
+	mux := http.NewServeMux()
+	// fakeQUICFrontend with the marker FORCED OFF: structurally identical
+	// to an admin-style TLS-listener frontend.
+	noOptIn := &fakeQUICFrontend{name: "admin-shaped", addr: "127.0.0.1:9444"}
+	shared, extra, err := mountFrontends(mux, []frontendMount{
+		{frontend: &noOptInShim{fakeQUICFrontend: noOptIn}, listenAddr: "127.0.0.1:9444"},
+	})
+	if err != nil {
+		t.Fatalf("mountFrontends: %v", err)
+	}
+	if len(shared) != 0 {
+		t.Fatalf("shared = %v, want none (it still needs its own listener)", frontendNames(shared))
+	}
+	if len(extra) != 1 {
+		t.Fatalf("extra specs = %d, want 1", len(extra))
+	}
+	if extra[0].quicConfig != nil {
+		t.Fatal("a non-opted-in TLS-listener frontend must NOT be classified as QUIC (regression: admin misrouted to UDP)")
+	}
+	if extra[0].tlsConfig == nil {
+		t.Fatal("a non-opted-in TLS-listener frontend must carry tlsConfig (TCP path)")
+	}
+}
+
+// noOptInShim presents fakeQUICFrontend with IsQUICListener returning
+// false - the shape every mere TLSListenerFrontend has.
+type noOptInShim struct{ *fakeQUICFrontend }
+
+func (s *noOptInShim) IsQUICListener() bool { return false }
 
 // A QUICListenerFrontend whose TLSConfig fails aborts the mount loudly.
 func TestMountFrontends_QUICTLSConfigErrorPropagates(t *testing.T) {
