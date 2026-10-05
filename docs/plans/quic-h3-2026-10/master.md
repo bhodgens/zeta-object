@@ -473,7 +473,7 @@ Output: APPROVED or list of specific gaps.
 | 05-webdav-versioning | COMPLETE | 1 | 46b45bf; parent re-ran gates + parity 8/8; s3 capture fail-CLOSED (object_handlers.go:80) mirrored; snapshots DELETE=409 + MOVE src-marker probed vs real handler; export_versioning_test_surface.go added (test-only aliases) |
 | 06-zfs-read-surfaces | COMPLETE | 1 | parent-verified: 19 pkgs ok, parity PASS, lint 0; bridge exports HandleBucketEvents/ObjectEvents/ObjectVersions + JSON types; file-versions JSON is new (s3 is XML) - same derivation; HEAD mirrors GET |
 | 07-batch-ops | COMPLETE | 1 | 5fb1cbb; parent re-ran all gates + FULL make e2e 837/837 (see ea00493 fix); versioning-per-item pinned; move semantics pinned; DeleteObjects keeps S3 missing-key semantics |
-| 03-e2e-case-docs | PENDING | | |
+| 03-e2e-case-docs | COMPLETE | 1 | 93a1477 (server fixes: Alt-Svc never applied - mounts=nil; h3 bucket key) + 59b4192 (case 38 + docs); parent e2e 842/842; probe 16 asserts; 0 em-dashes in added lines |
 | 04-live-validation | PENDING | | |
 
 Status values: PENDING | IN_PROGRESS | IMPLEMENTED | REVIEWED | COMPLETE | BLOCKED
