@@ -26,9 +26,9 @@ Most "S3-compatible" servers are the same idea restated: a service that owns a b
 
 1. **Your data is never held hostage.** Every object is a file you own, at a path you chose. Back up with rsync, replicate with ZFS send, grep it, migrate away by copying a directory. There is no export step because there is nothing to export.
 2. **Existing directories become S3 buckets with zero migration.** Bucket `logs` at `/var/log` means the decade of log files already on disk is immediately listable, downloadable, and presign-able over S3 - byte-for-byte, no import, no copy. Symlinks are followed, so a bucket can live anywhere.
-3. **Filesystem capabilities become S3 capabilities.** When a bucket sits on a ZFS dataset polled by the zmetad daemon (per-dataset file-op history exported to SQLite), zeta-object serves `GET /<bucket>?events` and `GET /<bucket>?versions` derived from the kernel's own record of what happened to each file - create, rename, truncate, delete - with loss indicators. No hosted S3 offers object history; no opaque object server can borrow it from the filesystem. When the filesystem does not support it, the capability is simply absent (a clean 503), never faked.
+3. **Filesystem capabilities become S3 capabilities.** When a bucket sits on a ZFS dataset polled by the zmetad daemon (per-dataset file-op history exported to SQLite), zeta-object serves `GET /<bucket>?events` and `GET /<bucket>?versions` derived from the kernel's own record of what happened to each file - create, rename, truncate, delete - with loss indicators. No hosted S3 offers object history; no opaque object server can borrow it from the filesystem. When the filesystem does not support it, the capability is simply absent (a clean 503), never faked. The kernel side of that log is not in stock OpenZFS: it ships on the `extended-metadata` branch of [`bhodgens/zfs-metadata`](https://github.com/bhodgens/zfs-metadata) - see [the prerequisite](#prerequisite-the-extended-metadata-branch-of-the-openzfs-fork).
 4. **Pluggable on both axes, honest about semantics.** Frontends (client protocols) and backends (storage) plug into one neutral object model, and the seams reject what a protocol cannot express instead of silently emulating it. A parity gate proves an enabled metadata provider changes nothing about core S3 responses.
-5. **Small enough to read, hardened enough to trust.** Two small Go binaries (the gateway plus the optional web console), a tiny audited dependency set (all licenses in docs/licenses/), and a gate wall: 1100+ unit test functions, a 703+-assert e2e suite over 35 cases, race detector, fuzzing, ceph/s3-tests conformance ratchet, staticcheck/gosec, and a pre-commit chain that enforces all of it. The codebase is small enough that an afternoon of reading covers every line that touches your data.
+5. **Small enough to read, hardened enough to trust.** Two small Go binaries (the gateway plus the optional web console), a tiny audited dependency set (all licenses in docs/licenses/), and a gate wall: 1,376 unit test functions, an 837-assert e2e suite over 38 cases, race detector, fuzzing, ceph/s3-tests conformance ratchet, staticcheck/gosec, and a pre-commit chain that enforces all of it. The codebase is small enough that an afternoon of reading covers every line that touches your data.
 
 The honest, per-operation capability matrix for every protocol — what is implemented, what degrades and how, what is absent — lives in [docs/protocol-compatibility.md](docs/protocol-compatibility.md). The per-operation **S3 behavior contract** (request/response shapes, error codes, and every deliberate divergence from AWS S3, maintained under the upstream-zfs documentation contract): [docs/s3-behavior.md](docs/s3-behavior.md).
 
@@ -47,7 +47,7 @@ The honest, per-operation capability matrix for every protocol — what is imple
 
 **Event Actions** - run shell commands on upload/download/delete with glob matching, per-subdirectory merge/override/disable inheritance, inactivity triggers (e.g. `zfs snapshot` after 30 quiet minutes), safe single-quote shell-quoting of all variables, timeouts with process-group kill. See [Event Actions](#event-actions).
 
-**Metadata capability endpoints** - when a bucket's filesystem provides an event log (ZFS `org.openzfs:events`, exported by the zmetad daemon to SQLite): object and bucket event history as JSON, a versions-style XML listing derived from the log (delete markers included, `IsLossy`/`RecordsLost`/`RingSwaps` loss indicators - swaps and lost records are separate classes, never folded), probed lazily per bucket. Absent capability = clean 503, zero overhead.
+**Metadata capability endpoints** - when a bucket's filesystem provides an event log (ZFS `org.openzfs:events`, exported by the zmetad daemon to SQLite; needs the `extended-metadata` branch of [`bhodgens/zfs-metadata`](https://github.com/bhodgens/zfs-metadata) - see [the prerequisite](#prerequisite-the-extended-metadata-branch-of-the-openzfs-fork)): object and bucket event history as JSON, a versions-style XML listing derived from the log (delete markers included, `IsLossy`/`RecordsLost`/`RingSwaps` loss indicators - swaps and lost records are separate classes, never folded), probed lazily per bucket. Absent capability = clean 503, zero overhead.
 
 **ZFS bucket datasets** - opt-in per-bucket ZFS provisioning: with `zfs_bucket_datasets` on, every S3-created bucket becomes its own dataset (`zfs create <dataDirDataset>/<bucket>`), so snapshots, quotas, and `.zfs/snapshot/` history are per-bucket-correct; bucket delete destroys the dataset, and a dataset with snapshots refuses deletion with `409 BucketHasSnapshots` (never a recursive destroy - the operator removes snapshots). See [ZFS bucket datasets](#zfs-bucket-datasets).
 
@@ -82,7 +82,7 @@ Quality gates and tests:
 ```bash
 make test         # unit tests with coverage summary
 make check        # full local gate: build, vet, fmt, lint, tests, race, vuln, secrets
-make e2e          # end-to-end suite: 700+ asserts over 35 cases (incl. boto3 + mc + rclone interop)
+make e2e          # end-to-end suite: 837 asserts over 38 cases (incl. boto3 + mc + rclone interop)
 ```
 
 ## Credentials Configuration
@@ -755,19 +755,46 @@ setattr) over S3-style subresources:
 - `GET /<bucket>?events` - bucket-level recent history
 - `GET /<bucket>?events&versions` - a versions-style XML listing derived from the log: newest-first, per-key `IsLatest`, delete markers for removes, `IsLossy`/`RecordsLost`/`RingSwaps` loss indicators
 
-### Prerequisite: zmetad
+### Prerequisite: the `extended-metadata` branch of the OpenZFS fork
 
-The events come from the **zmetad** daemon (zfs-metadata
-`extended-metadata` branch), which durably exports the kernel event log to
-a SQLite database. zeta-object reads that database exclusively - it never
-execs `zfs events` itself:
+The per-file event log is **not in stock OpenZFS**. It comes from one
+branch of this project's OpenZFS fork:
 
-- zmetad must be running on the ZFS host with **DB layout version 5 or 6**
-  (events carry insert-time-resolved `full_path`; the consumer contract is
-  zmetad's `SCHEMA.md`). Layout versions evolve additively, so the
-  consumer accepts a range; newer layouts are refused until zeta-object
-  catches up; older ones are refused with an upgrade hint (zmetad migrates
-  in place).
+- **Repository:** <https://github.com/bhodgens/zfs-metadata> (an OpenZFS
+  tree that tracks [`openzfs/zfs`](https://github.com/openzfs/zfs))
+- **Branch:** `extended-metadata`
+
+That branch carries both halves of the capability:
+
+- the kernel-side dataset properties `events` and `events_size`, which
+  switch on and size the per-dataset in-kernel event log, and
+- `contrib/zmetad`, the userspace daemon that durably exports that log to
+  SQLite and is the only thing zeta-object reads.
+
+```bash
+git clone --branch extended-metadata https://github.com/bhodgens/zfs-metadata.git
+```
+
+Build and install it the way you install OpenZFS, then rebuild the module
+and re-import the pool so the datasets offer the new properties; build
+`contrib/zmetad` from the same tree, run it on the ZFS host, and point
+`zmetad_db_path` here at the database it writes. Validated against OpenZFS
+2.4.99 with the branch head at `19c157b7f` and `events=on, events_size=1M`
+on the polled dataset.
+
+Stock OpenZFS is sufficient for everything else the gateway does with ZFS.
+Snapshots-mode versioning, reflink versioning and [ZFS bucket
+datasets](#zfs-bucket-datasets) use only stock features (`FICLONE`,
+snapshots, `zfs create`/`zfs destroy`). Only the event-log capability
+needs this branch.
+
+zmetad must be running with a database this build can read:
+
+- **DB layout version 5 through 8**, and events wire schema `2` or `3`
+  (layout 8 is wire 3). Layouts evolve additively upstream, so the whole
+  range is readable; a NEWER layout is refused until zeta-object catches
+  up, and anything older than 5 is refused with an upgrade hint (zmetad
+  migrates its database in place on upgrade).
 - The bucket's dataset must be tracked and polled by zmetad. Buckets that
   are not on ZFS, or not tracked/polled yet, get a clean
   `503 NotImplemented`; nothing is emulated. `uid`/`gid` are not exposed.
@@ -927,7 +954,7 @@ Inspect configured actions with `./scripts/show-bucket-actions.sh data/`.
 
 zeta-object is baselined against the industry-standard [ceph/s3-tests](https://github.com/ceph/s3-tests) suite. `make conformance` builds the server, launches it on a free HTTPS port, runs the in-scope pytest subset (277 tests - buckets, objects, listing, multipart, copy, conditional, range, presigned), and exits non-zero only when a previously-passing test regresses against the committed ratchet `scripts/conformance/baseline.txt`. The full matrix with per-failure triage: [docs/conformance/2026-09-28-matrix.md](docs/conformance/2026-09-28-matrix.md).
 
-The e2e suite (`make e2e`, 700+ asserts over 35 cases) additionally covers every user-facing surface - including custom buckets, backend/frontend configuration, the metadata endpoints, object tagging, multi-range GET, WebDAV locking, versioning, ZFS bucket datasets, all four protocol frontends, and live boto3/mc/rclone interop - per the repo rule in [AGENTS.md](AGENTS.md). The full per-operation protocol matrix: [docs/protocol-compatibility.md](docs/protocol-compatibility.md).
+The e2e suite (`make e2e`, 837 asserts over 38 cases) additionally covers every user-facing surface - including custom buckets, backend/frontend configuration, the metadata endpoints, object tagging, multi-range GET, WebDAV locking, versioning, ZFS bucket datasets, all four protocol frontends, and live boto3/mc/rclone interop - per the repo rule in [AGENTS.md](AGENTS.md). The full per-operation protocol matrix: [docs/protocol-compatibility.md](docs/protocol-compatibility.md).
 
 ## Architecture
 
@@ -971,7 +998,7 @@ make clean    # remove build artifacts
 ```bash
 make test              # unit tests with coverage summary
 make check             # build, vet, fmt, lint, tests, race, vuln, secrets
-make e2e               # 700+-assert end-to-end suite, 35 cases
+make e2e               # 837-assert end-to-end suite, 38 cases
 make parity-test       # metadata-provider parity gate (FS vs provider-backed identical)
 make test-cover-enforce # aggregate coverage floor (ratchets up over time)
 make conformance       # ceph/s3-tests subset vs committed ratchet
