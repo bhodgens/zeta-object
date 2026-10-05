@@ -153,7 +153,7 @@ func (s *sessionStore) mint(w http.ResponseWriter, r *http.Request) (string, err
 	s.sessions[id] = sessionState{lastSeen: now}
 	s.mu.Unlock()
 
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- HttpOnly and SameSite=Strict are set here; Secure is set per transport (true on TLS, false on the loopback-only plain-HTTP mode), which gosec cannot prove statically
 		Name:     SessionCookieName,
 		Value:    value,
 		Path:     "/",
