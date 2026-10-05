@@ -125,7 +125,8 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 	// admin is the mTLS management frontend (management-api-2026-10 leaf 01):
 	// it owns a dedicated TLS listener whose client-certificate verification
 	// is expressed through the positional interface. The CA bundle is REQUIRED
-	// and is read fail-loud; the route services are injected by leaf 04.
+	// and is read fail-loud; the route services and the write-only audit seam
+	// are injected here (leaf 04).
 	"admin": func(cfg FrontendConfig, b backend.Backend, creds auth.CredentialSource) (frontend.Frontend, error) {
 		if cfg.Bucket != "" {
 			return nil, fmt.Errorf(`frontend type "admin" does not accept the "bucket" key (webdav only)`)
@@ -133,14 +134,26 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 		if err := validateOptions(cfg.Type, cfg.Options, admin.KnownOptionKeys); err != nil {
 			return nil, err
 		}
-		return admin.New(admin.Options{
+		wiring := buildAdminWiring(s3.AppendAudit)
+		f, err := admin.New(admin.Options{
 			ListenAddr:       cfg.ListenAddr,
 			ClientCAFile:     cfg.Options["clientCAFile"],
 			AdminPrincipals:  splitOptionList(cfg.Options["adminPrincipals"]),
 			AllowNonLoopback: cfg.Options["allowNonLoopback"] == "true",
 			CertFile:         serverConfig.CertFile,
 			KeyFile:          serverConfig.KeyFile,
+			Services:         wiring.services,
+			Audit:            wiring.audit,
 		})
+		if err != nil {
+			return nil, err
+		}
+		// Register the frontend's CA-reload entry point so /auth/reload can
+		// refresh the trusted client CA without a restart (leaf 04 Task 4).
+		if ca, ok := f.(admin.ClientCAReloader); ok {
+			setAdminClientCAReloader(ca.ReloadClientCA)
+		}
+		return f, nil
 	},
 }
 

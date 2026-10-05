@@ -97,14 +97,16 @@ func TestAdmin_StatusService200(t *testing.T) {
 	}
 }
 
-// Every other path is a JSON 404, and a wrong method on /status is too (leaf
-// 04 introduces 405s).
+// Every unrouted path is a JSON 404; a wrong method on a KNOWN route is a JSON
+// 405 (leaf 04). Unknown-path requests still authenticate first.
 func TestAdmin_UnknownRoute404(t *testing.T) {
 	env := newTestEnv(t, Options{})
+	// Genuinely unknown paths (never a route).
 	for _, tc := range []struct{ method, path string }{
-		{http.MethodGet, "/buckets"},
 		{http.MethodGet, "/nope"},
-		{http.MethodPost, "/status"},
+		{http.MethodGet, "/buckets/x/y/z"},
+		{http.MethodGet, "/healthz"},
+		{http.MethodGet, "/"},
 	} {
 		rr := httptest.NewRecorder()
 		env.frontend.Handler().ServeHTTP(rr, env.authedRequest(tc.method, tc.path))
@@ -114,6 +116,15 @@ func TestAdmin_UnknownRoute404(t *testing.T) {
 		if body := decodeError(t, rr); body.Error.Code != "NotFound" {
 			t.Fatalf("%s %s: error code = %q, want NotFound", tc.method, tc.path, body.Error.Code)
 		}
+	}
+	// Known route, wrong method: 405.
+	rr := httptest.NewRecorder()
+	env.frontend.Handler().ServeHTTP(rr, env.authedRequest(http.MethodPost, "/status"))
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /status: status = %d, want 405", rr.Code)
+	}
+	if body := decodeError(t, rr); body.Error.Code != "MethodNotAllowed" {
+		t.Fatalf("POST /status: error code = %q, want MethodNotAllowed", body.Error.Code)
 	}
 }
 

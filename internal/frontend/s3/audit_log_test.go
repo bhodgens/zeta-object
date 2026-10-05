@@ -143,6 +143,47 @@ func TestAuditLogDeniedAuthorization(t *testing.T) {
 	}
 }
 
+// TestAppendAuditManagementRecord pins the exported management audit seam
+// (leaf 04): an op=admin record has exactly the eight contract keys, carries
+// the certificate principal, and is a no-op when the writer is disabled.
+func TestAppendAuditManagementRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	w, err := s3.NewAuditWriter(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s3.InstallAuditWriter(nil); w.Close() })
+	s3.InstallAuditWriter(w)
+
+	s3.AppendAudit("admin-cn", "DELETE", "bkt", "pool/ds", "admin", 409, true)
+
+	recs := readAuditLines(t, path)
+	if len(recs) != 1 {
+		t.Fatalf("expected exactly 1 record, got %d", len(recs))
+	}
+	rec := recs[0]
+	wantKeys := []string{"ts", "principal", "method", "bucket", "key", "op", "status", "denied"}
+	if len(rec) != len(wantKeys) {
+		t.Fatalf("record has %d keys, want exactly the 8 contract keys: %v", len(rec), rec)
+	}
+	for _, k := range wantKeys {
+		if _, ok := rec[k]; !ok {
+			t.Fatalf("record missing key %q: %v", k, rec)
+		}
+	}
+	if rec["op"] != "admin" || rec["principal"] != "admin-cn" || rec["method"] != "DELETE" ||
+		rec["bucket"] != "bkt" || rec["key"] != "pool/ds" || rec["denied"] != true || rec["status"] != float64(409) {
+		t.Fatalf("management record wrong: %v", rec)
+	}
+}
+
+// TestAppendAuditNilWriterNoOp pins the nil-writer no-op contract: with no
+// writer installed the entry point is a silent no-op (never a panic).
+func TestAppendAuditNilWriterNoOp(t *testing.T) {
+	s3.InstallAuditWriter(nil)
+	s3.AppendAudit("admin-cn", "GET", "bkt", "", "admin", 200, false)
+}
+
 // TestAuditLogDisabledByDefault pins the disabled default: with no writer
 // installed, requests succeed and NO file is touched.
 func TestAuditLogDisabledByDefault(t *testing.T) {

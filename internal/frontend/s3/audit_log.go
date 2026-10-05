@@ -25,8 +25,9 @@ import (
 
 // auditRecord is one JSONL line: ts RFC3339Nano, principal (AccessKeyID —
 // log-safe), method, bucket, key, op (internal/auth Op vocabulary:
-// read|write|list|delete|create), status, denied. The key set is the
-// pinned wire contract (e2e case 28 jq-asserts it).
+// read|write|list|delete|create, plus admin for authenticated management
+// requests), status, denied. The key set is the pinned wire contract (e2e
+// case 28 jq-asserts it) and is UNCHANGED by the management surface.
 type auditRecord struct {
 	TS        string `json:"ts"`
 	Principal string `json:"principal"`

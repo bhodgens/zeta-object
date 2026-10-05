@@ -35,11 +35,35 @@ const (
 	OpList   Op = "list"   // listing operations (ListObjects*, ListMultipartUploads)
 	OpDelete Op = "delete" // DELETE object/batch-delete/abort-multipart
 	OpCreate Op = "create" // CreateBucket (+ initiate multipart, PUT bucket sub-resources)
+
+	// OpAdmin is the MANAGEMENT operation value (management-api-2026-10
+	// leaf 04, master Contract 6): it labels audit records written by the
+	// authenticated admin frontend. It is a valid Op but is NEVER a bucket
+	// grant: administrative authority comes from the client certificate,
+	// never from BucketGrants. AuthorizeOp returns false for it even for a
+	// full wildcard bucket grant, and ParseGrantValue rejects it (see
+	// grantableOps).
+	OpAdmin Op = "admin"
 )
 
-// opVocabulary is the frozen set of valid ops. Anything else fails loud at
-// config load and fail-closed at enforcement.
+// opVocabulary is the frozen set of valid Op values. Anything else fails
+// loud at config load and fail-closed at enforcement. OpAdmin is present so
+// the audit record's op field has a named value; it is deliberately absent
+// from grantableOps below.
 var opVocabulary = map[Op]bool{
+	OpRead:   true,
+	OpWrite:  true,
+	OpList:   true,
+	OpDelete: true,
+	OpCreate: true,
+	OpAdmin:  true,
+}
+
+// grantableOps is the set of ops a BucketGrants entry may name. It is the
+// five S3 verb ops ONLY: a bucket grant must never confer administrative
+// authority, so OpAdmin is rejected at parse time (byte-identical error
+// wording to the pre-leaf vocabulary) as well as at decision time.
+var grantableOps = map[Op]bool{
 	OpRead:   true,
 	OpWrite:  true,
 	OpList:   true,
@@ -141,7 +165,7 @@ func ParseGrantValue(identity string, key string, raw json.RawMessage) (GrantExp
 		ops := make(map[Op]bool, len(obj.Ops))
 		for _, o := range obj.Ops {
 			op := Op(o)
-			if !opVocabulary[op] {
+			if !grantableOps[op] {
 				return GrantExpr{}, fmt.Errorf("identity %q: grant %q: unknown op %q (want read|write|list|delete|create)",
 					identity, key, o)
 			}
@@ -322,6 +346,12 @@ func (e GrantExpr) Allows(op Op) bool {
 // decide. For every other bucket the v1 answer is authoritative and a false
 // always denies (the cheap pre-filter for frontend compat).
 func AuthorizeOp(id Identity, op Op, bucket, key string, now time.Time) bool {
+	if op == OpAdmin {
+		// Administrative authority is the client certificate, never a
+		// bucket grant: deny outright, even for a full wildcard grant
+		// (master Contract 6).
+		return false
+	}
 	if !opVocabulary[op] {
 		return false // fail-closed on anything outside the vocabulary
 	}

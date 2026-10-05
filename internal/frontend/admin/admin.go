@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/frontend"
@@ -46,6 +47,10 @@ type Options struct {
 	AllowNonLoopback bool
 	// Services is the injected route surface (leaf 04 fills it in).
 	Services Services
+	// Audit is the injected write-only audit append (leaf 04). It is called
+	// EXACTLY ONCE per authenticated management request with op = "admin".
+	// nil disables auditing (the frontend then appends nothing).
+	Audit AuditFunc
 
 	// CertFile and KeyFile are the process server-certificate pair used as
 	// THIS listener's own certificate. They mirror serverConfig.CertFile /
@@ -72,6 +77,12 @@ type Services struct {
 	BucketSettings func(ctx context.Context, name string, patch json.RawMessage) error
 	Purge          func(ctx context.Context, dataset string) error
 }
+
+// AuditFunc is the write-only audit append seam (leaf 04). Package main
+// injects s3.AppendAudit; the admin package never imports package s3.
+// principal is the certificate Common Name, op is "admin", and denied is
+// true when status >= 400.
+type AuditFunc func(principal, method, bucket, key, op string, status int, denied bool)
 
 // StatusReport is the GET /status payload. Leaf 04 fills the values; the
 // metadata-provider availability is reported honestly (never invented).
@@ -101,9 +112,14 @@ type ConfigApplyResult struct {
 }
 
 // adminFrontend implements frontend.Frontend and frontend.TLSListenerFrontend.
+//
+// caPool is an atomic pointer, not a plain field: /auth/reload swaps the
+// trusted-client-CA pool without a restart, and the TLS handshake reads it
+// through GetConfigForClient (see mtls.go for why the tls.Config itself is
+// never mutated after first use).
 type adminFrontend struct {
 	opts       Options
-	caPool     *x509.CertPool
+	caPool     atomic.Pointer[x509.CertPool]
 	principals map[string]bool // empty = admit every CA-verified principal
 }
 
@@ -132,7 +148,9 @@ func New(opts Options) (frontend.Frontend, error) {
 			principals[p] = true
 		}
 	}
-	return &adminFrontend{opts: opts, caPool: pool, principals: principals}, nil
+	f := &adminFrontend{opts: opts, principals: principals}
+	f.caPool.Store(pool)
+	return f, nil
 }
 
 // Name returns the wire identity of this frontend.

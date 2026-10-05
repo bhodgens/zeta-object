@@ -447,7 +447,51 @@ func TestLegacyConfigGoldenSemantics(t *testing.T) {
 	}
 }
 
-// TestWithRichGrantsClears pins the registry-build contract: registering
+// TestOpAdminIsNeverGrantable pins Contract 6 (management-api-2026-10 leaf
+// 04): OpAdmin exists with value "admin", is a valid Op, but is NEVER
+// conferred by a bucket grant. A full wildcard bucket grant — legacy or
+// rich — still gets a false from AuthorizeOp, and a grant that names the
+// admin op is rejected fail-loud at parse time.
+func TestOpAdminIsNeverGrantable(t *testing.T) {
+	if got := string(auth.OpAdmin); got != "admin" {
+		t.Fatalf("OpAdmin = %q, want admin", got)
+	}
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+
+	// Full wildcard legacy bucket grant: read/write yes, admin no.
+	wildcard := auth.Identity{BucketGrants: map[string]auth.Grant{
+		"*": {Read: true, Write: true},
+	}}
+	if !auth.AuthorizeOp(wildcard, auth.OpRead, "any", "k", now) {
+		t.Fatal("sanity: wildcard grant should allow read")
+	}
+	if auth.AuthorizeOp(wildcard, auth.OpAdmin, "any", "", now) {
+		t.Fatal("a full wildcard bucket grant conferred admin authority")
+	}
+	if auth.AuthorizeOp(wildcard, auth.OpAdmin, "*", "k", now) {
+		t.Fatal("wildcard bucket/key still conferred admin authority")
+	}
+
+	// Rich wildcard grant beside it: still denied.
+	rich := auth.Identity{AccessKeyID: "ak-rich", BucketGrants: map[string]auth.Grant{
+		"*": {Read: true, Write: true},
+	}}.WithRichGrants([]auth.GrantExpr{{
+		Pattern: "*",
+		Ops:     map[auth.Op]bool{auth.OpRead: true, auth.OpWrite: true},
+	}})
+	if auth.AuthorizeOp(rich, auth.OpAdmin, "any", "k", now) {
+		t.Fatal("rich wildcard grant conferred admin authority")
+	}
+
+	// A grant may not even NAME the admin op.
+	if _, err := auth.ParseGrantValue("id", "b", obj(`{"ops":["admin"]}`)); err == nil {
+		t.Fatal("a BucketGrants entry naming the admin op must be rejected")
+	}
+	if _, err := auth.ParseGrantValue("id", "b", str("admin")); err == nil {
+		t.Fatal("legacy grant value \"admin\" must be rejected")
+	}
+}
+
 // an empty table REMOVES any prior table under the access key (a reload
 // fully replaces the side table).
 func TestWithRichGrantsClears(t *testing.T) {
