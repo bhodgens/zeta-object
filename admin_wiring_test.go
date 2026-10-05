@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -353,5 +354,93 @@ func TestAdminWiringBucketDetailNoObjectCount(t *testing.T) {
 		if !ok || se.Status != 404 {
 			t.Fatalf("unknown bucket err = %v, want 404", err)
 		}
+	}
+}
+
+// TestAdminWiringBucketSettingsAutoProvisionedBucket pins the v1-limitation
+// fix: PUT /buckets/{name}/settings works for an auto-provisioned bucket
+// (created via the shared bucket manager, NOT present in the config buckets
+// map), and the bucket is still not custom — it stays deletable through the
+// API.
+func TestAdminWiringBucketSettingsAutoProvisionedBucket(t *testing.T) {
+	dataDir := t.TempDir()
+	installBucketTestEnv(t, dataDir, nil, nil)
+	cfg := defaultServerConfig()
+	cfg.DataDir = dataDir + "/"
+	installTestConfigStore(t, cfg)
+
+	w := buildAdminWiring(nil)
+	ctx := context.Background()
+	if err := w.services.CreateBucket(ctx, "autobkt"); err != nil {
+		t.Fatalf("CreateBucket: %v", err)
+	}
+	if _, isCustom := configStore.Snapshot().Buckets["autobkt"]; isCustom {
+		t.Fatal("autobkt unexpectedly in the config buckets map")
+	}
+
+	if err := w.services.BucketSettings(ctx, "autobkt",
+		json.RawMessage(`{"auditReads":true,"reflinkRetention":3}`)); err != nil {
+		t.Fatalf("BucketSettings: %v", err)
+	}
+	snap := configStore.Snapshot()
+	if !snap.BucketAuditReads["autobkt"] || snap.BucketReflinkRetention["autobkt"] != 3 {
+		t.Fatalf("tunables not applied: %v / %v", snap.BucketAuditReads, snap.BucketReflinkRetention)
+	}
+	if _, isCustom := snap.Buckets["autobkt"]; isCustom {
+		t.Fatal("settings made autobkt a custom bucket")
+	}
+
+	// Still NOT custom: deletable through the API path.
+	if err := w.services.DeleteBucket(ctx, "autobkt"); err != nil {
+		t.Fatalf("DeleteBucket after settings: %v (bucket became custom?)", err)
+	}
+}
+
+// TestAdminWiringBucketSettingsNotFound pins 404 NoSuchBucket for a bucket
+// that does not exist.
+func TestAdminWiringBucketSettingsNotFound(t *testing.T) {
+	dataDir := t.TempDir()
+	installBucketTestEnv(t, dataDir, nil, nil)
+	cfg := defaultServerConfig()
+	cfg.DataDir = dataDir + "/"
+	installTestConfigStore(t, cfg)
+
+	w := buildAdminWiring(nil)
+	err := w.services.BucketSettings(context.Background(), "ghost", json.RawMessage(`{"auditReads":true}`))
+	se, ok := errors.AsType[*admin.ServiceError](err)
+	if !ok || se.Status != 404 || se.Code != "NoSuchBucket" {
+		t.Fatalf("err = %v, want 404 NoSuchBucket", err)
+	}
+}
+
+// TestAdminWiringBucketSettingsInvalidInput pins 400 for invalid input and
+// that nothing changes: a smuggled path/backend (rejected at the route) and a
+// negative retention (rejected by the store validator).
+func TestAdminWiringBucketSettingsInvalidInput(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dataDir, "autobkt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	installBucketTestEnv(t, dataDir, nil, nil)
+	cfg := defaultServerConfig()
+	cfg.DataDir = dataDir + "/"
+	installTestConfigStore(t, cfg)
+	before := configStore.Snapshot()
+
+	w := buildAdminWiring(nil)
+	ctx := context.Background()
+	for name, body := range map[string]string{
+		"path":     `{"path":"/tmp/x"}`,
+		"backend":  `{"backend":"fs"}`,
+		"negative": `{"reflinkRetention":-1}`,
+	} {
+		err := w.services.BucketSettings(ctx, "autobkt", json.RawMessage(body))
+		se, ok := errors.AsType[*admin.ServiceError](err)
+		if !ok || se.Status != 400 {
+			t.Fatalf("%s: err = %v, want a 400 ServiceError", name, err)
+		}
+	}
+	if !reflect.DeepEqual(before, configStore.Snapshot()) {
+		t.Fatal("invalid settings changed the store")
 	}
 }

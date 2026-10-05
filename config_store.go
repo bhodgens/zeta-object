@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -23,6 +24,7 @@ import (
 	"sync"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
+	s3 "github.com/bhodgens/zeta-object/internal/frontend/s3"
 )
 
 // maskedSecretValue is the literal written in place of every secret the
@@ -46,19 +48,23 @@ var configUpdateKeys = map[string]bool{
 	"identities": true, "auth": true, "zmetad_db_path": true,
 	"zmetad_binary": true, "region": true, "zfs_versioning": true,
 	"zfs_versioning_reflink_retention": true, "zfs_bucket_datasets": true,
-	"zfs_binary": true,
+	"zfs_binary": true, "bucketSettings": true,
 }
 
 // hotApplyKeys is the pinned hot-apply set (Contract 3): the top-level keys
 // with a runtime path. "buckets" is special-cased in classifyPatchKeys
 // because only its per-bucket tunables (auditReads, reflinkRetention) are
-// hot; a bucket layout change needs a restart.
+// hot; a bucket layout change needs a restart. "bucketSettings" is the
+// tunables-ONLY patch key (bucket name → auditReads/reflinkRetention): it
+// never touches the buckets map, so it is always hot-applied and never
+// restart-required.
 var hotApplyKeys = map[string]bool{
 	"identities":                       true,
 	"region":                           true,
 	"zfs_versioning":                   true,
 	"zfs_versioning_reflink_retention": true,
 	"zfs_bucket_datasets":              true,
+	"bucketSettings":                   true,
 }
 
 // ConfigStore owns the live configuration under an RWMutex.
@@ -219,10 +225,26 @@ func decodePatchFields(patch ConfigPatch) (map[string]json.RawMessage, error) {
 }
 
 // mergePatchFields applies every present patch key onto candidate (which is
-// a deep copy of live). Absent keys are untouched.
+// a deep copy of live). Absent keys are untouched. Keys are processed in a
+// deterministic order with "buckets" FIRST, so a "bucketSettings" patch in
+// the same request lands on top of the freshly-derived tunables maps rather
+// than being overwritten by mergeBuckets' map reset.
 func mergePatchFields(candidate, live *ServerConfig, fields map[string]json.RawMessage) error {
-	for key, raw := range fields {
-		if err := mergePatchField(candidate, live, key, raw); err != nil {
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if raw, ok := fields["buckets"]; ok {
+		if err := mergePatchField(candidate, live, "buckets", raw); err != nil {
+			return err
+		}
+	}
+	for _, key := range keys {
+		if key == "buckets" {
+			continue
+		}
+		if err := mergePatchField(candidate, live, key, fields[key]); err != nil {
 			return err
 		}
 	}
@@ -265,6 +287,8 @@ func mergePatchField(candidate, live *ServerConfig, key string, raw json.RawMess
 		candidate.Identities = v
 	case "buckets":
 		return mergeBuckets(candidate, raw)
+	case "bucketSettings":
+		return mergeBucketSettings(candidate, raw)
 	default:
 		return mergeScalarField(candidate, key, raw)
 	}
@@ -384,6 +408,56 @@ func mergeBuckets(candidate *ServerConfig, raw json.RawMessage) error {
 	br.apply(candidate)
 	if candidate.bucketsErr != nil {
 		return candidate.bucketsErr
+	}
+	return nil
+}
+
+// bucketSettingsPatch is the tunables-ONLY patch shape: a JSON object mapping
+// bucket name → {auditReads, reflinkRetention}. Deliberately separate from
+// the "buckets" object form: it populates the derived per-bucket tunable maps
+// (ServerConfig.BucketAuditReads / BucketReflinkRetention) WITHOUT touching
+// the config buckets map, so an auto-provisioned directory bucket stays
+// auto-provisioned (not custom, still deletable through the API).
+type bucketSettingsPatch struct {
+	AuditReads       *bool `json:"auditReads"`
+	ReflinkRetention *int  `json:"reflinkRetention"`
+}
+
+// mergeBucketSettings applies a bucketSettings patch: each named bucket's
+// tunables onto candidate's derived maps. It validates the bucket name, and
+// fail-loud rejects a negative reflinkRetention and any attempt to smuggle a
+// path/backend through the per-bucket object (DisallowUnknownFields, the same
+// posture as bucketsRaw.UnmarshalJSON). Errors name the offending bucket.
+func mergeBucketSettings(candidate *ServerConfig, raw json.RawMessage) error {
+	var raws map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &raws); err != nil {
+		return fmt.Errorf("invalid bucketSettings: %w", err)
+	}
+	if candidate.BucketAuditReads == nil {
+		candidate.BucketAuditReads = make(map[string]bool, len(raws))
+	}
+	if candidate.BucketReflinkRetention == nil {
+		candidate.BucketReflinkRetention = make(map[string]int, len(raws))
+	}
+	for name, v := range raws {
+		if err := s3.ValidateBucketName(name); err != nil {
+			return fmt.Errorf("bucketSettings bucket %q: %w", name, err)
+		}
+		var p bucketSettingsPatch
+		dec := json.NewDecoder(bytes.NewReader(v))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&p); err != nil {
+			return fmt.Errorf("bucketSettings bucket %q: %w", name, err)
+		}
+		if p.ReflinkRetention != nil && *p.ReflinkRetention < 0 {
+			return fmt.Errorf("bucketSettings bucket %q: reflinkRetention %d is negative (must be >= 0; 0 = keep zero version copies)", name, *p.ReflinkRetention)
+		}
+		if p.AuditReads != nil {
+			candidate.BucketAuditReads[name] = *p.AuditReads
+		}
+		if p.ReflinkRetention != nil {
+			candidate.BucketReflinkRetention[name] = *p.ReflinkRetention
+		}
 	}
 	return nil
 }

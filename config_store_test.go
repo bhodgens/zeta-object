@@ -501,3 +501,97 @@ func TestConfigStoreBucketsTunableVsLayout(t *testing.T) {
 		t.Fatalf("layout: applied=%v restart=%v", applied, restartRequired)
 	}
 }
+
+// TestConfigStoreBucketSettingsAutoProvisioned pins the tunables-only patch:
+// a bucket that is NOT in the config buckets map (the auto-provisioned case)
+// takes auditReads + reflinkRetention, both hot-applied and observable in the
+// live store and in a snapshot, WITHOUT becoming a custom bucket.
+func TestConfigStoreBucketSettingsAutoProvisioned(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.DataDir = t.TempDir() + "/"
+	store := NewConfigStore(&cfg)
+
+	applied, restartRequired, err := store.Apply(ConfigPatch{JSON: []byte(
+		`{"bucketSettings":{"autobkt":{"auditReads":true,"reflinkRetention":3}}}`)})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !contains(applied, "bucketSettings") {
+		t.Errorf("applied = %v, want bucketSettings (hot)", applied)
+	}
+	if len(restartRequired) != 0 {
+		t.Errorf("restartRequired = %v, want empty (tunables are hot)", restartRequired)
+	}
+
+	// Live store carries the tunables...
+	if !store.live.BucketAuditReads["autobkt"] || store.live.BucketReflinkRetention["autobkt"] != 3 {
+		t.Fatalf("live tunables = %v / %v, want autobkt true / 3",
+			store.live.BucketAuditReads, store.live.BucketReflinkRetention)
+	}
+	// ...but the bucket is NOT inserted into the config buckets map, so it
+	// stays auto-provisioned (not custom, still API-deletable).
+	if _, isCustom := store.live.Buckets["autobkt"]; isCustom {
+		t.Fatalf("bucketSettings made autobkt a custom bucket: %v", store.live.Buckets)
+	}
+	// Observable in a snapshot too.
+	snap := store.Snapshot()
+	if !snap.BucketAuditReads["autobkt"] || snap.BucketReflinkRetention["autobkt"] != 3 {
+		t.Fatalf("snapshot tunables = %v / %v, want autobkt true / 3",
+			snap.BucketAuditReads, snap.BucketReflinkRetention)
+	}
+	if _, isCustom := snap.Buckets["autobkt"]; isCustom {
+		t.Fatalf("snapshot made autobkt a custom bucket: %v", snap.Buckets)
+	}
+}
+
+// TestConfigStoreBucketSettingsHotApplyPathRan pins that a bucketSettings
+// patch is applied through the existing hot-apply path (s3_wiring.go
+// applyHotSeams): the store only calls applyHotSeams when the patch has an
+// applied key, and applyHotSeams disk-observable side effect here is
+// uninstalling the dataset provisioner (the candidate has the feature off).
+func TestConfigStoreBucketSettingsHotApplyPathRan(t *testing.T) {
+	if err := s3.InstallZfsDatasetProvisioner("pool", "/bin/true"); err != nil {
+		t.Fatalf("install provisioner: %v", err)
+	}
+	t.Cleanup(func() { s3.UninstallZfsDatasetProvisioner() })
+	if !s3.ZfsDatasetProvisionerInstalled() {
+		t.Fatal("provisioner not installed")
+	}
+
+	cfg := defaultServerConfig()
+	cfg.DataDir = t.TempDir() + "/"
+	store := NewConfigStore(&cfg)
+
+	if _, _, err := store.Apply(ConfigPatch{JSON: []byte(
+		`{"bucketSettings":{"autobkt":{"auditReads":true,"reflinkRetention":3}}}`)}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if s3.ZfsDatasetProvisionerInstalled() {
+		t.Fatal("bucketSettings did not run applyHotSeams (provisioner still installed)")
+	}
+}
+
+// TestConfigStoreBucketSettingsRejections pins fail-loud rejection with
+// NOTHING changed: a path/backend smuggled through bucketSettings, a negative
+// reflinkRetention, and an invalid bucket name.
+func TestConfigStoreBucketSettingsRejections(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.DataDir = t.TempDir() + "/"
+	store := NewConfigStore(&cfg)
+	before := store.Snapshot()
+
+	cases := map[string]string{
+		"path":     `{"bucketSettings":{"autobkt":{"path":"/tmp/x"}}}`,
+		"backend":  `{"bucketSettings":{"autobkt":{"backend":"fs"}}}`,
+		"negative": `{"bucketSettings":{"autobkt":{"reflinkRetention":-1}}}`,
+		"badname":  `{"bucketSettings":{"AB":{"auditReads":true}}}`,
+	}
+	for name, patch := range cases {
+		if _, _, err := store.Apply(ConfigPatch{JSON: []byte(patch)}); err == nil {
+			t.Fatalf("%s: invalid bucketSettings patch was accepted", name)
+		}
+	}
+	if !reflect.DeepEqual(before, store.Snapshot()) {
+		t.Fatal("an invalid bucketSettings patch changed the store")
+	}
+}

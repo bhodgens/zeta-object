@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -352,14 +353,21 @@ func adminBucketIsDataset(ctx context.Context, name string) bool {
 }
 
 // adminBucketSettingsService is PUT /buckets/{name}/settings: per-bucket
-// auditReads and reflinkRetention through the store's hot-apply path.
-func adminBucketSettingsService(_ context.Context, name string, patch json.RawMessage) error {
-	snap := configStore.Snapshot()
-	if _, ok := snap.Buckets[name]; !ok {
-		return &admin.ServiceError{Status: 400, Code: "InvalidConfiguration",
-			Message: fmt.Sprintf("bucket %q is not declared in the config buckets map; per-bucket tunables apply to configured buckets", name)}
+// auditReads and reflinkRetention through the store's tunables-only
+// hot-apply path. It works for ANY existing bucket — config-declared custom
+// or auto-provisioned directory — because the patch never touches the config
+// buckets map (so the bucket's lifecycle is unchanged). An absent bucket is
+// 404 NoSuchBucket; invalid input is 400 with the validator's message.
+func adminBucketSettingsService(ctx context.Context, name string, patch json.RawMessage) error {
+	exists, err := bucketmanager.Exists(ctx, name)
+	if err != nil {
+		return adminServiceError(err)
 	}
-	fullPatch, err := buildBucketSettingsPatch(snap, name, patch)
+	if !exists {
+		return &admin.ServiceError{Status: 404, Code: "NoSuchBucket",
+			Message: fmt.Sprintf("The specified bucket does not exist: %s", name)}
+	}
+	fullPatch, err := buildBucketSettingsPatch(name, patch)
 	if err != nil {
 		return err
 	}
@@ -369,40 +377,29 @@ func adminBucketSettingsService(_ context.Context, name string, patch json.RawMe
 	return nil
 }
 
-// buildBucketSettingsPatch rewrites the FULL configured buckets object (so the
-// store sees no layout change and hot-applies only the tunables) with the
-// named bucket's new auditReads/reflinkRetention applied.
-func buildBucketSettingsPatch(snap ServerConfig, name string, patch json.RawMessage) (json.RawMessage, error) {
+// buildBucketSettingsPatch renders the store's tunables-only "bucketSettings"
+// patch for one bucket from the request body. Unknown fields (path, backend,
+// ...) are rejected fail-loud so they can never reach the store and turn an
+// auto-provisioned bucket into a custom one.
+func buildBucketSettingsPatch(name string, patch json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		AuditReads       *bool `json:"auditReads"`
 		ReflinkRetention *int  `json:"reflinkRetention"`
 	}
-	if err := json.Unmarshal(patch, &p); err != nil {
-		return nil, &admin.ServiceError{Status: 400, Code: "InvalidArgument", Message: "settings body must be a JSON object: " + err.Error()}
+	dec := json.NewDecoder(bytes.NewReader(patch))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p); err != nil {
+		return nil, &admin.ServiceError{Status: 400, Code: "InvalidArgument",
+			Message: "settings body must be a JSON object with auditReads/reflinkRetention: " + err.Error()}
 	}
-	buckets := make(map[string]map[string]any, len(snap.Buckets))
-	for bn, path := range snap.Buckets {
-		b := map[string]any{"path": path}
-		if be := snap.BucketBackends[bn]; be != "" {
-			b["backend"] = be
-		}
-		if snap.BucketAuditReads[bn] {
-			b["auditReads"] = true
-		}
-		if r, ok := snap.BucketReflinkRetention[bn]; ok {
-			b["reflinkRetention"] = r
-		}
-		buckets[bn] = b
-	}
-	target := buckets[name]
+	tun := map[string]any{}
 	if p.AuditReads != nil {
-		target["auditReads"] = *p.AuditReads
+		tun["auditReads"] = *p.AuditReads
 	}
 	if p.ReflinkRetention != nil {
-		target["reflinkRetention"] = *p.ReflinkRetention
+		tun["reflinkRetention"] = *p.ReflinkRetention
 	}
-	buckets[name] = target
-	out, err := json.Marshal(map[string]any{"buckets": buckets})
+	out, err := json.Marshal(map[string]any{"bucketSettings": map[string]any{name: tun}})
 	if err != nil {
 		return nil, err
 	}

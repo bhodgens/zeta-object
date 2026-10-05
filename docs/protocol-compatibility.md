@@ -178,7 +178,7 @@ dataset-delete refusal verified against `zfs list`).
 | `POST /buckets` | Implemented (opt-in) | `200 {created:true,name}`; `400 InvalidArgument` on an empty name; canonical object-model errors otherwise | create via the shared bucket manager. e2e 35, zfs-validate |
 | `GET /buckets/{name}` | Implemented (opt-in) | `200`; `404 NoSuchBucket` when absent | backend, tunables, whether it is a dataset; object count is NOT reported (no index exists). e2e 35 |
 | `DELETE /buckets/{name}` | Implemented (opt-in) | `200 {deleted:true}` for a plain-directory bucket; `409 DatasetBucketNotDeletable` for a dataset-backed bucket; `404 NoSuchBucket` when absent | plain-directory buckets only; the API never destroys a dataset. e2e 35, zfs-validate |
-| `PUT /buckets/{name}/settings` | Implemented (opt-in) | `200 {updated:true}`; `400 InvalidConfiguration` when the bucket is not in the config `buckets` map | per-bucket `auditReads` / `reflinkRetention` through the hot-apply path. e2e 35 |
+| `PUT /buckets/{name}/settings` | Implemented (opt-in) | `200 {updated:true}`; `400 InvalidArgument`/`400 InvalidConfiguration` on invalid input; `404 NoSuchBucket` when the bucket is absent | per-bucket `auditReads` / `reflinkRetention` for ANY existing bucket (custom or auto-provisioned) through the hot-apply path; a tunables-only patch that never inserts the bucket into the config `buckets` map. e2e 35 |
 | `POST /purge` | Implemented (opt-in) | `200 {purged:true,dataset}`; `400 InvalidArgument` on an empty dataset; `503 MetadataProviderUnavailable`; `500 PurgeFailed` | the only irreversibly destructive route: clears event history AND the gap/loss record. e2e 35, zfs-validate |
 
 **The two delete surfaces differ deliberately.** The management

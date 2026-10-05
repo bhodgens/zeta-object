@@ -281,7 +281,7 @@ certificate CN as the principal.
 | POST | `/buckets` | create a bucket (name in the JSON body) |
 | GET | `/buckets/{name}` | one bucket: backend, tunables, whether it is a dataset. Object count is NOT reported (no index exists) |
 | DELETE | `/buckets/{name}` | delete; plain-directory buckets only; a dataset-backed bucket answers `409 DatasetBucketNotDeletable` (see Destructive scope) |
-| PUT | `/buckets/{name}/settings` | per-bucket tunables (`auditReads`, `reflinkRetention`) |
+| PUT | `/buckets/{name}/settings` | per-bucket tunables (`auditReads`, `reflinkRetention`) for any existing bucket; `404 NoSuchBucket` when absent |
 | POST | `/purge` | metadata history purge for a named dataset; body `{"dataset":"pool/ds"}` (see the purge warning) |
 
 Wire statuses on the management surface: an unknown path answers
@@ -345,12 +345,16 @@ bucket's event history AND the permanent gap/loss record (see below). It
 passes the named dataset to the metadata provider, which execs `zmetad
 --purge <dataset>` on the host.
 
-### V1 limitation
+### Per-bucket settings
 
 `PUT /buckets/{name}/settings` (per-bucket `auditReads` and
-`reflinkRetention`) applies to a bucket declared in the config `buckets`
-map. An auto-provisioned directory bucket cannot take per-bucket tunables
-without a restart-required layout change.
+`reflinkRetention`) works for **any existing bucket** - both a bucket
+declared in the config `buckets` map and an auto-provisioned directory
+bucket. The route patches only the tunables (hot-applied through the
+runtime config view) and never touches the config `buckets` map, so it
+does **not** turn an auto-provisioned bucket into a custom one: the bucket
+keeps its lifecycle and stays creatable/deletable through the API. An
+absent bucket answers `404 NoSuchBucket`; invalid input answers `400`.
 
 ## Configuration
 

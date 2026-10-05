@@ -399,13 +399,19 @@ misread as a forest root).
 
 ## Known limitations (v1, discovered during execution)
 
-- **Per-bucket tunables apply only to config-declared buckets.** `PUT
-  /buckets/{name}/settings` (auditReads, reflinkRetention) works for a
-  bucket that appears in the config `buckets` map. An auto-provisioned
-  bucket cannot take per-bucket tunables without a restart-required
-  layout change, because the store's buckets-patch path treats an entry
-  without a path/backend as a fail-loud parse error. Documented in
-  `adminBucketSettingsService`; leaf 05 must state it in the README.
+- **~~Per-bucket tunables apply only to config-declared buckets.~~ RESOLVED
+  (2026-10-04).** `PUT /buckets/{name}/settings` (auditReads,
+  reflinkRetention) now uses a tunables-ONLY patch key `bucketSettings`
+  (bucket name → `{auditReads, reflinkRetention}`) that populates the
+  derived per-bucket maps (`ServerConfig.BucketAuditReads` /
+  `BucketReflinkRetention`) and hot-applies through the existing
+  `applyHotSeams` config-view install — WITHOUT touching the config
+  `buckets` map. It therefore works for any existing bucket (config-declared
+  custom or auto-provisioned) and never converts an auto-provisioned bucket
+  into a custom one (the bucket stays creatable/deletable through the API).
+  An absent bucket answers `404 NoSuchBucket`; invalid input (including a
+  path/backend smuggled through `bucketSettings`) answers `400` and changes
+  nothing. README and `docs/protocol-compatibility.md` updated.
 - **Purge takes a dataset name** and passes it to the frozen
   `MetadataProvider.Purge` bucket-path signature; the provider resolves
   it. If the provider is unavailable the route answers with the
