@@ -75,6 +75,19 @@
    is not (plain-directory buckets have no event stream). The client
    MUST work correctly - possibly slower - against a non-ZFS server;
    no zeta-cache feature may REQUIRE zfs-metadata.
+9. **Batch operations for remote files (user decision, 2026-10-05).**
+   "Copy/move/delete these files" is ONE request: the client sends a
+   flat manifest of explicit operations, the server executes them
+   and answers with per-item results - eliminating (N-1) RTTs. Two
+   surfaces: the S3-STANDARD DeleteObjects (interop: boto3 et al)
+   and a JSON batch extension on both s3 and webdav frontends (h3
+   inherits by wrapping). Manifest is explicit items - no server-side
+   prefix expansion; sources may span any directories WITHIN one
+   bucket (cross-bucket is out of scope v1). Sequential execution,
+   per-item results, NO cross-item atomicity (the fs has no
+   multi-file transaction; faking one needs server-owned state -
+   charter violation). The client expands "these files" from its
+   index DB, not the server. (Leaf 07.)
 
 ## Goal
 
@@ -337,6 +350,7 @@ type QUICListenerFrontend interface {
 | 04 | 04-live-validation.md | leaf | 03 | 40K | C (live host) |
 | 05 | 05-webdav-versioning.md | leaf | 01 (rangespan outcome) | 60K | A2 |
 | 06 | 06-zfs-read-surfaces.md | leaf | 05 | 50K | A3 |
+| 07 | 07-batch-ops.md | leaf | 05, 06 | 70K | A4 |
 
 **Concurrency groups:** A: 01 and 02 simultaneously (disjoint files:
 01 owns `internal/frontend/webdav/get.go` + a possible new
@@ -348,9 +362,12 @@ from 02. A2: 05 after 01 and 02 COMMIT (it edits webdav put/delete/
 copymove - 01 owns get.go - and possibly extracts from
 `internal/frontend/s3/versionstore.go`; the rangespan outcome from 01
 decides its extraction pattern). A3: 06 after 05 (extracts the shared
-ZFS read-surface package; depends on 05's placement outcome). B: 03
-after 01, 02, 05, 06 (the probe pins leaf 02's quic-go API shapes;
-docs pin 01's, 05's and 06's semantics;
+ZFS read-surface package; depends on 05's placement outcome). A4: 07
+after 05 and 06 (its items execute the normal write paths; the
+shared-package placement outcomes from 05/06 decide where the thin
+mount points live). B: 03
+after 01, 02, 05, 06, 07 (the probe pins leaf 02's quic-go API shapes;
+docs pin 01's, 05's, 06's and 07's semantics;
 the case gains the two-protocol version check). C: 04 last, on
 zfs-meta - `run-zfs-validation.sh` is the highest-collision file in
 the repo: before dispatching, check `git log --oneline -3 -- 
@@ -455,6 +472,7 @@ Output: APPROVED or list of specific gaps.
 | 02-h3-frontend | PENDING | | |
 | 05-webdav-versioning | PENDING | | |
 | 06-zfs-read-surfaces | PENDING | | |
+| 07-batch-ops | PENDING | | |
 | 03-e2e-case-docs | PENDING | | |
 | 04-live-validation | PENDING | | |
 
