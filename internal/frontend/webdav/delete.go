@@ -7,7 +7,9 @@ package webdav
 
 import (
 	"context"
+	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
@@ -30,6 +32,35 @@ func (f *Frontend) handleDELETE(w http.ResponseWriter, r *http.Request, res reso
 	}
 	switch kind {
 	case kindFile:
+		// Leaf 05 (quic-h3-2026-10): on a versioning-ENABLED bucket a
+		// DELETE writes a delete marker (sidecar/reflink/both modes)
+		// and the plain backend delete is SUPPRESSED — the data file
+		// stays; plain GET answers 404 via the marker. Identical to the
+		// s3 DELETE handler's marker step (deleteObjectVersionedMarker).
+		// OFF/Suspended buckets proceed to the plain delete unchanged
+		// (byte-identical path). In snapshots mode the store REFUSES
+		// the marker (ErrDeleteMarkersUnsupported): the delete is
+		// answered 409 Conflict — the same wire mapping the s3 error
+		// table gives that error class (never a 500, never a fake
+		// plain-delete success while the bucket claims versioning).
+		if f.bucketPathFn != nil {
+			bucketPath := f.bucketPath(res.bucket)
+			suppress, markerErr := deleteMarkerOrPlain(bucketPath, res.bucket, res.key)
+			if markerErr != nil {
+				log.Printf("webdav DELETE %s/%s: versioned marker: %v", strconv.Quote(res.bucket), strconv.Quote(res.key), markerErr)
+				if webdavVersioningConflict(markerErr) {
+					writeDavError(w, http.StatusConflict, "")
+				} else {
+					writeDavError(w, http.StatusInternalServerError, "")
+				}
+				return
+			}
+			if suppress {
+				w.Header().Set("Content-Length", "0")
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
 		if err := f.be.Delete(r.Context(), res.bucket, res.key); err != nil {
 			writeDavErrorFrom(w, err)
 			return

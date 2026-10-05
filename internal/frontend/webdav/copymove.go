@@ -9,8 +9,10 @@
 package webdav
 
 import (
+	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/bhodgens/zeta-object/internal/frontend"
@@ -95,6 +97,67 @@ func (f *Frontend) handleCopyMove(w http.ResponseWriter, r *http.Request, src re
 	putOpts := objectmodel.PutOptions{
 		ContentType: srcObj.ContentType,
 		IfNoneMatch: conditionForOverwrite(r, dstExists),
+	}
+	// Leaf 05 (quic-h3-2026-10): MOVE/COPY's destination Put goes through
+	// the SAME versioning capture path as a plain PUT (an overwrite of a
+	// versioned object records the old bytes — the protocol that writes
+	// the bytes must not change that). The SOURCE delete half of a MOVE,
+	// however, manufactures NO versions: a rename is a metadata op on
+	// the fs, and its s3 counterpart (CopyObject + DeleteObject) records
+	// only what those two operations themselves record. The deliberate
+	// no-op on the source delete is pinned by TestWebdavMOVE_NoVersionsPinned.
+	//
+	// A capture failure FAILS the whole MOVE (fail-closed, PUT parity):
+	// the destination bytes must not land while the versioning record of
+	// what they overwrite cannot be taken.
+	if f.bucketPathFn != nil {
+		dstBucketPath := f.bucketPath(dstRes.bucket)
+		capturedOld, captured, capErr := captureBeforePut(dstBucketPath, dstRes.bucket, dstRes.key)
+		if capErr != nil {
+			log.Printf("webdav COPY/MOVE %s/%s: capturing prior version: %v", strconv.Quote(dstRes.bucket), strconv.Quote(dstRes.key), capErr)
+			writeDavError(w, http.StatusInternalServerError, "")
+			return
+		}
+		dstObj, err := f.be.Put(r.Context(), dstRes.bucket, dstRes.key, rc, srcObj.Size, putOpts)
+		if err != nil {
+			writeDavErrorFrom(w, err)
+			return
+		}
+		if captured {
+			if recErr := recordAfterPut(dstBucketPath, dstRes.bucket, dstRes.key, capturedOld); recErr != nil {
+				log.Printf("webdav COPY/MOVE %s/%s: recording prior version: %v", strconv.Quote(dstRes.bucket), strconv.Quote(dstRes.key), recErr)
+				writeDavError(w, http.StatusInternalServerError, "")
+				return
+			}
+		}
+		// PUT-condition recheck + the rest of the shared tail run below.
+		if !overwriteAllowed(r.Header.Get("Overwrite")) && dstExists {
+			writeDavError(w, http.StatusPreconditionFailed, "")
+			return
+		}
+		if isMove {
+			// Versioned-marker parity on MOVE's source delete: the
+			// s3 counterpart of a rename is CopyObject + DeleteObject;
+			// its Delete records what the dedicated DELETE handler
+			// records (a marker on an Enabled sidecar/reflink/both
+			// bucket, a refused marker in snapshots mode → 409). The
+			// rename MANUFACTURES no version entry beyond what its own
+			// steps produce; a pure rename of an unversioned key
+			// produces NO sidecar history at all (pinned by
+			// TestWebdavMOVE_NoVersionsPinned).
+			if err := f.moveSourceDelete(r, src); err != nil {
+				writeDavErrorFrom(w, err)
+				return
+			}
+		}
+		status := http.StatusCreated
+		if dstExists {
+			status = http.StatusNoContent
+		}
+		w.Header().Set("Content-Length", "0")
+		w.Header().Set("ETag", objectmodel.QuotedETag(dstObj.ETag))
+		w.WriteHeader(status)
+		return
 	}
 	dstObj, err := f.be.Put(r.Context(), dstRes.bucket, dstRes.key, rc, srcObj.Size, putOpts)
 	if err != nil {

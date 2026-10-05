@@ -58,6 +58,45 @@ type Frontend struct {
 	lockRoot func(bucket string) string
 	locksMu  sync.Mutex
 	locks    map[string]lockStore
+
+	// bucketPathFn, when non-nil, maps a bucket onto its on-disk root
+	// directory — the SAME resolver main wires for lockRoot
+	// (getBucketPath). Leaf 05 (quic-h3-2026-10) consumes it on the
+	// versioning write path: the per-request version store resolves
+	// against the bucket's real root. nil = versioning is unwired and
+	// every write takes the plain path (unit-test seam, mirroring
+	// lockRoot's nil contract).
+	bucketPathFn func(bucket string) string
+}
+
+// WithBucketPathResolver wires the bucket→fs-root resolver for the
+// versioning write paths (leaf 05). Package main passes the same
+// getBucketPath the s3 frontend and the lock stores use — no second
+// config view exists. Without this option the versioning branch is
+// disabled and every write takes the plain path (unit-test seam).
+func WithBucketPathResolver(fn func(bucket string) string) Option {
+	return func(f *Frontend) {
+		if fn != nil {
+			f.bucketPathFn = fn
+		}
+	}
+}
+
+// bucketPath resolves the bucket's on-disk root for the versioning
+// write paths. Resolution order: the explicit WithBucketPathResolver
+// override, then the lockRoot resolver — which production wires to the
+// SAME getBucketPath function (frontends.go) — so a production frontend
+// needs no additional wiring and no second config view exists. "" (both
+// nil) = versioning is unwired and every write takes the plain path
+// (unit-test seam, mirroring lockRoot's nil contract).
+func (f *Frontend) bucketPath(bucket string) string {
+	if f.bucketPathFn != nil {
+		return f.bucketPathFn(bucket)
+	}
+	if f.lockRoot != nil {
+		return f.lockRoot(bucket)
+	}
+	return ""
 }
 
 // WithLockStoreRoot enables WebDAV locking: fn maps a bucket name onto

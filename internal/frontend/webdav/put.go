@@ -8,7 +8,9 @@
 package webdav
 
 import (
+	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
@@ -62,6 +64,54 @@ func (f *Frontend) handlePUT(w http.ResponseWriter, r *http.Request, res resourc
 	// Explorer configs). No unbounded buffering: the backend reads at
 	// most maxPutBytes+1 before rejecting.
 	size := r.ContentLength
+
+	// Leaf 05 (quic-h3-2026-10): on a versioning-ENABLED bucket the
+	// object's CURRENT bytes become one version on overwrite — the SAME
+	// capture the s3 PUT handler takes, resolved through the SAME seams
+	// and the SAME mode dispatch (sidecar reads; reflink/both clone;
+	// snapshots captures into the sidecar bookkeeping exactly as the s3
+	// handler does — verified against the s3 handler on this host).
+	// The old bytes are captured BEFORE the plain overwrite; the record
+	// lands AFTER the successful backend Put below (the backend rewrites
+	// the sidecar wholesale). Fail-closed on capture failure (s3 parity:
+	// object_handlers.go answers 500 before any write); the reflink
+	// clone's fail-soft contract rides inside the capture (cloneOK=false
+	// → the Put proceeds, no version record).
+	if f.bucketPathFn != nil {
+		bucketPath := f.bucketPath(res.bucket)
+		capturedOld, captured, capErr := captureBeforePut(bucketPath, res.bucket, res.key)
+		if capErr != nil {
+			log.Printf("webdav PUT %s/%s: capturing prior version: %v", strconv.Quote(res.bucket), strconv.Quote(res.key), capErr)
+			writeDavError(w, http.StatusInternalServerError, "")
+			return
+		}
+		obj, err := f.be.Put(r.Context(), res.bucket, res.key, r.Body, size, opts)
+		if err != nil {
+			writeDavErrorFrom(w, err)
+			return
+		}
+		// The version RECORD lands AFTER the successful backend Put
+		// (the pinned capture/record invariant; the s3 handler's record
+		// step sits in the identical position). A missing capture means
+		// create/unversioned — no record. A record failure fails the
+		// response exactly as the s3 handler does (500 after the data
+		// landed).
+		if captured {
+			if recErr := recordAfterPut(bucketPath, res.bucket, res.key, capturedOld); recErr != nil {
+				log.Printf("webdav PUT %s/%s: recording prior version: %v", strconv.Quote(res.bucket), strconv.Quote(res.key), recErr)
+				writeDavError(w, http.StatusInternalServerError, "")
+				return
+			}
+		}
+		w.Header().Set("ETag", objectmodel.QuotedETag(obj.ETag))
+		status := http.StatusCreated
+		if existed {
+			status = http.StatusNoContent
+		}
+		w.Header().Set("Content-Length", "0")
+		w.WriteHeader(status)
+		return
+	}
 
 	obj, err := f.be.Put(r.Context(), res.bucket, res.key, r.Body, size, opts)
 	if err != nil {
