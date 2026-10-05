@@ -14,6 +14,7 @@ import (
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/fslock"
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
@@ -116,38 +117,13 @@ func installBackendLookup(fn func(bucket string) (backend.Backend, error)) {
 // wiring layer/tests take the write side.
 var hookMu sync.RWMutex
 
-// lockObjectFn is the per-path write serialization hook (owned by the
-// Backend implementation per backend-interface master Contract 4; the
-// frontend calls it only for the documented above-seam multipart staging
-// and bucket create/delete serialization). The wiring layer installs the
-// implementation; the fallback below is a process-local mutex map.
-// Guarded by hookMu.
-var lockObjectFn func(path string) func()
-
-// objectLocks is the fallback per-path mutex map.
-var objectLocks sync.Map // map[string]*sync.Mutex
-
-// defaultLockObject is the pre-move lockObject implementation (used only
-// when the wiring layer has not installed a hook).
-func defaultLockObject(path string) func() {
-	mu, _ := objectLocks.LoadOrStore(path, &sync.Mutex{})
-	mu.(*sync.Mutex).Lock()
-	return func() { mu.(*sync.Mutex).Unlock() }
-}
-
-// lockObject serializes writers per path via the injected hook.
+// lockObject serializes writers per path via the ONE process-wide lock table
+// (internal/fslock), so the S3 frontend and the shared bucket manager contend
+// on the same per-bucket lock. The implementation (and its wiring hook) moved
+// verbatim into fslock; the s3-installed hook API is preserved below so
+// existing wiring and tests keep working. Guarded inside fslock.
 func lockObject(path string) func() {
-	if fn := installedLockObject(); fn != nil {
-		return fn(path)
-	}
-	return defaultLockObject(path)
-}
-
-// installedLockObject returns the current hook under a read lock.
-func installedLockObject() func(path string) func() {
-	hookMu.RLock()
-	defer hookMu.RUnlock()
-	return lockObjectFn
+	return fslock.Lock(path)
 }
 
 // writeFileAtomicFn is the atomic-write hook for the above-seam multipart
@@ -295,11 +271,10 @@ func InstallActionTrigger(fn func(eventType string, ctx ActionContext)) {
 }
 
 // InstallLockObject installs the per-path write serialization hook
-// (exported wiring entry).
+// (exported wiring entry). It delegates to the one process-wide lock table so
+// the installed implementation is shared with the bucket manager.
 func InstallLockObject(fn func(path string) func()) {
-	hookMu.Lock()
-	defer hookMu.Unlock()
-	lockObjectFn = fn
+	fslock.Install(fn)
 }
 
 // InstallWriteFileAtomic installs the atomic-write hook for the

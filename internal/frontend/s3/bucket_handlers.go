@@ -2,6 +2,7 @@ package s3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,9 +11,9 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/bhodgens/zeta-object/internal/backend"
+	"github.com/bhodgens/zeta-object/internal/bucketmanager"
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
@@ -146,6 +147,10 @@ func backendDiscovery() ([]objectmodel.BucketInfo, error) {
 	return out, nil
 }
 
+// createBucketHandler delegates bucket creation to the shared bucket manager
+// (internal/bucketmanager). The bucket-name validation stays handler-side (it
+// is S3 wire: 400 InvalidBucketName); the custom-bucket guard, the existing-path
+// guards, the dataset/plain branch and their ordering all live in the manager.
 func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
 	// Validate bucket name
 	if err := validateBucketName(bucketName); err != nil {
@@ -156,89 +161,56 @@ func createBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 		return
 	}
 
-	// Check if this is a custom-configured bucket (can't create via API).
-	// Custom buckets are config-controlled: if the configured path exists on
-	// disk, PUT is idempotent success; if missing, report 409 with a message
-	// about the custom path (still no create — leaf 2.4 fix 8).
-	if _, isCustom := currentServerConfig().Buckets[bucketName]; isCustom {
-		customPath := currentServerConfig().Buckets[bucketName]
-		if info, err := os.Stat(customPath); err != nil || !info.IsDir() {
-			log.Printf("Bucket %s is a custom-configured bucket whose path %s is missing on disk.", strconv.Quote(bucketName), customPath)
-			writeS3Error(w, "BucketAlreadyExists",
-				"The requested bucket name is a custom-configured bucket whose path is missing on disk; it cannot be created via the API.",
-				http.StatusConflict)
-			return
-		}
-		log.Printf("Bucket %s is a custom-configured bucket, already exists.", strconv.Quote(bucketName))
-		w.WriteHeader(http.StatusOK) // Idempotent
+	// Refresh the manager environment from the live seams, then delegate. The
+	// manager serializes on the SAME per-path lock table (internal/fslock).
+	installBucketManagerEnv()
+	if err := bucketmanager.Create(r.Context(), bucketName); err != nil {
+		writeBucketManagerError(w, err)
 		return
 	}
 
-	bucketPath := getBucketPath(bucketName)
-	metadataPath := filepath.Join(bucketPath, ".metadata")
-
-	// Leaf-4.8 stress fix: serialize create against deleteBucket on the same
-	// bucket name — a concurrent delete could remove the directory between
-	// this create's Mkdir(bucket) and Mkdir(.metadata), turning the create
-	// into a spurious 500.
-	unlockBucket := lockObject(bucketPath)
-	defer unlockBucket()
-
-	// Check if bucket already exists (leaf 2.4 fix 8 error semantics).
-	// Stat error that is neither nil nor IsNotExist → 500.
-	info, err := os.Stat(bucketPath) //nolint:gosec // G703: bucketPath built from validateBucketName-checked name
-	if err != nil && !os.IsNotExist(err) {
-		log.Printf("Error statting bucket path %s: %v", bucketPath, err) //nolint:gosec // G703: bucketPath derived from validateBucketName-checked name
-		writeS3Error(w, "InternalError", "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-	if err == nil {
-		if !info.IsDir() {
-			// A FILE exists at the bucket path → conflict, not ours
-			log.Printf("Path %s exists as a file; cannot create bucket %s.", bucketPath, bucketName) //nolint:gosec // G703: bucketPath derived from validateBucketName-checked name
-			writeS3Error(w, "BucketAlreadyExists",
-				"The requested bucket name is not available.", http.StatusConflict)
-			return
-		}
-		// Existing directory = a bucket we already own. Single-user server:
-		// report BucketAlreadyOwnedByYou (409) instead of S3's silent 200.
-		log.Printf("Bucket %s already exists.", strconv.Quote(bucketName))
-		writeS3Error(w, "BucketAlreadyOwnedByYou",
-			"Your previous request to create the named bucket succeeded and you already own it.",
-			http.StatusConflict)
-		return
-	}
-
-	// zfs-bucket-datasets leaf 03: when the dataset hooks are installed
-	// (feature on), the dataset create replaces the plain MkdirAll.
-	if zfsBucketCreate != nil {
-		createBucketDatasetPath(w, r.Context(), bucketName, bucketPath, metadataPath)
-		return
-	}
-
-	// Create bucket directory
-	if err := os.MkdirAll(bucketPath, 0755); err != nil { //nolint:gosec // G703: bucketPath built from validateBucketName-checked name
-		log.Printf("Error creating bucket directory %s: %v", bucketPath, err)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(errorToXML("InternalError", "Error creating bucket.")))
-		return
-	}
-
-	// Create .metadata directory within the bucket
-	if err := os.Mkdir(metadataPath, 0755); err != nil { //nolint:gosec // G703: metadataPath under validated bucketPath
-		log.Printf("Error creating metadata directory %s for bucket %s: %v", metadataPath, bucketName, err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
-		os.RemoveAll(bucketPath)                                                                            //nolint:gosec // G703: bucketPath built from validateBucketName-checked name
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(errorToXML("InternalError", "Error creating bucket metadata storage.")))
-		return
-	}
-
-	log.Printf("Successfully created bucket: %s", strconv.Quote(bucketName))
 	w.WriteHeader(http.StatusOK)
 }
 
+// writeBucketManagerError maps a bucket-manager error onto the S3 wire. The
+// manager returns *objectmodel.Error triples for every wire-mapped case; a
+// DatasetDestroyError wraps a provisioner Destroy failure whose snapshot
+// refusal (ErrDatasetHasSnapshots) is the only non-500 result.
+func writeBucketManagerError(w http.ResponseWriter, err error) {
+	if destroyErr, ok := errors.AsType[*bucketmanager.DatasetDestroyError](err); ok {
+		if errors.Is(err, ErrDatasetHasSnapshots) {
+			// Host snapshot policy holds the data: surface the refusal
+			// (count + per-snapshot destroy hint ride in the wrapped error
+			// message) — snapshots are NEVER auto-removed.
+			log.Printf("Refusing to delete dataset %s: has snapshots: %v", destroyErr.Dataset, err)
+			writeS3Error(w, "BucketHasSnapshots",
+				fmt.Sprintf("%v (delete snapshots first with `zfs destroy %s@<snapshot>`)", err, destroyErr.Dataset),
+				http.StatusConflict)
+			return
+		}
+		// Any other destroy failure: fail loud, remove nothing.
+		log.Printf("Error destroying ZFS dataset %s: %v", destroyErr.Dataset, err)
+		writeS3Error(w, "InternalError", "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	if errors.Is(err, bucketmanager.ErrDatasetBucketNotDeletable) {
+		// Unreachable on the S3 path (it passes AllowDatasetDestroy true); a
+		// management-only refusal.
+		writeS3Error(w, "Conflict", err.Error(), http.StatusConflict)
+		return
+	}
+	if omErr, ok := errors.AsType[*objectmodel.Error](err); ok {
+		writeS3Error(w, omErr.Code, omErr.Message, omErr.HTTPStatus)
+		return
+	}
+	writeS3Error(w, "InternalError", "Internal Server Error", http.StatusInternalServerError)
+}
+
+// deleteBucketHandler delegates bucket deletion to the shared bucket manager.
+// Bucket-name validation (validBucket, custom-exempt) stays handler-side; the
+// custom 403 guard, the exist/emptiness/in-flight-upload checks and the
+// dataset/plain branch (with AllowDatasetDestroy true, preserving today's zfs
+// destroy + 409 BucketHasSnapshots) live in the manager.
 func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
 	// Leaf 2.4 fix 7: reject invalid/traversal bucket names
 	if !validBucket(bucketName) {
@@ -247,111 +219,12 @@ func deleteBucketHandler(w http.ResponseWriter, r *http.Request, bucketName stri
 		return
 	}
 
-	// Prevent deletion of custom-configured buckets via API
-	if _, isCustom := currentServerConfig().Buckets[bucketName]; isCustom {
-		log.Printf("Cannot delete custom-configured bucket %s via API", strconv.Quote(bucketName))
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(errorToXML("AccessDenied", "Cannot delete custom-configured bucket via API.")))
+	installBucketManagerEnv()
+	if err := bucketmanager.Delete(r.Context(), bucketName, bucketmanager.DeleteOptions{AllowDatasetDestroy: true}); err != nil {
+		writeBucketManagerError(w, err)
 		return
 	}
 
-	bucketPath := getBucketPath(bucketName)
-	metadataPath := filepath.Join(bucketPath, ".metadata")
-
-	// Leaf-4.8 stress fix: serialize against createBucket (same lock).
-	unlockBucket := lockObject(bucketPath)
-	defer unlockBucket()
-
-	// Check if bucket exists
-	if _, err := os.Stat(bucketPath); os.IsNotExist(err) { //nolint:gosec // G703: bucketPath built from validateBucketName-checked name
-		log.Printf("Attempted to delete non-existent bucket: %s", strconv.Quote(bucketName))
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(errorToXML("NoSuchBucket", "The specified bucket does not exist.")))
-		return
-	}
-
-	// Check if bucket is empty (excluding .metadata directory)
-	files, err := os.ReadDir(bucketPath)
-	if err != nil {
-		log.Printf("Error reading bucket directory %s during delete: %v", bucketPath, err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(errorToXML("InternalError", "Error reading bucket.")))
-		return
-	}
-
-	// .zfs is the ZFS control directory at every dataset mountpoint (it
-	// carries the hidden snapshot view). OpenZFS 2.3+ returns it from
-	// readdir, so a dataset-backed bucket always lists it; it is never
-	// user data and must not block DeleteBucket (zfs-bucket-datasets
-	// live validation, 2026-10-03).
-	for _, file := range files {
-		if file.Name() == ".metadata" || file.Name() == ".bucket-actions" || file.Name() == ".zfs" {
-			continue
-		}
-		log.Printf("Attempted to delete non-empty bucket: %s (offending entry: %q)", strconv.Quote(bucketName), file.Name())
-		writeS3Error(w, "BucketNotEmpty", "The bucket you tried to delete is not empty.", http.StatusConflict)
-		return
-	}
-
-	// Leaf 2.4 fix 10: in-flight multipart uploads count as non-empty
-	uploadsDir := filepath.Join(metadataPath, ".uploads")
-	if uploadEntries, err := os.ReadDir(uploadsDir); err == nil {
-		for _, e := range uploadEntries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
-				log.Printf("Bucket %s has in-progress multipart uploads: %s", strconv.Quote(bucketName), e.Name()) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
-				writeS3Error(w, "BucketNotEmpty", "Bucket has in-progress multipart uploads.", http.StatusConflict)
-				return
-			}
-		}
-	}
-
-	// zfs-bucket-datasets leaf 03: when the dataset hooks are installed
-	// (feature on), ask the exists probe whether this bucket dir is a
-	// dataset mountpoint. The dataset NAME is deterministic and derives
-	// from the same closure that produced the create-side name (see
-	// zfsBucketDatasetName, leaf 03 seam-local, set by
-	// InstallZfsDatasetProvisioner's closure capture); deriving it here
-	// from a path is the read-the-PARENT-dataset hazard zfsdatasets.go
-	// documents. A plain dir (pre-feature bucket) falls through to the
-	// legacy RemoveAll path; a dataset goes through the destroy hook —
-	// NEVER RemoveAll on a live mountpoint. Exists failure is a 500:
-	// guessing "plain dir" on a probe error is a data-loss hazard.
-	if zfsBucketDatasetExists != nil && zfsBucketDatasetParent != "" {
-		dataset := zfsBucketDatasetParent + "/" + bucketName
-		isDataset, existsErr := zfsBucketDatasetExists(r.Context(), dataset)
-		if existsErr != nil {
-			log.Printf("Error probing dataset existence for bucket %s: %v", strconv.Quote(bucketName), existsErr)
-			writeS3Error(w, "InternalError", "Internal Server Error", http.StatusInternalServerError)
-			return
-		}
-		if isDataset {
-			deleteBucketDatasetPath(w, r.Context(), bucketName, dataset)
-			return
-		}
-	}
-
-	// Delete .metadata directory first
-	if err := os.RemoveAll(metadataPath); err != nil { //nolint:gosec // G703: bucketPath derived from validateBucketName-checked name
-		log.Printf("Error deleting metadata directory %s for bucket %s: %v", metadataPath, bucketName, err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(errorToXML("InternalError", "Error deleting bucket.")))
-		return
-	}
-
-	// Delete bucket directory
-	if err := os.RemoveAll(bucketPath); err != nil { //nolint:gosec // G703: bucketPath derived from validateBucketName-checked name
-		log.Printf("Error deleting bucket directory %s: %v", bucketPath, err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(errorToXML("InternalError", "Error deleting bucket.")))
-		return
-	}
-
-	log.Printf("Successfully deleted bucket: %s", strconv.Quote(bucketName))
 	w.WriteHeader(http.StatusNoContent)
 }
 

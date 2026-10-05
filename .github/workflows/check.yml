@@ -80,23 +80,32 @@ jobs:
           # to 1 decimal minus 2. RAISE as tests land (do not lower).
           # When code moves between packages, re-measure and update floors in
           # the SAME change (see AGENTS.md "Coverage floors move with code").
+          # Re-measured 2026-10-04 (go1.27.0, darwin/arm64, -race) for the
+          # management-api-2026-10 leaf 03 bucket-manager extraction:
+          #   s3 85.0 -> floor unchanged (83); the moved create/delete logic
+          #     left s3 and its new home carries its own tests, so s3 holds.
+          #   root 78.8 -> floor unchanged (77); the drop is new main()-only
+          #     bucket-manager wiring, which unit tests do not execute.
+          #   bucketmanager 82.6 (NEW), fslock 100.0 (NEW).
           # Measured 2026-09-30 (go1.27.0, go directive 1.27.0):
           # root 79.3, auth 95.2 (type-only: floor 0), backend 93.9,
           # conformance 79.0, fsbackend 85.3, frontend 93.4, ftp 58.8,
           # s3 85.8, sftp 68.4, webdav 81.8, owncloud 89.7, metadata 89.0,
           # objectmodel 92.7.
           case "${{ matrix.package }}" in
-            github.com/bhodgens/zeta-object)       FLOOR=77 ;; # measured 79.3
+            github.com/bhodgens/zeta-object)       FLOOR=77 ;; # measured 79.3 (re-measured 78.8 2026-10-04)
             github.com/bhodgens/zeta-object/internal/auth)                 FLOOR=0  ;; # type-only seam interface: zero executable statements (contract pinned by tests)
             github.com/bhodgens/zeta-object/internal/backend)              FLOOR=91 ;; # measured 93.9
             github.com/bhodgens/zeta-object/internal/backend/conformance)  FLOOR=77 ;; # measured 79.0 - remaining bodies are violation-reporting, proven by detection_test.go child harness
             github.com/bhodgens/zeta-object/internal/backend/fsbackend)    FLOOR=83 ;; # measured 85.3
+            github.com/bhodgens/zeta-object/internal/bucketmanager)        FLOOR=80 ;; # measured 82.6 (new, 2026-10-04); RAISE as tests land
             github.com/bhodgens/zeta-object/internal/frontend)             FLOOR=91 ;; # measured 93.4
             github.com/bhodgens/zeta-object/internal/frontend/ftp)         FLOOR=56 ;; # measured 58.8
-            github.com/bhodgens/zeta-object/internal/frontend/s3)          FLOOR=83 ;; # measured 85.8
+            github.com/bhodgens/zeta-object/internal/frontend/s3)          FLOOR=83 ;; # measured 85.8 (re-measured 85.0 2026-10-04)
             github.com/bhodgens/zeta-object/internal/frontend/sftp)        FLOOR=66 ;; # measured 68.4
             github.com/bhodgens/zeta-object/internal/frontend/webdav)      FLOOR=79 ;; # measured 81.8
             github.com/bhodgens/zeta-object/internal/frontend/owncloud)    FLOOR=87 ;; # measured 89.7
+            github.com/bhodgens/zeta-object/internal/fslock)               FLOOR=98 ;; # measured 100.0 (new, 2026-10-04); RAISE as tests land
             github.com/bhodgens/zeta-object/internal/metadata)             FLOOR=87 ;; # measured 89.0
             github.com/bhodgens/zeta-object/internal/objectmodel)          FLOOR=90 ;; # measured 92.7
           esac

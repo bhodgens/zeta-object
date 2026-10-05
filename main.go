@@ -11,6 +11,9 @@ import (
 
 	s3 "github.com/bhodgens/zeta-object/internal/frontend/s3"
 
+	"github.com/bhodgens/zeta-object/internal/bucketmanager"
+	"github.com/bhodgens/zeta-object/internal/fslock"
+
 	// Blank imports register the built-in storage backends with the
 	// internal/backend registry (each package's init() calls
 	// backend.Register). Without them the production binary's registry is
@@ -161,6 +164,21 @@ func main() {
 	// dedicated TLS listener (same cert pair). Any failure (unknown type,
 	// ambiguous duplicate mount, factory error) aborts startup loudly.
 	installS3Seams()
+	// Shared bucket manager (management-api-2026-10 leaf 03): wire the ONE
+	// process lock table (fslock), the bucket path resolver, the configured
+	// custom-bucket map and the dataset provisioner (nil when the feature is
+	// off) so the S3 frontend and the management API (leaf 04) share one
+	// implementation. installS3Seams above has already installed the dataset
+	// hooks, so NewDatasetProvisioner reflects the live feature state.
+	bucketmanager.Install(bucketmanager.Env{
+		Locks:      fslock.Default,
+		BucketPath: getBucketPath,
+		Custom: func(bucket string) (string, bool) {
+			path, ok := serverConfig.Buckets[bucket]
+			return path, ok
+		},
+		Provisioner: s3.NewDatasetProvisioner(),
+	})
 	// Resolve the REAL default backend (the dataDir-rooted fs instance the
 	// s3 seam's backendFor("") returns) before the plan is built: the
 	// webdav/owncloud constructors reject a nil backend (bughunt C1), so
