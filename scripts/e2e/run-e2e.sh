@@ -28,6 +28,17 @@ if ! go build -o zeta-object-server . ; then
 	exit 1
 fi
 
+# The web console is a second binary (cmd/admin-server). Build it too, but a
+# failure here must NOT fail the whole suite — case 36 skips gracefully when the
+# console binary is unavailable.
+E2E_ADMIN_CONSOLE_AVAILABLE=0
+echo '== building zeta-object-admin (console) =='
+if go build -o zeta-object-admin ./cmd/admin-server && [ -x zeta-object-admin ]; then
+	E2E_ADMIN_CONSOLE_AVAILABLE=1
+else
+	echo 'WARN: console build failed — case 36 will skip'
+fi
+
 # --- workdir, certs, config ---------------------------------------------------
 WORK=$(mktemp -d /tmp/zetaobject-e2e.XXXXXX)
 E2E_DATA_DIR="$WORK/data"
@@ -180,6 +191,10 @@ export E2E_ADMIN_AVAILABLE E2E_ADMIN_CN E2E_ADMIN_CONFIG_SECRET E2E_ADMIN_PORT
 export E2E_ADMIN_URL="https://127.0.0.1:$E2E_ADMIN_PORT" E2E_AUDIT_LOG="$AUDIT_LOG_PATH"
 export E2E_ADMIN_CLIENT_CERT="$E2E_ADMIN_CA_DIR/client.pem" E2E_ADMIN_CLIENT_KEY="$E2E_ADMIN_CA_DIR/client-key.pem"
 export E2E_ADMIN_WRONG_CERT="$E2E_ADMIN_CA_DIR/wrong.pem" E2E_ADMIN_WRONG_KEY="$E2E_ADMIN_CA_DIR/wrong-key.pem"
+# Case 36 (web console): the built console binary, the gateway listener's own
+# certificate (the console trusts it as the root for the admin listener), and
+# the console-build availability flag.
+export E2E_ADMIN_CONSOLE_AVAILABLE E2E_ADMIN_CONSOLE_BIN="$REPO_ROOT/zeta-object-admin" E2E_SERVER_CERT="$WORK/cert.pem"
 
 # --- run cases -----------------------------------------------------------------
 CASE_RESULTS=()   # "name:PASS:FAIL"
