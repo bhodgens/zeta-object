@@ -94,6 +94,36 @@ typed gateway error to its status and envelope; a transport error becomes
 502 with the envelope and the reason.
 **Step 4:** PASS.
 
+### Task 2b: console listener TLS and cookie policy (added during execution)
+
+**Objective:** close a defect found in leaf 01: the console served plain
+HTTP while stamping cookies `Secure`, which Safari rejects even on
+loopback.
+
+**Files:** `internal/adminserver/config.go`, `config_test.go`,
+`server.go`, `session.go`, `session_test.go`, `cmd/admin-server/main.go`
+
+**Requirements:**
+- Console config gains OPTIONAL `certFile` / `keyFile` (its own server
+  certificate, distinct from the mTLS client pair).
+- Both set: serve HTTPS with `MinVersion` TLS 1.2; every cookie `Secure`.
+- Neither set: serve plain HTTP, and `allowNonLoopback` must be false - a
+  startup abort otherwise naming the reason; cookies `Secure` only when
+  the request arrived over TLS (`r.TLS != nil`).
+- The cookie attribute decision must be per response, driven by whether
+  that response is on TLS, so both modes are correct.
+
+**Step 1: Write failing tests:** TLS mode serves HTTPS and every cookie
+carries `Secure`; plain loopback mode omits `Secure` on an HTTP request;
+`allowNonLoopback` with no certificate refuses to start; `allowNonLoopback`
+with a certificate starts and serves TLS.
+
+**Step 2:** FAIL. **Step 3: Implement.** **Step 4:** PASS.
+
+Also pin the login request shape: the sign-in page posts JSON with a
+`token` field and offers a form fallback, so `POST /login` must accept the
+token from a JSON body OR a form field named `token`.
+
 ### Task 3: routing and 404/405
 
 **Files:** modify the two files from Task 1.
@@ -119,6 +149,9 @@ strictly within the embedded FS.
 - [ ] No path traversal out of the embedded asset set
 - [ ] No token, cookie secret, or certificate material in any log line
 - [ ] `gofmt -l` clean; `make lint NEW_FROM_REV=HEAD` 0 findings
+- [ ] Both listener modes correct: TLS stamps `Secure`, plain loopback does not
+- [ ] `allowNonLoopback` without a certificate refuses to start
+- [ ] `POST /login` accepts the token as JSON `{token}` or as a form field
 - [ ] DO-NOT-TOUCH: `internal/frontend/`, `internal/adminserver/gateway/`
       (consume only), `internal/adminserver/web/` (leaf 03/04),
       `config_store.go`, `go.sum`

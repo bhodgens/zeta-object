@@ -95,6 +95,15 @@ step or npm dependency, and any persistent console state.
   `operatorToken` is a startup abort, never an unauthenticated console).
 - The certificate files are read at startup AND re-read on the console's
   own certificate reload, so rotation does not need a restart.
+- **Console listener TLS (added during execution).** The console's own
+  listener takes OPTIONAL `certFile` / `keyFile` (its server certificate;
+  distinct from `clientCert`/`clientKey`, which are the console's identity
+  TO the gateway). Rules: both set means the console serves HTTPS (TLS 1.2
+  minimum) and every cookie is `Secure`; neither set means plain HTTP and
+  `allowNonLoopback` must be FALSE (a startup abort otherwise - the console
+  never serves plain HTTP off-host), with cookies `Secure` only when the
+  request arrived over TLS. This exists because a `Secure` cookie over
+  plain `http://` is rejected by Safari even on loopback.
 
 ### Contract 2: console HTTP surface (leaf 05, consumed by 04)
 
@@ -269,11 +278,11 @@ Output: APPROVED or list of specific gaps.
 
 | Child | Status | Iterations | Review Notes |
 |-------|--------|------------|-------------|
-| 01-console-skeleton-auth | PENDING | 0 | |
-| 02-gateway-client | PENDING | 0 | |
-| 03-ui-shell-theme | PENDING | 0 | |
-| 04-ui-screens | PENDING | 0 | |
-| 05-proxy-routes | PENDING | 0 | |
+| 01-console-skeleton-auth | COMPLETE | 1 | 5c28f22; plain-HTTP+cookie-Secure defect found -> folded into leaf 05 |
+| 02-gateway-client | COMPLETE | 1 | 76590ab (also carries the web assets: a failed attempt left them staged) |
+| 03-ui-shell-theme | COMPLETE | 1 | in 76590ab; shell hooks verified in parent |
+| 04-ui-screens | IN_PROGRESS | 0 | dispatched (Group B) |
+| 05-proxy-routes | IN_PROGRESS | 0 | dispatched (Group B), scope now includes the console TLS/cookie policy |
 | 06-docs | PENDING | 0 | |
 | 07-e2e-case-36 | PENDING | 0 | |
 
@@ -320,6 +329,10 @@ Run: `python3 ~/.hermes/skills/software-development/hierarchical-planning/script
   tree). Case 36 consumes those rather than inventing new ones.
 - **Coverage floors:** adding a package means adding a floor row for it
   (AGENTS.md); measure on the CI-shaped command and round down.
+- **Client-side TLS reload API:** the gateway client uses
+  `GetClientCertificate` on the CLIENT side; `GetConfigForClient` is a
+  server hook and does not exist for a client. The master originally said
+  otherwise and the implementing leaf corrected it.
 - **The logo files stay where they are** (`logo-icon.png`, `logo.jpeg` at
   the repo root, referenced by README). The console embeds its own copy
   for the favicon and the rail mark; do not move or rewrite the originals.
