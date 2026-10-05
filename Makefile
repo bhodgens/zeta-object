@@ -2,6 +2,8 @@
 # Module is at the repo root (single package main): no cd needed anywhere.
 
 BINARY_NAME := zeta-object-server
+# The web console is a second binary (cmd/admin-server); `build` produces both.
+ADMIN_BINARY_NAME := zeta-object-admin
 
 # Coverage floor. Measured 47.9% aggregate (go test -cover ./...) after the
 # frontend-interface split (2026-09) moved code from package main into
@@ -17,7 +19,7 @@ NEW_FROM_REV ?=
 
 GO_TOOLS_MISSING :=
 
-.PHONY: help build run certs data_dir clean \
+.PHONY: help build run admin-server certs data_dir clean \
         test test-verbose test-race test-cover test-cover-enforce fuzz bench \
         lint vet fmt fmt-check mod-tidy mod-tidy-check mod-verify \
         precommit check vuln secrets e2e hooks
@@ -26,8 +28,9 @@ help:
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Build & run:"
-	@echo "  build            Compile the Go server to ./$(BINARY_NAME)"
+	@echo "  build            Compile the Go server to ./$(BINARY_NAME) and the console to ./$(ADMIN_BINARY_NAME)"
 	@echo "  run              Build and start the server (HTTPS on :8443; certs must exist — run 'make certs' first)"
+	@echo "  admin-server     Compile the web console to ./$(ADMIN_BINARY_NAME)"
 	@echo "  certs            Generate self-signed SSL certificates in certs/ (if missing)"
 	@echo "  clean            Remove the compiled binary and coverage artifacts"
 	@echo ""
@@ -63,10 +66,17 @@ help:
 # Build & run
 # =============================================================================
 
-build:
+build: admin-server
 	@echo "Building $(BINARY_NAME)..."
 	@go build -o $(BINARY_NAME) .
 	@echo "$(BINARY_NAME) built successfully."
+
+# The web console binary (cmd/admin-server). Independent of the gateway binary;
+# `build` depends on this target so both land together.
+admin-server:
+	@echo "Building $(ADMIN_BINARY_NAME)..."
+	@go build -o $(ADMIN_BINARY_NAME) ./cmd/admin-server
+	@echo "$(ADMIN_BINARY_NAME) built successfully."
 
 # HTTPS on :8443. Requires certs/cert.pem + certs/key.pem — run 'make certs' first.
 run: build
@@ -89,7 +99,7 @@ data_dir:
 
 clean:
 	@echo "Cleaning up..."
-	@rm -f $(BINARY_NAME) coverage.out coverage.html
+	@rm -f $(BINARY_NAME) $(ADMIN_BINARY_NAME) coverage.out coverage.html
 	@rm -rf coverage
 	@echo "Cleanup complete."
 
