@@ -2,6 +2,7 @@ package adminserver
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -230,7 +231,39 @@ func TestTamperedCookieRejected(t *testing.T) {
 	if sess.Value == "" {
 		t.Fatal("no session cookie to tamper with")
 	}
-	tampered := sess.Value[:len(sess.Value)-1] + flip(sess.Value[len(sess.Value)-1])
+	// Tamper a SIGNIFICANT byte. The cookie is
+	// base64url(payload) + "." + base64url(hmac), and a 32-byte HMAC
+	// encodes to 43 RawURL characters: the LAST character carries only 2
+	// significant bits, so the rest are discarded on decode and flipping
+	// 'a' to 'b' there yields the IDENTICAL MAC - the server then
+	// correctly accepts what is still the same cookie. Replace the FIRST
+	// signature character instead, whose 6 bits all survive decoding, and
+	// assert the decoded signature really changed so this trap cannot
+	// come back.
+	dot := strings.LastIndex(sess.Value, ".")
+	if dot <= 0 || dot == len(sess.Value)-1 {
+		t.Fatalf("unexpected cookie shape %q", sess.Value)
+	}
+	sig := sess.Value[dot+1:]
+	origSig, err := base64.RawURLEncoding.DecodeString(sig)
+	if err != nil {
+		t.Fatalf("decoding signature: %v", err)
+	}
+	repl := byte('A')
+	if sig[0] == repl {
+		repl = 'B'
+	}
+	tampered := sess.Value[:dot+1] + string(repl) + sig[1:]
+	if tampered == sess.Value {
+		t.Fatal("tamper did not change the cookie value")
+	}
+	tamSig, err := base64.RawURLEncoding.DecodeString(tampered[dot+1:])
+	if err != nil {
+		t.Fatalf("decoding tampered signature: %v", err)
+	}
+	if string(tamSig) == string(origSig) {
+		t.Fatalf("tamper is not significant: the decoded signature is identical")
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: tampered})
@@ -239,13 +272,6 @@ func TestTamperedCookieRejected(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("tampered cookie status = %d, want 401", rec.Code)
 	}
-}
-
-func flip(b byte) string {
-	if b == 'a' {
-		return "b"
-	}
-	return "a"
 }
 
 func TestExpiredCookieRejected(t *testing.T) {
