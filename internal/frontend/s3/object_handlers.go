@@ -24,6 +24,7 @@ import (
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/backend"
 	"github.com/bhodgens/zeta-object/internal/backend/fsbackend"
+	"github.com/bhodgens/zeta-object/internal/batchops"
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
@@ -1726,6 +1727,14 @@ func rawSourceSidecarMeta(bucketPath, key string) map[string]string {
 // deleteObjectsHandler implements DeleteObjects (POST /bucket?delete): batch
 // deletion of up to 1000 keys with a DeleteResult XML response. In Quiet
 // mode only errors are reported.
+//
+// quic-h3-2026-10 leaf 07: the wire shapes are unchanged (pinned by
+// deleteobjects_test.go against the AWS documented forms) but the
+// execution now runs through the shared internal/batchops core via
+// deleteBatchExecutor — the SAME Executor the JSON ?batch surface drives,
+// so both batch surfaces run one execution engine. S3 semantics are
+// preserved per key: a missing key still reports Deleted; per-key
+// failures do not stop later keys.
 func deleteObjectsHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
 	if !bucketExists(bucketName) {
 		log.Printf("Bucket %s does not exist for DeleteObjects", strconv.Quote(bucketName))
@@ -1739,7 +1748,7 @@ func deleteObjectsHandler(w http.ResponseWriter, r *http.Request, bucketName str
 		writeS3Error(w, "InternalError", "Error reading request body.", http.StatusInternalServerError)
 		return
 	}
-	defer r.Body.Close()
+	defer r.Body.Close() //nolint:errcheck // server-side close.
 
 	var req DeleteRequest
 	if err := xml.Unmarshal(body, &req); err != nil {
@@ -1754,28 +1763,37 @@ func deleteObjectsHandler(w http.ResponseWriter, r *http.Request, bucketName str
 		return
 	}
 
+	// Map the XML manifest onto the batchops core: one delete item per
+	// key, executed sequentially in manifest order (validation has
+	// already passed — count is in range and XML keys cannot be empty).
+	ops := make([]batchops.Operation, len(req.Objects))
+	for i, obj := range req.Objects {
+		ops[i] = batchops.Operation{Op: "delete", From: obj.Key}
+	}
+	runner := &batchops.Runner{
+		Exec:        deleteBatchExecutor{bucket: bucketName, ctx: r.Context()},
+		ValidateKey: validateObjectKey,
+	}
+	// The core's Run (not Process) runs here: malformed-XML classes were
+	// answered above; per-key validation failures are per-KEY Error
+	// entries below (the S3 wire treats them as item results, not a 400).
+	results := runner.Run(r.Context(), batchops.Manifest{Operations: ops})
+
 	result := DeleteResult{}
-	for _, obj := range req.Objects {
-		if err := validateObjectKey(obj.Key); err != nil {
-			log.Printf("Invalid key %s in DeleteObjects for bucket %s: %v", strconv.Quote(obj.Key), strconv.Quote(bucketName), err)
+	for _, res := range results {
+		key := req.Objects[res.Index].Key
+		if res.Status != batchops.StatusOK {
+			log.Printf("DeleteObjects error for %s/%s: %s: %s", strconv.Quote(bucketName), strconv.Quote(key), res.Code, res.Message)
 			result.Error = append(result.Error, DeleteErrorEntry{
-				Key:     obj.Key,
-				Code:    "InvalidArgument",
-				Message: err.Error(),
+				Key:     key,
+				Code:    res.Code,
+				Message: res.Message,
 			})
 			continue
 		}
-		if err := deleteObjectCore(getBucketPath(bucketName), bucketName, obj.Key); err != nil {
-			log.Printf("Error deleting %s/%s in DeleteObjects: %v", strconv.Quote(bucketName), strconv.Quote(obj.Key), err)
-			result.Error = append(result.Error, DeleteErrorEntry{
-				Key:     obj.Key,
-				Code:    "InternalError",
-				Message: "Error deleting object data.",
-			})
-			continue
-		}
-		// S3 semantics: a missing key still reports Deleted.
-		result.Deleted = append(result.Deleted, DeletedEntry(obj))
+		// S3 semantics: a missing key still reports Deleted (the
+		// deleteBatchExecutor maps NoSuchKey to success for this wire).
+		result.Deleted = append(result.Deleted, DeletedEntry{Key: key})
 	}
 
 	if req.Quiet {
@@ -1786,4 +1804,35 @@ func deleteObjectsHandler(w http.ResponseWriter, r *http.Request, bucketName str
 	writeXML(w, http.StatusOK, result)
 	log.Printf("Successfully served DeleteObjects for bucket %s (%d keys, quiet=%t)",
 		strconv.Quote(bucketName), len(req.Objects), req.Quiet)
+}
+
+// deleteBatchExecutor adapts the batchops op interface onto the S3
+// DeleteObjects semantics: the plain delete via deleteObjectCore (the
+// versioned-marker dispatch the DELETE handler runs is NOT taken here —
+// DeleteObjects on a versioned bucket removes the data outright, the
+// pre-leaf behavior this wire has always had), and a missing key maps to
+// SUCCESS (S3 DeleteObjects reports Deleted for absent keys).
+type deleteBatchExecutor struct {
+	bucket string
+	ctx    context.Context
+}
+
+func (e deleteBatchExecutor) Copy(_ context.Context, _, _, _ string) error {
+	// DeleteObjects carries delete items only.
+	return objectmodel.ErrInvalidArgument("DeleteObjects carries delete operations only")
+}
+
+func (e deleteBatchExecutor) Move(_ context.Context, _, _, _ string) error {
+	return objectmodel.ErrInvalidArgument("DeleteObjects carries delete operations only")
+}
+
+func (e deleteBatchExecutor) Delete(_ context.Context, key, _ string) error {
+	if err := deleteObjectCore(getBucketPath(e.bucket), e.bucket, key); err != nil {
+		var oe *objectmodel.Error
+		if errors.As(err, &oe) && oe.Code == objectmodel.CodeNoSuchKey {
+			return nil // S3 semantics: a missing key still reports Deleted
+		}
+		return err
+	}
+	return nil
 }

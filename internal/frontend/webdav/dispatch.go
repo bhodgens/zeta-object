@@ -45,6 +45,16 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// quic-h3-2026-10 leaf 07: the JSON batch surface (POST ?batch)
+	// resolves BEFORE the method switch — a POST sub-resource with the
+	// bucket scope resolved (same pre-dispatch position as the GET-query
+	// zfsSurfaceDispatch). Auth and grants ran above; a GET ?batch is
+	// the mount's 405. Unmatched (no ?batch param) falls through
+	// unchanged.
+	if f.batchDispatch(w, r.WithContext(ctx), res) {
+		return
+	}
+
 	switch r.Method {
 	case "OPTIONS":
 		f.handleOPTIONS(w, r)

@@ -335,9 +335,22 @@ func (f *Frontend) bucketLevelDispatch(w http.ResponseWriter, r *http.Request, b
 			return
 		}
 	}
-	// Leaf 3.5: DeleteObjects sub-resource (POST /bucket?delete)
+	// Leaf 3.5: DeleteObjects sub-resource (POST /bucket?delete) and the
+	// quic-h3-2026-10 leaf 07 JSON batch extension (POST /bucket?batch).
+	// Both are batch surfaces over the shared internal/batchops core.
 	if _, ok := r.URL.Query()["delete"]; ok && r.Method == "POST" {
 		deleteObjectsHandler(w, r, bucketName)
+		return
+	}
+	if _, ok := r.URL.Query()["batch"]; ok {
+		if r.Method == "POST" {
+			handleBucketBatch(w, r, bucketName)
+			return
+		}
+		// GET/PUT/DELETE ?batch: the sub-resource is POST-only — a 405,
+		// never a silent fall-through into the plain method switch.
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "Method Not Allowed for bucket", http.StatusMethodNotAllowed)
 		return
 	}
 
