@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-screen="dashboard">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="csrf-token" content="">
+  <title>zeta-object console</title>
+  <link rel="icon" type="image/png" href="/assets/logo-icon.png">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#view">Skip to content</a>
+
+  <div class="app">
+    <nav id="rail" class="rail" aria-label="Console sections">
+      <div class="rail-brand">
+        <img class="rail-logo" src="/assets/logo-icon.png" alt="" width="28" height="28">
+        <span class="rail-name">zeta-object</span>
+      </div>
+
+      <ul class="rail-tabs" role="tablist" aria-orientation="vertical">
+        <li>
+          <button class="tab" type="button" role="tab" data-screen="dashboard"
+                  aria-controls="view" aria-selected="true" aria-current="page">
+            <svg class="tab-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <rect x="3" y="3" width="7" height="7" rx="1.5"></rect>
+              <rect x="14" y="3" width="7" height="7" rx="1.5"></rect>
+              <rect x="3" y="14" width="7" height="7" rx="1.5"></rect>
+              <rect x="14" y="14" width="7" height="7" rx="1.5"></rect>
+            </svg>
+            <span>Dashboard</span>
+          </button>
+        </li>
+        <li>
+          <button class="tab" type="button" role="tab" data-screen="config"
+                  aria-controls="view" aria-selected="false" tabindex="-1">
+            <svg class="tab-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"></path>
+            </svg>
+            <span>Configuration</span>
+          </button>
+        </li>
+        <li>
+          <button class="tab" type="button" role="tab" data-screen="buckets"
+                  aria-controls="view" aria-selected="false" tabindex="-1">
+            <svg class="tab-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <path d="M3 6c0-1.7 4-3 9-3s9 1.3 9 3-4 3-9 3-9-1.3-9-3z"></path>
+              <path d="M3 6v12c0 1.7 4 3 9 3s9-1.3 9-3V6"></path>
+              <path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"></path>
+            </svg>
+            <span>Buckets</span>
+          </button>
+        </li>
+        <li>
+          <button class="tab" type="button" role="tab" data-screen="danger"
+                  aria-controls="view" aria-selected="false" tabindex="-1">
+            <svg class="tab-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <path d="M12 3l9 16H3z"></path>
+              <path d="M12 9v5"></path>
+              <path d="M12 17h.01"></path>
+            </svg>
+            <span>Danger zone</span>
+          </button>
+        </li>
+      </ul>
+
+      <div class="rail-foot">
+        <button id="theme-toggle" class="btn" type="button">
+          <span data-theme-label>Dark</span>
+        </button>
+        <button id="signout" class="btn" type="button">Sign out</button>
+        <div class="rail-version"><span id="app-version">dev</span></div>
+      </div>
+    </nav>
+
+    <main class="content">
+      <header class="topbar">
+        <h1 id="view-title" class="topbar-title">Dashboard</h1>
+      </header>
+
+      <section id="view" class="view" role="tabpanel" tabindex="-1"></section>
+
+      <footer class="foot">
+        <span>zeta-object console</span>
+        <span id="foot-version">dev</span>
+      </footer>
+    </main>
+  </div>
+
+  <div id="toast" class="toast-region" role="status" aria-live="polite" aria-atomic="false"></div>
+
+  <div id="modal" class="modal-host" hidden>
+    <div class="modal-backdrop" data-modal-dismiss></div>
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h2 id="modal-title" class="modal-title"></h2>
+      <div id="modal-body" class="modal-body"></div>
+      <div class="modal-actions">
+        <button id="modal-cancel" class="btn" type="button" data-modal-dismiss>Cancel</button>
+        <button id="modal-confirm" class="btn primary-btn" type="button">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

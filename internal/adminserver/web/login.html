@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Sign in - zeta-object console</title>
+  <link rel="icon" type="image/png" href="/assets/logo-icon.png">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body class="login-body">
+  <main class="login-wrap">
+    <div class="login-card" role="region" aria-labelledby="login-heading">
+      <img class="login-logo" src="/assets/logo-icon.png" alt="" width="56" height="56">
+      <h1 id="login-heading" class="login-title">zeta-object console</h1>
+      <p class="login-sub">Sign in with the operator token from your console config.</p>
+
+      <form id="login-form" class="login-form" method="post" action="/login" autocomplete="off">
+        <label class="field-label" for="token">Operator token</label>
+        <input class="field-input" type="password" id="token" name="token"
+               required autocomplete="current-password" spellcheck="false"
+               aria-describedby="login-message">
+        <button class="btn primary-btn login-submit" type="submit">Sign in</button>
+      </form>
+
+      <p id="login-message" class="login-message" role="alert" aria-live="polite"></p>
+    </div>
+  </main>
+
+  <script>
+    (function () {
+      "use strict";
+      var form = document.getElementById("login-form");
+      var field = document.getElementById("token");
+      var message = document.getElementById("login-message");
+      if (!form || !field || !message) {
+        return;
+      }
+      function setMessage(text, kind) {
+        message.textContent = text || "";
+        message.className = "login-message" + (kind ? " is-" + kind : "");
+      }
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var token = field.value;
+        if (!token) {
+          setMessage("Enter the operator token.", "error");
+          field.focus();
+          return;
+        }
+        setMessage("Signing in\u2026", "");
+        var submitBtn = form.querySelector("button[type=submit]");
+        if (submitBtn) {
+          submitBtn.disabled = true;
+        }
+        fetch("/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ token: token })
+        }).then(function (response) {
+          if (response.ok) {
+            window.location.assign("/");
+            return null;
+          }
+          return response.text().then(function (text) {
+            var detail = "";
+            if (text) {
+              try {
+                var parsed = JSON.parse(text);
+                detail = parsed && parsed.error ? parsed.error : text;
+              } catch (ignore) {
+                detail = text;
+              }
+            }
+            throw new Error(detail || ("Sign in failed (" + response.status + ")"));
+          });
+        }).catch(function (error) {
+          setMessage(error && error.message ? error.message : "Sign in failed.", "error");
+        }).then(function () {
+          if (submitBtn) {
+            submitBtn.disabled = false;
+          }
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
