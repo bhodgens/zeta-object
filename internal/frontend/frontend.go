@@ -4,6 +4,7 @@
 package frontend
 
 import (
+	"crypto/tls"
 	"net"
 	"net/http"
 
@@ -41,4 +42,27 @@ type NonHTTPFrontend interface {
 	Serve(l net.Listener) error
 	// Stop gracefully stops: stop accepting, close sessions.
 	Stop() error
+}
+
+// TLSListenerFrontend is an OPTIONAL extension for frontends whose dedicated
+// listener needs its OWN TLS configuration (client-certificate verification).
+// A frontend implementing it is served on a dedicated listener built from
+// TLSConfig(), NOT on the shared mux and NOT with the process-wide
+// ListenAndServeTLS(cert, key) path (which rebuilds the TLS config from the
+// pair and would silently drop ClientCAs and ClientAuth).
+//
+// The frozen Frontend interface and Registry are untouched by this extension
+// (management-api-2026-10 master Contract 1); the precedent is
+// NonHTTPFrontend above.
+type TLSListenerFrontend interface {
+	Frontend
+	// Addr returns this frontend's dedicated listen address from its config
+	// ("" => config error, rejected at construction). An empty address is
+	// NEVER a shared-mux fallback.
+	Addr() string
+	// TLSConfig returns the listener's TLS configuration. The caller
+	// (package main) serves the listener with this pre-built config as-is;
+	// ServeTLS is invoked with empty cert and key paths so these settings
+	// (ClientCAs, ClientAuth, Certificates) survive.
+	TLSConfig() (*tls.Config, error)
 }

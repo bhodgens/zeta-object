@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -58,7 +59,7 @@ func runServer(srv *http.Server, extraServers []*http.Server, nonHTTPServers []n
 			// A dedicated listener that fails to bind must surface like
 			// the default one: swallow only the intentional
 			// ErrServerClosed from graceful shutdown (bughunt C5).
-			if err := es.ListenAndServeTLS(serverConfig.CertFile, serverConfig.KeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := serveDedicatedListener(es); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				serverErr <- err
 			}
 		}()
@@ -103,4 +104,26 @@ func runServer(srv *http.Server, extraServers []*http.Server, nonHTTPServers []n
 			log.Println("Server shut down cleanly")
 		}
 	}
+}
+
+// serveDedicatedListener runs one dedicated-listener http.Server.
+//
+// A server whose TLSConfig already carries its own certificate material is a
+// TLSListenerFrontend: it is served with that pre-built configuration so
+// ClientCAs and ClientAuth survive. ListenAndServeTLS(cert, key) would build
+// its own TLS config from the pair and silently drop them, so for this path
+// the listener is opened explicitly and ServeTLS is called with empty cert
+// and key paths (ServeTLS then reuses srv.TLSConfig as-is).
+//
+// Every other dedicated listener keeps the process-wide cert pair, exactly as
+// before.
+func serveDedicatedListener(es *http.Server) error {
+	if es.TLSConfig == nil || len(es.TLSConfig.Certificates) == 0 {
+		return es.ListenAndServeTLS(serverConfig.CertFile, serverConfig.KeyFile)
+	}
+	l, err := net.Listen("tcp", es.Addr)
+	if err != nil {
+		return err
+	}
+	return es.ServeTLS(l, "", "")
 }

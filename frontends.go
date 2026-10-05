@@ -17,10 +17,12 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/backend"
 	"github.com/bhodgens/zeta-object/internal/frontend"
+	admin "github.com/bhodgens/zeta-object/internal/frontend/admin"
 	ftp "github.com/bhodgens/zeta-object/internal/frontend/ftp"
 	"github.com/bhodgens/zeta-object/internal/frontend/owncloud"
 	s3 "github.com/bhodgens/zeta-object/internal/frontend/s3"
@@ -120,6 +122,42 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 		}
 		return sftp.New(backendResolver(), sftpCfg)
 	},
+	// admin is the mTLS management frontend (management-api-2026-10 leaf 01):
+	// it owns a dedicated TLS listener whose client-certificate verification
+	// is expressed through the positional interface. The CA bundle is REQUIRED
+	// and is read fail-loud; the route services are injected by leaf 04.
+	"admin": func(cfg FrontendConfig, b backend.Backend, creds auth.CredentialSource) (frontend.Frontend, error) {
+		if cfg.Bucket != "" {
+			return nil, fmt.Errorf(`frontend type "admin" does not accept the "bucket" key (webdav only)`)
+		}
+		if err := validateOptions(cfg.Type, cfg.Options, admin.KnownOptionKeys); err != nil {
+			return nil, err
+		}
+		return admin.New(admin.Options{
+			ListenAddr:       cfg.ListenAddr,
+			ClientCAFile:     cfg.Options["clientCAFile"],
+			AdminPrincipals:  splitOptionList(cfg.Options["adminPrincipals"]),
+			AllowNonLoopback: cfg.Options["allowNonLoopback"] == "true",
+			CertFile:         serverConfig.CertFile,
+			KeyFile:          serverConfig.KeyFile,
+		})
+	},
+}
+
+// splitOptionList splits a comma-separated option value ("alice,bob") into a
+// trimmed, non-empty list. Absent/empty yields nil.
+func splitOptionList(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // validateOptions checks every options key is known to the owning frontend
@@ -250,6 +288,10 @@ type frontendMount struct {
 type listenerSpec struct {
 	frontend frontend.Frontend
 	addr     string
+	// tlsConfig is non-nil only for a TLSListenerFrontend: the pre-built
+	// configuration main must serve this listener with (client-certificate
+	// verification). A nil tlsConfig keeps the process-wide cert pair path.
+	tlsConfig *tls.Config
 }
 
 // buildFrontends constructs each configured frontend, registers it, and
@@ -322,6 +364,14 @@ func buildFrontends(cfg []FrontendConfig, b backend.Backend, creds auth.Credenti
 func mountFrontends(mux *http.ServeMux, mounts []frontendMount) (shared []frontend.Frontend, extra []listenerSpec, err error) {
 	for _, m := range mounts {
 		if m.listenAddr == "" {
+			// A TLS-listener frontend owns its dedicated listener and its
+			// TLS configuration; without a listenAddr it would fall back to
+			// the shared mux, silently dropping its mTLS settings. Loud
+			// startup error naming the rule (management-api-2026-10
+			// Contract 1).
+			if tl, ok := m.frontend.(frontend.TLSListenerFrontend); ok {
+				return nil, nil, fmt.Errorf("frontend %q requires its own listenAddr (a TLS-listener frontend cannot share the default HTTPS mux)", tl.Name())
+			}
 			// A non-HTTP frontend (FTP/SFTP) cannot express itself as an
 			// http.Handler — mounting it on the shared mux would serve its
 			// 501 stub on every path. Loud startup error instead
@@ -337,7 +387,15 @@ func mountFrontends(mux *http.ServeMux, mounts []frontendMount) (shared []fronte
 			shared = append(shared, m.frontend)
 			continue
 		}
-		extra = append(extra, listenerSpec{frontend: m.frontend, addr: m.listenAddr})
+		spec := listenerSpec{frontend: m.frontend, addr: m.listenAddr}
+		if tl, ok := m.frontend.(frontend.TLSListenerFrontend); ok {
+			cfg, err := tl.TLSConfig()
+			if err != nil {
+				return nil, nil, fmt.Errorf("frontend %q: building TLS listener config: %w", tl.Name(), err)
+			}
+			spec.tlsConfig = cfg
+		}
+		extra = append(extra, spec)
 	}
 	return shared, extra, nil
 }

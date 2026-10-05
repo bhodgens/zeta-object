@@ -380,7 +380,7 @@ func TestBuildFrontendsRegisterErrorWrapped(t *testing.T) {
 // construction error instead of returning a partial plan.
 func TestStartupPlanBuildErrorPropagates(t *testing.T) {
 	_, err := startupPlan([]FrontendConfig{{Type: "nosuchtype"}}, nilBackend{}, stubCreds{})
-	if err == nil || !strings.Contains(err.Error(), "known: [ftp owncloud s3 sftp webdav]") {
+	if err == nil || !strings.Contains(err.Error(), "known: [admin ftp owncloud s3 sftp webdav]") {
 		t.Fatalf("err = %v, want the unknown-type error with the known list", err)
 	}
 }

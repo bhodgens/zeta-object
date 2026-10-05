@@ -37,8 +37,16 @@ func buildDedicatedListeners(listeners []listenerSpec) ([]*http.Server, []nonHTT
 			nonHTTP = append(nonHTTP, nonHTTPServer{nh: nh, l: l, addr: ls.addr})
 			continue
 		}
-		extra = append(extra, newServer(ls.addr, ls.frontend.Handler(),
-			serverConfig.CertFile, serverConfig.KeyFile))
+		srv := newServer(ls.addr, ls.frontend.Handler(),
+			serverConfig.CertFile, serverConfig.KeyFile)
+		if ls.tlsConfig != nil {
+			// A TLSListenerFrontend supplies its own pre-built listener TLS
+			// configuration (client-certificate verification); main serves
+			// this server with it (main_server.go serveDedicatedListener)
+			// instead of the process-wide cert pair.
+			srv.TLSConfig = ls.tlsConfig
+		}
+		extra = append(extra, srv)
 	}
 	return extra, nonHTTP
 }
