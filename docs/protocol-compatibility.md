@@ -187,9 +187,20 @@ DatasetBucketNotDeletable` and never asks the manager to destroy a dataset
 (`AllowDatasetDestroy` false). The S3 `DELETE /<bucket>` path keeps its
 existing behavior, including its `zfs_bucket_datasets` mode where a bucket
 delete runs `zfs destroy` on the bucket's own dataset (and answers `409
-BucketHasSnapshots` when snapshots are present). The management API's
+`BucketHasSnapshots` when snapshots are present). The management API's
 decision - no dataset destruction through the API - does not change the S3
 wire behavior.
+
+**The web console is a client of this surface, not a second surface.** The
+browser console (`zeta-object-admin`, a second binary) holds the
+administrative client certificate and proxies this Management API
+one-to-one under its own `/api/...` prefix: the same methods, JSON bodies,
+status codes, and error envelope, and it adds no operations of its own. The
+only thing it adds is an authentication step for the OPERATOR (a token
+exchanged for an in-memory session cookie plus a CSRF token), which is
+console-local and never reaches the gateway. Proof: e2e case 36
+(`scripts/e2e/cases/36-admin-console.sh`) drives the console against a real
+management listener.
 
 ## Cross-cutting guarantees (every protocol)
 

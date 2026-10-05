@@ -1,0 +1,48 @@
+{
+  // Address the CONSOLE binds to. Loopback by default (127.0.0.1, ::1, or
+  // localhost). A listen address whose host does not resolve entirely to
+  // loopback - including ":9443", which binds every interface - ABORTS
+  // startup unless allowNonLoopback is true.
+  "listenAddr": "127.0.0.1:9443",
+
+  // Base URL of the GATEWAY's management (admin) listener. The console
+  // speaks mTLS to this address; it must be the admin frontend's address,
+  // not the S3 listener. An empty value ABORTS startup.
+  "gatewayUrl": "https://127.0.0.1:9708",
+
+  // Trusted CA bundle (PEM) the console uses to verify the gateway's
+  // SERVER certificate (it is the TLS root for the gatewayUrl connection,
+  // not the CA the gateway uses to verify clients). On a self-signed
+  // gateway deployment this is the gateway's own server certificate file
+  // (the one named certFile in the gateway's config.json). An empty value
+  // ABORTS startup.
+  "caFile": "/path/to/gateway-server-cert.pem",
+
+  // The console's OWN client certificate and private key, presented to the
+  // gateway over mTLS. These are the console's identity TO the gateway -
+  // they are NOT the same thing as certFile/keyFile below, which are the
+  // console's identity to the BROWSER. An empty value ABORTS startup.
+  "clientCert": "/path/to/admin-client.pem",
+  "clientKey": "/path/to/admin-client-key.pem",
+
+  // The operator's shared secret, exchanged at sign-in for an in-memory
+  // session. Use a LONG RANDOM string (for example `openssl rand -hex 32`);
+  // an empty value ABORTS startup - the console is never unauthenticated.
+  "operatorToken": "a long random string",
+
+  // OPTIONAL listener certificate pair for the CONSOLE itself (its own TLS
+  // server certificate, distinct from clientCert/clientKey above). Both set
+  // means the console serves HTTPS (TLS 1.2 minimum) and every session
+  // cookie is Secure. Neither set means plain HTTP, which is allowed ONLY on
+  // a loopback listener and then makes allowNonLoopback a startup abort.
+  // Set them together or not at all; one without the other aborts startup.
+  "certFile": "/path/to/console-cert.pem",
+  "keyFile": "/path/to/console-key.pem",
+
+  // Opt out of the loopback guard (default false). true permits a
+  // non-loopback listenAddr but REQUIRES certFile and keyFile - the console
+  // never serves plain HTTP off-host, so with them unset this is a startup
+  // abort. Exposing the console on a public address is a deliberate choice:
+  // it holds the gateway's administrative credential.
+  "allowNonLoopback": false
+}

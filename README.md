@@ -14,7 +14,7 @@
 
 zeta-object speaks the S3 protocol and stores your data where you can see it: plain files, in your directories, on your filesystems. Where every other object server buries your data in its own opaque store, zeta-object treats your filesystem as the source of truth - and adds capabilities no cloud S3 can offer, because only a filesystem co-located with your data can offer them.
 
-- **One static binary.** No database, no etcd, no external services. `make build`, run it, done.
+- **Small static binaries.** The gateway is one static binary; an optional second binary serves the web console. No database, no etcd, no external services. `make build`, run it, done.
 - **Zero-format storage.** Objects are plain files; metadata is a JSON sidecar. Your data is readable with `cat` and `ls` with the server stopped. Point a bucket at `/var/log`, a ZFS dataset, an NFS mount, or a directory of symlinks and it is an S3 bucket *now*.
 - **Standard, verified wire compatibility.** AWS CLI, boto3, and mc work against it - proven by an interop e2e suite and a ceph/s3-tests ratchet, not by marketing.
 - **Protocol-flexible by design.** A pluggable frontend/backend architecture (S3, WebDAV, FTP/FTPS, SFTP, and ownCloud all shipped) over a neutral object model - one implementation per protocol and per storage, not one per combination.
@@ -28,7 +28,7 @@ Most "S3-compatible" servers are the same idea restated: a service that owns a b
 2. **Existing directories become S3 buckets with zero migration.** Bucket `logs` at `/var/log` means the decade of log files already on disk is immediately listable, downloadable, and presign-able over S3 - byte-for-byte, no import, no copy. Symlinks are followed, so a bucket can live anywhere.
 3. **Filesystem capabilities become S3 capabilities.** When a bucket sits on a ZFS dataset polled by the zmetad daemon (per-dataset file-op history exported to SQLite), zeta-object serves `GET /<bucket>?events` and `GET /<bucket>?versions` derived from the kernel's own record of what happened to each file - create, rename, truncate, delete - with loss indicators. No hosted S3 offers object history; no opaque object server can borrow it from the filesystem. When the filesystem does not support it, the capability is simply absent (a clean 503), never faked.
 4. **Pluggable on both axes, honest about semantics.** Frontends (client protocols) and backends (storage) plug into one neutral object model, and the seams reject what a protocol cannot express instead of silently emulating it. A parity gate proves an enabled metadata provider changes nothing about core S3 responses.
-5. **Small enough to read, hardened enough to trust.** One Go binary, a tiny audited dependency set (all licenses in docs/licenses/), and a gate wall: 1100+ unit test functions, a 703+-assert e2e suite over 35 cases, race detector, fuzzing, ceph/s3-tests conformance ratchet, staticcheck/gosec, and a pre-commit chain that enforces all of it. The codebase is small enough that an afternoon of reading covers every line that touches your data.
+5. **Small enough to read, hardened enough to trust.** Two small Go binaries (the gateway plus the optional web console), a tiny audited dependency set (all licenses in docs/licenses/), and a gate wall: 1100+ unit test functions, a 703+-assert e2e suite over 35 cases, race detector, fuzzing, ceph/s3-tests conformance ratchet, staticcheck/gosec, and a pre-commit chain that enforces all of it. The codebase is small enough that an afternoon of reading covers every line that touches your data.
 
 The honest, per-operation capability matrix for every protocol — what is implemented, what degrades and how, what is absent — lives in [docs/protocol-compatibility.md](docs/protocol-compatibility.md). The per-operation **S3 behavior contract** (request/response shapes, error codes, and every deliberate divergence from AWS S3, maintained under the upstream-zfs documentation contract): [docs/s3-behavior.md](docs/s3-behavior.md).
 
@@ -57,13 +57,15 @@ The honest, per-operation capability matrix for every protocol — what is imple
 
 **Management API** - a separate loopback-bound listener authenticated by a TLS client certificate (mTLS), serving a JSON surface (not S3 XML) to read server state, change configuration at runtime, persist it, inspect and manage buckets, reload identities and the client CA, and purge metadata history; dataset destruction stays a host-level operator action. See [Management API](#management-api).
 
+**Web console** - a separate, loopback-bound binary (`zeta-object-admin`) serving a browser UI over the management surface. It holds the gateway's administrative client certificate so the browser never has to, proxies every management route one-to-one under `/api`, and keeps no state on disk. See [Web console](#web-console).
+
 **Gateway architecture** - `backends` config selects storage per bucket (filesystem today; the seam carries a 17-subtest conformance suite every backend must pass); `frontends` config selects client protocols with optional dedicated TLS listeners; unknown backend/frontend types fail startup loudly, never silently.
 
 ## Quickstart
 
 ```bash
 make hooks        # one-time: install git hooks (pre-commit quality gates)
-make build        # compile ./zeta-object-server
+make build        # compile both binaries (./zeta-object-server and ./zeta-object-admin)
 make certs        # generate self-signed certs/ (SAN: localhost, 127.0.0.1) if missing
 make run          # start the server (HTTPS on :8443)
 ```
@@ -355,6 +357,46 @@ runtime config view) and never touches the config `buckets` map, so it
 does **not** turn an auto-provisioned bucket into a custom one: the bucket
 keeps its lifecycle and stays creatable/deletable through the API. An
 absent bucket answers `404 NoSuchBucket`; invalid input answers `400`.
+
+## Web console
+
+zeta-object ships a web console: a **separate process** that serves a browser UI and proxies the gateway's [Management API](#management-api) one-to-one. It is a second binary (`zeta-object-admin`), built by the same `make build`. Its `/api/...` routes mirror the management routes exactly - same methods, same JSON bodies, the same status codes and error envelope - and it adds no operations of its own.
+
+### Why it is a separate process
+
+The management API is authenticated by a TLS client certificate (mTLS). A browser cannot be expected to hold and present a client certificate, so the console holds it instead (`clientCert`/`clientKey` plus the trusted `caFile`) and the browser authenticates with an operator token. The console binds loopback by default, exactly like the management listener.
+
+### Running it
+
+```bash
+make build    # builds both ./zeta-object-server and ./zeta-object-admin
+./zeta-object-admin
+```
+
+The console reads its **own** config file, separate from the gateway's `config.json`. The default is `admin-config.json`; override the path with `ZETAOBJECT_ADMIN_CONFIG`. See `config.admin-server.example.json` for every key.
+
+### Sign-in
+
+The console serves a sign-in page at `/login`. The operator token (`operatorToken` in the console config) is exchanged for an in-memory session cookie plus a CSRF token; every `/api/...` call carries that cookie and, for a mutating request, the CSRF header. Only the sign-in page and the static assets need no session.
+
+### The four tabs
+
+- **Dashboard** - server status: version, uptime, listeners, frontends, backends, restart-required keys, and metadata-provider availability.
+- **Configuration** - the effective configuration, editable; save it back to the gateway's config file atomically, and see which changes need a restart.
+- **Buckets** - list, inspect, create, and delete buckets (plain directories only; a dataset-backed bucket reports the refusal reason) and edit per-bucket tunables.
+- **Danger zone** - the metadata history purge.
+
+### Theme
+
+The console's theme tokens are derived from the project logo palette. Dark is the default (the logo is a dark field); a light toggle reuses the same accent, so both read as the same product. The choice is remembered in the browser's `localStorage` only.
+
+### What is honest about it
+
+- **Loopback by default.** The listen address must resolve to a loopback address unless `allowNonLoopback` is true in the console config.
+- **No state on disk.** The console writes nothing persistent: the session lives in memory and the theme choice lives in the browser.
+- **Sessions die on restart.** The session-signing key is generated per process start, so restarting the console invalidates every session.
+- **The purge is the only irreversible action.** The Danger zone requires typing the dataset name to confirm a purge; every other action in the UI is recoverable or reports why it is refused.
+- **TLS mode.** With `certFile` and `keyFile` set, the console serves HTTPS and its cookies are `Secure`. With neither set it serves plain HTTP, which is allowed only on a loopback listener and makes `allowNonLoopback` a startup abort. Set the certificate pair unless the console is only ever reached on loopback.
 
 ## Configuration
 
@@ -917,8 +959,8 @@ internal/
 ## Building and Running
 
 ```bash
-make build    # compile ./zeta-object-server
-make run      # build + start (HTTPS on :8443)
+make build    # compile both binaries (./zeta-object-server and ./zeta-object-admin)
+make run      # build + start the gateway (HTTPS on :8443)
 make clean    # remove build artifacts
 ```
 
