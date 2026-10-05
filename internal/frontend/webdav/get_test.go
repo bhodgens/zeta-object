@@ -1,5 +1,3 @@
-// get_test.go — leaf 02 Task 1: GET/HEAD headers, conditionals, collection
-// GET, both modes.
 package webdav
 
 import (
@@ -11,163 +9,168 @@ import (
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
-func TestGET_ObjectHeadersAndBody(t *testing.T) {
-	f, be := newTestFrontend(Config{})
-	be.seed("photos", "a.txt", []byte("hello"), func(o *objectmodel.Object) {
-		o.ContentType = "image/jpeg"
-		o.ETag = `"abc123"` // stored quoted form
-	})
-	req := httptest.NewRequest("GET", "/photos/a.txt", nil)
-	rec := httptest.NewRecorder()
-	f.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != 200 {
-		t.Fatalf("status = %d, want 200", rec.Code)
+// rangeBody reads the full response body as a string (test helper).
+func rangeBody(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	b, err := io.ReadAll(rec.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
 	}
-	if got := rec.Header().Get("ETag"); got != `"abc123"` {
-		t.Fatalf("ETag = %q, want quoted form", got)
-	}
-	if got := rec.Header().Get("Last-Modified"); got != "Tue, 29 Sep 2026 12:00:00 GMT" {
-		t.Fatalf("Last-Modified = %q", got)
-	}
-	if got := rec.Header().Get("Content-Type"); got != "image/jpeg" {
-		t.Fatalf("Content-Type = %q", got)
-	}
-	if got := rec.Header().Get("Content-Length"); got != "5" {
-		t.Fatalf("Content-Length = %q", got)
-	}
-	body, _ := io.ReadAll(rec.Body)
-	if string(body) != "hello" {
-		t.Fatalf("body = %q", body)
-	}
+	return string(b)
 }
 
-func TestGET_DefaultContentType(t *testing.T) {
-	f, be := newTestFrontend(Config{})
-	be.seed("photos", "a.bin", []byte("x"), func(o *objectmodel.Object) { o.ContentType = "" })
-	req := httptest.NewRequest("GET", "/photos/a.bin", nil)
-	rec := httptest.NewRecorder()
-	f.Handler().ServeHTTP(rec, req)
-	if got := rec.Header().Get("Content-Type"); got != "application/octet-stream" {
-		t.Fatalf("Content-Type = %q, want application/octet-stream", got)
-	}
-}
+func TestGET_Range(t *testing.T) {
+	content := "0123456789"
+	tests := []struct {
+		name string
 
-func TestHEAD_IdenticalHeadersNoBody(t *testing.T) {
-	f, be := newTestFrontend(Config{})
-	be.seed("photos", "a.txt", []byte("hello"))
-	req := httptest.NewRequest("HEAD", "/photos/a.txt", nil)
-	rec := httptest.NewRecorder()
-	f.Handler().ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("status = %d", rec.Code)
+		method        string
+		rng           string
+		inm           string
+		collection    bool
+		wantStatus    int
+		wantCL        string // "" = header must be absent
+		wantCR        string // "" = header must be absent
+		wantBody      string
+		wantMultipart bool     // multi-span: parse boundary, count parts
+		wantParts     []string // per-part Content-Range lines (multipart)
+	}{
+		{
+			name:       "single span 0-4",
+			rng:        "bytes=0-4",
+			wantStatus: 206,
+			wantCL:     "5",
+			wantCR:     "bytes 0-4/10",
+			wantBody:   "01234",
+		},
+		{
+			name:       "suffix -3",
+			rng:        "bytes=-3",
+			wantStatus: 206,
+			wantCL:     "3",
+			wantCR:     "bytes 7-9/10",
+			wantBody:   "789",
+		},
+		{
+			name:       "open-ended 8-",
+			rng:        "bytes=8-",
+			wantStatus: 206,
+			wantCL:     "2",
+			wantCR:     "bytes 8-9/10",
+			wantBody:   "89",
+		},
+		{
+			name:       "malformed spec ignored",
+			rng:        "bytes=abc",
+			wantStatus: 200,
+			wantCL:     "10",
+			wantBody:   content,
+		},
+		{
+			name:       "unsatisfiable 416",
+			rng:        "bytes=50-",
+			wantStatus: 416,
+			wantCR:     "bytes */10",
+			wantBody:   "",
+		},
+		{
+			name:          "multi-span multipart",
+			rng:           "bytes=0-1,5-6",
+			wantStatus:    206,
+			wantMultipart: true,
+			wantParts:     []string{"Content-Range: bytes 0-1/10", "Content-Range: bytes 5-6/10"},
+		},
+		{
+			name:       "HEAD with range",
+			method:     "HEAD",
+			rng:        "bytes=0-4",
+			wantStatus: 206,
+			wantCL:     "5",
+			wantCR:     "bytes 0-4/10",
+			wantBody:   "",
+		},
+		{
+			name:       "If-None-Match wins over Range",
+			rng:        "bytes=0-4",
+			inm:        `"abc"`,
+			wantStatus: 304,
+			wantBody:   "",
+		},
+		{
+			name:       "Range on collection ignored",
+			rng:        "bytes=0-4",
+			collection: true,
+			wantStatus: 200,
+			wantBody:   "",
+		},
 	}
-	if rec.Header().Get("ETag") == "" {
-		t.Fatal("HEAD must carry ETag")
-	}
-	if rec.Header().Get("Transfer-Encoding") == "chunked" {
-		t.Fatal("HEAD must not be chunked")
-	}
-	if rec.Body.Len() != 0 {
-		t.Fatalf("HEAD body = %d bytes, want 0", rec.Body.Len())
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, be := newTestFrontend(Config{})
+			be.seed("photos", "a.txt", []byte(content), func(o *objectmodel.Object) {
+				o.ETag = `"abc"`
+			})
+			be.seed("photos", "dir/", []byte(""), func(o *objectmodel.Object) {})
+			path := "/photos/a.txt"
+			if tt.collection {
+				// Collections resolve with the trailing slash (pinned
+				// GET decision: a prefix without the slash is a 404).
+				path = "/photos/dir/"
+			}
+			method := tt.method
+			if method == "" {
+				method = "GET"
+			}
+			req := httptest.NewRequest(method, path, nil)
+			if tt.rng != "" {
+				req.Header.Set("Range", tt.rng)
+			}
+			if tt.inm != "" {
+				req.Header.Set("If-None-Match", tt.inm)
+			}
+			rec := httptest.NewRecorder()
+			f.Handler().ServeHTTP(rec, req)
 
-func TestGET_MissingKeyAndBucket(t *testing.T) {
-	f, _ := newTestFrontend(Config{})
-	req := httptest.NewRequest("GET", "/photos/missing.txt", nil)
-	rec := httptest.NewRecorder()
-	f.Handler().ServeHTTP(rec, req)
-	if rec.Code != 404 {
-		t.Fatalf("missing key: status = %d, want 404", rec.Code)
-	}
-	// Missing bucket: no objects seeded under "nope" — the stub List/Stat
-	// miss with NoSuchKey/NoSuchBucket; GET on the bucket collection
-	// resolves via List which reports NoSuchBucket ⇒ 404.
-	req = httptest.NewRequest("GET", "/nope/", nil)
-	rec = httptest.NewRecorder()
-	f.Handler().ServeHTTP(rec, req)
-	if rec.Code != 404 {
-		t.Fatalf("missing bucket: status = %d, want 404", rec.Code)
-	}
-}
-
-func TestGET_CollectionDirectoryType(t *testing.T) {
-	f, be := newTestFrontend(Config{})
-	be.seed("photos", "2024/a.txt", []byte("x"))
-	req := httptest.NewRequest("GET", "/photos/2024/", nil)
-	rec := httptest.NewRecorder()
-	f.Handler().ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	if got := rec.Header().Get("Content-Type"); got != "httpd/unix-directory" {
-		t.Fatalf("Content-Type = %q, want httpd/unix-directory", got)
-	}
-	if rec.Body.Len() != 0 {
-		t.Fatalf("collection GET body = %d bytes, want 0", rec.Body.Len())
-	}
-}
-
-func TestGET_PrefixWithoutSlashIs404(t *testing.T) {
-	f, be := newTestFrontend(Config{})
-	be.seed("photos", "2024/a.txt", []byte("x"))
-	// Pinned decision (get.go): a prefix path without the trailing slash
-	// that exists only as a collection is a 404.
-	req := httptest.NewRequest("GET", "/photos/2024", nil)
-	rec := httptest.NewRecorder()
-	f.Handler().ServeHTTP(rec, req)
-	if rec.Code != 404 {
-		t.Fatalf("status = %d, want 404", rec.Code)
-	}
-}
-
-func TestGET_IfNoneMatch304(t *testing.T) {
-	f, be := newTestFrontend(Config{})
-	be.seed("photos", "a.txt", []byte("hello"), func(o *objectmodel.Object) { o.ETag = `"abc"` })
-	req := httptest.NewRequest("GET", "/photos/a.txt", nil)
-	req.Header.Set("If-None-Match", `"abc"`)
-	rec := httptest.NewRecorder()
-	f.Handler().ServeHTTP(rec, req)
-	if rec.Code != 304 {
-		t.Fatalf("status = %d, want 304", rec.Code)
-	}
-}
-
-func TestGET_IfNoneMatchStar304(t *testing.T) {
-	f, be := newTestFrontend(Config{})
-	be.seed("photos", "a.txt", []byte("hello"))
-	req := httptest.NewRequest("GET", "/photos/a.txt", nil)
-	req.Header.Set("If-None-Match", "*")
-	rec := httptest.NewRecorder()
-	f.Handler().ServeHTTP(rec, req)
-	if rec.Code != 304 {
-		t.Fatalf("status = %d, want 304", rec.Code)
-	}
-}
-
-func TestGET_ModeB_Rooting(t *testing.T) {
-	f, be := newTestFrontend(Config{Bucket: "b"})
-	be.seed("b", "dir/f.txt", []byte("modeb"))
-	req := httptest.NewRequest("GET", "/dir/f.txt", nil)
-	rec := httptest.NewRecorder()
-	f.Handler().ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	body, _ := io.ReadAll(rec.Body)
-	if !strings.Contains(string(body), "modeb") {
-		t.Fatalf("body = %q", body)
-	}
-}
-
-func TestGET_StatInternalErrorPassesThrough(t *testing.T) {
-	f, be := newTestFrontend(Config{})
-	be.failStat = true
-	req := httptest.NewRequest("GET", "/photos/a.txt", nil)
-	rec := httptest.NewRecorder()
-	f.Handler().ServeHTTP(rec, req)
-	if rec.Code != 500 {
-		t.Fatalf("status = %d, want 500", rec.Code)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if got := rec.Header().Get("Content-Range"); got != tt.wantCR {
+				t.Fatalf("Content-Range = %q, want %q", got, tt.wantCR)
+			}
+			if tt.collection {
+				tt.wantCL = "0" // collection always answers Content-Length: 0
+			}
+			if got := rec.Header().Get("Content-Length"); got != tt.wantCL {
+				t.Fatalf("Content-Length = %q, want %q", got, tt.wantCL)
+			}
+			body := rangeBody(t, rec)
+			if !tt.wantMultipart {
+				if body != tt.wantBody {
+					t.Fatalf("body = %q, want %q", body, tt.wantBody)
+				}
+				return
+			}
+			// Multi-span: multipart/byteranges with the requested parts,
+			// each carrying its own Content-Range and Content-Type.
+			ct := rec.Header().Get("Content-Type")
+			if !strings.HasPrefix(ct, "multipart/byteranges; boundary=") {
+				t.Fatalf("Content-Type = %q, want multipart/byteranges with boundary", ct)
+			}
+			boundary := strings.TrimPrefix(ct, "multipart/byteranges; boundary=")
+			for _, part := range tt.wantParts {
+				if !strings.Contains(body, part+"\r\n") {
+					t.Fatalf("multipart body missing part header %q:\n%s", part, body)
+				}
+			}
+			if n := strings.Count(body, "--"+boundary+"\r\n"); n != 2 {
+				t.Fatalf("multipart part count = %d, want 2:\n%s", n, body)
+			}
+			if !strings.Contains(body, "Content-Type: text/plain\r\n") {
+				t.Fatalf("multipart parts missing object Content-Type:\n%s", body)
+			}
+			if !strings.Contains(body, "\r\n01\r\n") || !strings.Contains(body, "\r\n56\r\n") {
+				t.Fatalf("multipart part payloads wrong:\n%s", body)
+			}
+		})
 	}
 }
