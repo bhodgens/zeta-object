@@ -281,10 +281,10 @@ Output: APPROVED or list of specific gaps.
 | 01-console-skeleton-auth | COMPLETE | 1 | 5c28f22; plain-HTTP+cookie-Secure defect found -> folded into leaf 05 |
 | 02-gateway-client | COMPLETE | 1 | 76590ab (also carries the web assets: a failed attempt left them staged) |
 | 03-ui-shell-theme | COMPLETE | 1 | in 76590ab; shell hooks verified in parent |
-| 04-ui-screens | IN_PROGRESS | 0 | dispatched (Group B) |
-| 05-proxy-routes | IN_PROGRESS | 0 | dispatched (Group B), scope now includes the console TLS/cookie policy |
-| 06-docs | PENDING | 0 | |
-| 07-e2e-case-36 | PENDING | 0 | |
+| 04-ui-screens | COMPLETE | 1 | 3cb4cf5; screens under web/assets/screens; it also caught the asset-layout 404 |
+| 05-proxy-routes | COMPLETE | 1 | 038d9cc; TLS/cookie policy done + smoke-verified by parent; asset layout fix 4a7cd15 |
+| 06-docs | IN_PROGRESS | 0 | dispatched (Group C) |
+| 07-e2e-case-36 | IN_PROGRESS | 0 | dispatched (Group C) |
 
 Status values: PENDING | IN_PROGRESS | IMPLEMENTED | REVIEWED | COMPLETE | BLOCKED
 
