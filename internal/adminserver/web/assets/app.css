@@ -1,7 +1,7 @@
 /* zeta-object admin console - hand-written styles, no framework, system fonts only. */
 
 :root {
-  /* Contract 4: theme tokens derived from logo-icon.png */
+  /* Contract 4: theme tokens derived from the project logo palette */
   --bg: #05080f;
   --surface: #0b1421;
   --surface-2: #12202f;

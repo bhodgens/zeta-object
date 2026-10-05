@@ -5,7 +5,7 @@
 <p align="center">
   <img src="logo-icon.png" alt="zeta-object icon: glowing hexagonal Z emblem" width="96">
   <br>
-  <sub>Square icon variant (<code>logo-icon.png</code>) for favicons and avatars.</sub>
+  <sub>Square icon variant (<code>logo-icon.png</code>) for avatars and other external use. Nothing in the repo serves a favicon.</sub>
 </p>
 
 # zeta-object
@@ -388,7 +388,7 @@ The console serves a sign-in page at `/login`. The operator token (`operatorToke
 
 ### Theme
 
-The console's theme tokens are derived from the project logo palette. Dark is the default (the logo is a dark field); a light toggle reuses the same accent, so both read as the same product. The choice is remembered in the browser's `localStorage` only.
+The console's theme tokens are derived from the project logo palette. Dark is the default (the logo is a dark field); a light toggle reuses the same accent, so both read as the same product. The choice is remembered in the browser's `localStorage` only. The console bundles no image assets and serves no favicon: the branding is the product name plus the theme, so there is no binary asset to cache, rotate or keep in sync.
 
 ### What is honest about it
 
