@@ -474,7 +474,7 @@ Output: APPROVED or list of specific gaps.
 | 06-zfs-read-surfaces | COMPLETE | 1 | parent-verified: 19 pkgs ok, parity PASS, lint 0; bridge exports HandleBucketEvents/ObjectEvents/ObjectVersions + JSON types; file-versions JSON is new (s3 is XML) - same derivation; HEAD mirrors GET |
 | 07-batch-ops | COMPLETE | 1 | 5fb1cbb; parent re-ran all gates + FULL make e2e 837/837 (see ea00493 fix); versioning-per-item pinned; move semantics pinned; DeleteObjects keeps S3 missing-key semantics |
 | 03-e2e-case-docs | COMPLETE | 1 | 93a1477 (server fixes: Alt-Svc never applied - mounts=nil; h3 bucket key) + 59b4192 (case 38 + docs); parent e2e 842/842; probe 16 asserts; 0 em-dashes in added lines |
-| 04-live-validation | PENDING | | |
+| 04-live-validation | COMPLETE | 4 | 1a884a0; 167/167 PASS (90+33+17+27 incl. new H3 27/27); cleanup verified; NO server bugs; probe +fetch mode (additive, e2e re-verified 842/842); fix cycles 4 - all harness-side |
 
 Status values: PENDING | IN_PROGRESS | IMPLEMENTED | REVIEWED | COMPLETE | BLOCKED
 
@@ -497,6 +497,10 @@ Status values: PENDING | IN_PROGRESS | IMPLEMENTED | REVIEWED | COMPLETE | BLOCK
 Run: `python3 ~/.hermes/skills/software-development/hierarchical-planning/scripts/check_template_compliance.py docs/plans --strict-leaves`
 (against `docs/plans` - the PARENT; a flat-leaf tree scanned alone is
 misread as a forest root).
+
+## Tree Closure (2026-10-05)
+
+All 7 leaves COMPLETE. Integration review (parent): make test 79.3% aggregate, make lint NEW_FROM_REV=HEAD 0, make e2e 842/842, make parity-test PASS, live zfs-validate 167/167, frozen seams (backend.go/metadata.go/Frontend interface) diff-empty, zero line-number corruption. Two mid-tree regressions caught and fixed: QUIC classification structural-satisfaction (ea00493), Alt-Svc never applied + h3 bucket key (93a1477).
 
 ## Open Questions
 
