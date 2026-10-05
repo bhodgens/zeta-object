@@ -66,3 +66,18 @@ type TLSListenerFrontend interface {
 	// (ClientCAs, ClientAuth, Certificates) survive.
 	TLSConfig() (*tls.Config, error)
 }
+
+// QUICListenerFrontend is an OPTIONAL extension for frontends served
+// over QUIC (HTTP/3). The caller (package main) opens a UDP socket on
+// Addr() and serves HTTP/3 with the pre-built TLS config from
+// TLSConfig(). The precedent is TLSListenerFrontend above it.
+type QUICListenerFrontend interface {
+	Frontend
+	// Addr returns this frontend's dedicated UDP listen address from
+	// its config ("" => config error, rejected at construction). An
+	// empty address is NEVER a shared-mux fallback.
+	Addr() string
+	// TLSConfig returns the QUIC listener's TLS configuration, built
+	// from the process cert pair. The caller uses it as-is.
+	TLSConfig() (*tls.Config, error)
+}

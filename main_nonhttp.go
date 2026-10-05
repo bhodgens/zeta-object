@@ -2,9 +2,13 @@
 // main() (sftp-ftp-2026-09 leaf 01 Contract A): NonHTTPFrontend entries get
 // a raw net.Listener + Serve goroutine instead of an http.Server, tracked
 // alongside the HTTP dedicated listeners for the same graceful-shutdown fan.
+// quic-h3-2026-10 leaf 02: QUICListenerFrontend specs get a UDP packet conn
+// + quic-go HTTP/3 server (never the TCP ListenAndServeTLS path), tracked in
+// the same graceful-stop fan.
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -12,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/bhodgens/zeta-object/internal/frontend"
+	h3 "github.com/bhodgens/zeta-object/internal/frontend/h3"
 )
 
 // nonHTTPServer pairs a NonHTTPFrontend with its already-bound listener.
@@ -21,14 +26,36 @@ type nonHTTPServer struct {
 	addr string
 }
 
+// quicServer pairs an h3 HTTP/3 server with the frontend that owns it
+// (quic-h3-2026-10 leaf 02): started via Serve, drained via Close in the
+// same graceful-stop fan as the TCP listeners.
+type quicServer struct {
+	frontend frontend.QUICListenerFrontend
+	srv      *h3.Server
+	addr     string
+}
+
 // buildDedicatedListeners splits the dedicated-listener specs into
-// http.Server entries (default cert/key pair) and non-HTTP frontends with
-// their bound net.Listeners. A bind failure aborts startup loudly (same
-// semantic as the default listener's ListenAndServeTLS failure).
-func buildDedicatedListeners(listeners []listenerSpec) ([]*http.Server, []nonHTTPServer) {
+// http.Server entries (default cert/key pair), non-HTTP frontends with
+// their bound net.Listeners, and QUIC/HTTP-3 servers on UDP. A bind failure
+// aborts startup loudly (same semantic as the default listener's
+// ListenAndServeTLS failure).
+func buildDedicatedListeners(listeners []listenerSpec) ([]*http.Server, []nonHTTPServer, []quicServer) {
 	var extra []*http.Server
 	var nonHTTP []nonHTTPServer
+	var quic []quicServer
 	for _, ls := range listeners {
+		// A QUICListenerFrontend is served on UDP via quic-go with its
+		// pre-built TLS config. NEVER through the TCP ListenAndServeTLS
+		// path (quic-h3-2026-10 leaf 02 Contract 2).
+		if q, ok := ls.frontend.(frontend.QUICListenerFrontend); ok {
+			w, err := h3Listen(q)
+			if err != nil {
+				quitQUIC("QUIC frontend %s listener on %s failed to bind: %v", q.Name(), ls.addr, err)
+			}
+			quic = append(quic, quicServer{frontend: q, srv: w, addr: ls.addr})
+			continue
+		}
 		if nh, ok := ls.frontend.(frontend.NonHTTPFrontend); ok {
 			l, err := net.Listen("tcp", ls.addr)
 			if err != nil {
@@ -48,7 +75,24 @@ func buildDedicatedListeners(listeners []listenerSpec) ([]*http.Server, []nonHTT
 		}
 		extra = append(extra, srv)
 	}
-	return extra, nonHTTP
+	return extra, nonHTTP, quic
+}
+
+// quitQUIC is the process-exit seam for a QUIC bind failure (main calls
+// log.Fatalf; tests swap it so the loud-failure path is assertable without
+// killing the test binary).
+var quitQUIC = log.Fatalf
+
+// h3Listen opens the UDP/QUIC listener for one QUICListenerFrontend. The
+// concrete type is the h3 package's frontend; the seam interface keeps the
+// buildDedicatedListeners table honest (a foreign QUICListenerFrontend is a
+// construction error, loud at startup).
+func h3Listen(q frontend.QUICListenerFrontend) (*h3.Server, error) {
+	hf, ok := q.(*h3.Frontend)
+	if !ok {
+		return nil, fmt.Errorf("frontend %q implements QUICListenerFrontend but is not the h3 frontend (%T) — no QUIC serving path exists for it", q.Name(), q)
+	}
+	return hf.Listen()
 }
 
 // startNonHTTPFrontend launches one NonHTTPFrontend's Serve goroutine.
@@ -63,6 +107,18 @@ func startNonHTTPFrontend(s nonHTTPServer, serverErr chan error) {
 	}()
 }
 
+// startQUICFrontend launches one HTTP/3 server's Serve goroutine
+// (quic-h3-2026-10 leaf 02). ServeListener returns http.ErrServerClosed on
+// graceful close; only an unexpected error surfaces (bughunt C5 semantics).
+func startQUICFrontend(s quicServer, serverErr chan error) {
+	go func() {
+		log.Printf("Starting HTTP/3 frontend %s on %s (QUIC, UDP)", s.frontend.Name(), s.addr)
+		if err := s.srv.Serve(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- fmt.Errorf("HTTP/3 frontend %s on %s: %w", s.frontend.Name(), s.addr, err)
+		}
+	}()
+}
+
 // drainNonHTTPFrontends stops every non-HTTP frontend in the shared
 // graceful-shutdown fan (Stop: stop accepting, close sessions).
 func drainNonHTTPFrontends(servers []nonHTTPServer, wg *sync.WaitGroup) {
@@ -72,6 +128,22 @@ func drainNonHTTPFrontends(servers []nonHTTPServer, wg *sync.WaitGroup) {
 			defer wg.Done()
 			if err := s.nh.Stop(); err != nil {
 				log.Printf("Non-HTTP frontend %s shutdown failed: %v", s.nh.Name(), err)
+			}
+		}(s)
+	}
+}
+
+// drainQUICFrontends closes every HTTP/3 server in the same
+// graceful-shutdown fan: stop accepting (GOAWAY to connected clients), then
+// close the QUIC listener and the UDP socket (quic-h3-2026-10 leaf 02: the
+// harness must not leak UDP fds).
+func drainQUICFrontends(servers []quicServer, wg *sync.WaitGroup) {
+	for _, s := range servers {
+		wg.Add(1)
+		go func(s quicServer) {
+			defer wg.Done()
+			if err := s.srv.Close(); err != nil {
+				log.Printf("HTTP/3 frontend %s shutdown failed: %v", s.frontend.Name(), err)
 			}
 		}(s)
 	}

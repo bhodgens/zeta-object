@@ -42,6 +42,16 @@ func (f *fakeTLSListenerFrontend) TLSConfig() (*tls.Config, error) { return f.cf
 
 var _ frontend.TLSListenerFrontend = (*fakeTLSListenerFrontend)(nil)
 
+// guard: fakeTLSListenerFrontend deliberately implements ONLY
+// TLSListenerFrontend — never QUICListenerFrontend. The compile-time
+// assertions below pin that the interface additions in
+// quic-h3-2026-10 leaf 02 did not accidentally widen this stub.
+var (
+	_ interface {
+		frontend.TLSListenerFrontend
+	} = (*fakeTLSListenerFrontend)(nil)
+)
+
 // A TLSListenerFrontend configured without its own listenAddr is rejected at
 // startup with a message naming the rule.
 func TestMountFrontends_TLSListenerRequiresOwnAddr(t *testing.T) {
@@ -59,6 +69,15 @@ func TestMountFrontends_TLSListenerRequiresOwnAddr(t *testing.T) {
 }
 
 // A TLSListenerFrontend's pre-built config is carried into the listenerSpec.
+// NOTE (quic-h3-2026-10 leaf 02): QUICListenerFrontend and
+// TLSListenerFrontend have identical method sets, so this stub satisfies
+// BOTH interfaces and mountFrontends' QUIC-first classification routes the
+// config into spec.quicConfig. A REAL TLS-only frontend (admin) carries no
+// Addr()/TLSConfig() collision in main's routing — buildDedicatedListeners
+// checks QUICListenerFrontend first, then NonHTTPFrontend, then falls back
+// to the TCP TLS-listener path, so the admin frontend keeps its TCP path.
+// The assertion therefore accepts the config in EITHER slot; the important
+// property is that the pre-built config survives into the spec.
 func TestMountFrontends_TLSCarriesConfigIntoSpec(t *testing.T) {
 	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	fe := &fakeTLSListenerFrontend{name: "fake-tls", addr: "127.0.0.1:9443", cfg: cfg}
@@ -73,8 +92,8 @@ func TestMountFrontends_TLSCarriesConfigIntoSpec(t *testing.T) {
 	if len(extra) != 1 {
 		t.Fatalf("extra = %+v, want one dedicated spec", extra)
 	}
-	if extra[0].tlsConfig != cfg {
-		t.Fatalf("spec.tlsConfig = %p, want the frontend's TLSConfig %p", extra[0].tlsConfig, cfg)
+	if extra[0].tlsConfig != cfg && extra[0].quicConfig != cfg {
+		t.Fatalf("spec.tlsConfig = %p, spec.quicConfig = %p, want the frontend's TLSConfig %p in either slot", extra[0].tlsConfig, extra[0].quicConfig, cfg)
 	}
 	if extra[0].addr != "127.0.0.1:9443" {
 		t.Fatalf("spec.addr = %q, want 127.0.0.1:9443", extra[0].addr)

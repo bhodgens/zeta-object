@@ -24,6 +24,7 @@ import (
 	"github.com/bhodgens/zeta-object/internal/frontend"
 	admin "github.com/bhodgens/zeta-object/internal/frontend/admin"
 	ftp "github.com/bhodgens/zeta-object/internal/frontend/ftp"
+	h3 "github.com/bhodgens/zeta-object/internal/frontend/h3"
 	"github.com/bhodgens/zeta-object/internal/frontend/owncloud"
 	s3 "github.com/bhodgens/zeta-object/internal/frontend/s3"
 	sftp "github.com/bhodgens/zeta-object/internal/frontend/sftp"
@@ -154,6 +155,25 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 			setAdminClientCAReloader(ca.ReloadClientCA)
 		}
 		return f, nil
+	},
+	// h3 is the HTTP/3 (QUIC) frontend (quic-h3-2026-10 leaf 02): it wraps
+	// a webdav frontend built with the SAME constructor options as the
+	// webdav entry above (single-bucket re-root, per-bucket lock store
+	// root) but authenticates with mTLS — the client certificate's Subject
+	// CN resolved through the identity registry (CertAuthenticator). The
+	// CA bundle is REQUIRED and read fail-loud. It owns a dedicated UDP
+	// listener (QUICListenerFrontend seam) served by quic-go in main.
+	"h3": func(cfg FrontendConfig, b backend.Backend, creds auth.CredentialSource) (frontend.Frontend, error) {
+		if err := validateOptions(cfg.Type, cfg.Options, h3.KnownOptionKeys); err != nil {
+			return nil, err
+		}
+		return h3.New(b, h3.Config{
+			ListenAddr:   cfg.ListenAddr,
+			Bucket:       cfg.Bucket,
+			ClientCAFile: cfg.Options["clientCAFile"],
+			CertFile:     serverConfig.CertFile,
+			KeyFile:      serverConfig.KeyFile,
+		}, identityRegistry, getBucketPath)
 	},
 }
 
@@ -305,6 +325,11 @@ type listenerSpec struct {
 	// configuration main must serve this listener with (client-certificate
 	// verification). A nil tlsConfig keeps the process-wide cert pair path.
 	tlsConfig *tls.Config
+	// quicConfig is non-nil only for a QUICListenerFrontend (HTTP/3): the
+	// pre-built TLS configuration for the UDP/QUIC listener (quic-h3-2026-10
+	// leaf 02 Contract 2). A QUIC-listener frontend is NEVER served through
+	// the TCP ListenAndServeTLS path — main's UDP branch consumes this.
+	quicConfig *tls.Config
 }
 
 // buildFrontends constructs each configured frontend, registers it, and
@@ -377,6 +402,16 @@ func buildFrontends(cfg []FrontendConfig, b backend.Backend, creds auth.Credenti
 func mountFrontends(mux *http.ServeMux, mounts []frontendMount) (shared []frontend.Frontend, extra []listenerSpec, err error) {
 	for _, m := range mounts {
 		if m.listenAddr == "" {
+			// A QUIC-listener frontend (HTTP/3) owns its dedicated UDP
+			// listener and its TLS configuration; without a listenAddr it
+			// would fall back to the shared mux — but an empty address is
+			// NEVER a shared-mux fallback for QUIC (quic-h3-2026-10 leaf 02
+			// Contract 2). Loud startup error naming the rule. Checked
+			// BEFORE the TLS-listener branch: a QUIC frontend must never
+			// be reported (or served) through the TCP TLS-listener path.
+			if q, ok := m.frontend.(frontend.QUICListenerFrontend); ok {
+				return nil, nil, fmt.Errorf("frontend %q requires its own listenAddr (a QUIC-listener frontend cannot share the default HTTPS mux)", q.Name())
+			}
 			// A TLS-listener frontend owns its dedicated listener and its
 			// TLS configuration; without a listenAddr it would fall back to
 			// the shared mux, silently dropping its mTLS settings. Loud
@@ -401,7 +436,16 @@ func mountFrontends(mux *http.ServeMux, mounts []frontendMount) (shared []fronte
 			continue
 		}
 		spec := listenerSpec{frontend: m.frontend, addr: m.listenAddr}
-		if tl, ok := m.frontend.(frontend.TLSListenerFrontend); ok {
+		if q, ok := m.frontend.(frontend.QUICListenerFrontend); ok {
+			cfg, err := q.TLSConfig()
+			if err != nil {
+				return nil, nil, fmt.Errorf("frontend %q: building QUIC listener config: %w", q.Name(), err)
+			}
+			spec.quicConfig = cfg
+		} else if tl, ok := m.frontend.(frontend.TLSListenerFrontend); ok {
+			// else-if: a QUIC-listener frontend is NEVER classified as a
+			// TCP TLS listener (its pre-built config goes to main's UDP
+			// branch only — quic-h3-2026-10 leaf 02 Contract 2).
 			cfg, err := tl.TLSConfig()
 			if err != nil {
 				return nil, nil, fmt.Errorf("frontend %q: building TLS listener config: %w", tl.Name(), err)

@@ -19,7 +19,9 @@ import (
 // function stays under the gocyclo gate; behavior is byte-identical to
 // the pre-split inline code (same ordering, same logging, same error
 // semantics — bughunt C5/C6 invariants preserved).
-func runServer(srv *http.Server, extraServers []*http.Server, nonHTTPServers []nonHTTPServer) {
+// quic-h3-2026-10 leaf 02: quicServers (HTTP/3 over UDP) start beside the
+// TCP listeners and drain in the same concurrent graceful-stop fan.
+func runServer(srv *http.Server, extraServers []*http.Server, nonHTTPServers []nonHTTPServer, quicServers []quicServer) {
 	// Graceful shutdown: SIGINT/SIGTERM stop accepting new connections and
 	// drain in-flight requests within serverShutdownTimeout (default
 	// listener first, then every dedicated-listener server).
@@ -67,6 +69,12 @@ func runServer(srv *http.Server, extraServers []*http.Server, nonHTTPServers []n
 	for _, nhs := range nonHTTPServers {
 		startNonHTTPFrontend(nhs, serverErr)
 	}
+	// HTTP/3 (QUIC) frontends start beside the TCP listeners; their Serve
+	// errors funnel into the same serverErr channel (bughunt C5 semantics:
+	// only an unexpected error surfaces; http.ErrServerClosed is swallowed).
+	for _, qs := range quicServers {
+		startQUICFrontend(qs, serverErr)
+	}
 
 	select {
 	case err := <-serverErr:
@@ -94,6 +102,10 @@ func runServer(srv *http.Server, extraServers []*http.Server, nonHTTPServers []n
 		// Non-HTTP frontends drain through their own Stop (graceful:
 		// stop accepting, close sessions) in the same concurrent fan.
 		drainNonHTTPFrontends(nonHTTPServers, &wg)
+		// HTTP/3 (QUIC) frontends drain through the same fan: stop
+		// accepting (GOAWAY), close the QUIC listener and UDP socket
+		// (quic-h3-2026-10 leaf 02: no leaked UDP fds).
+		drainQUICFrontends(quicServers, &wg)
 		wg.Wait()
 		for i, err := range errs {
 			if err != nil {
