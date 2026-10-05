@@ -43,7 +43,7 @@ Reading the columns:
 | PUT ?uploads / parts / complete (multipart) | Implemented | parts 1-10000, expiry sweeper, `ETag` assembly. e2e 05, conformance |
 | ListObjectsV2 (+V1 shape) | Implemented | prefix/delimiter/continuation-token/`encoding-type=url`. e2e 04, conformance |
 | CopyObject | Implemented | COPY/REPLACE directives for metadata AND tags. e2e 08, conformance |
-| Batch DeleteObjects | Implemented | per-key result entries. e2e 08 |
+| Batch DeleteObjects (`POST ?delete`), JSON batch (`POST ?batch`) | Implemented | DeleteObjects answers per-key result entries; `?batch` takes a flat JSON manifest (copy/move/delete, sequential in manifest order, 1000-op cap, nothing executes on a malformed manifest, no cross-item atomicity). One implementation drives both, on the s3 AND webdav frontends (the h3 frontend inherits it by wrapping webdav). e2e 08; a dedicated batch e2e case over webdav/h3 is future hardening |
 | Range requests - single span | Implemented | 206/416, suffix and open-ended forms, clamping. e2e 06, conformance |
 | Range requests - multi-span | Implemented | RFC 9110 `multipart/byteranges`, span coalescing, 100-part cap (over cap = 200 full body), all-unsatisfiable = 416. e2e 29 |
 | Conditional GET | Implemented | If-Match / If-None-Match / If-(Un)Modified-Since, evaluated before Range. e2e 06, conformance |
@@ -106,6 +106,8 @@ Implemented methods: `OPTIONS`, `PROPFIND` (Depth 0/1), `GET`, `HEAD`,
 | Collection locks | Absent | files only; collections/root answer `405` + `Allow`. davfs2 builds that hard-require directory locks: `use_locks 0` (documented) |
 | Shared locks, Depth-infinity locks | Absent | `400` |
 | Conditional requests (If-Match etc.) | Implemented | e2e 06 |
+| Range requests (single span) | Implemented | 206 + `Content-Range`, suffix (`bytes=-50`) and open-ended forms, unsatisfiable = `416` with `Content-Range: bytes */size`; the S3 range grammar is shared, so the semantics are transport-independent. e2e 38 (over both TCP and HTTP/3) |
+| Batch delete (`POST ?delete`), JSON batch (`POST ?batch`) | Implemented | the s3 DeleteObjects endpoint and the JSON batch bridge are mounted on the webdav frontend too; per-key result entries, nothing executes on a malformed manifest. Proof: the shared implementation's suites (S3 wire e2e 08; the bridge is exercised over webdav by the batch unit suite) - a dedicated batch-over-webdav e2e case is future hardening |
 | Chunked PUT | Implemented | real clients send it. e2e case for issue #6 |
 | PROPPATCH, dead properties | Absent | `405` + `Allow` |
 | Collection COPY/MOVE | Absent | `403` (a recursive fake copy risks partial state) |
@@ -114,6 +116,13 @@ Implemented methods: `OPTIONS`, `PROPFIND` (Depth 0/1), `GET`, `HEAD`,
 Mount notes: davfs2 works with its DEFAULT config (`use_locks 1`); macOS
 Finder and Windows mount with Basic auth. e2e 19 (59 asserts), e2e 31
 (47 asserts); mount-level checks are manual by design.
+
+### Transports
+
+| Transport | Status | Notes / proof |
+|---|---|---|
+| HTTP/1.1 + HTTP/2 over TCP (HTTPS) | Implemented | the default webdav listener; TLS with Basic auth. e2e 19 |
+| HTTP/3 over QUIC (UDP, `h3` frontend) | Implemented, opt-in | the SAME webdav data plane over QUIC; authenticated by TLS client certificate (CN -> identity registry; a missing or wrong-CA certificate fails the TLS HANDSHAKE - there is no HTTP 401 over h3 for certificate failures). Degrades to TCP via the `alt-svc: h3="<port>"; persist=1` advertisement when UDP is blocked - the same objects are readable over both transports. e2e 38 (`scripts/e2e/cases/38-h3-webdav.sh`) |
 
 ## ownCloud (OCS over the WebDAV data plane)
 

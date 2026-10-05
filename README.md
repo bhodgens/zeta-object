@@ -17,7 +17,7 @@ zeta-object speaks the S3 protocol and stores your data where you can see it: pl
 - **Small static binaries.** The gateway is one static binary; an optional second binary serves the web console. No database, no etcd, no external services. `make build`, run it, done.
 - **Zero-format storage.** Objects are plain files; metadata is a JSON sidecar. Your data is readable with `cat` and `ls` with the server stopped. Point a bucket at `/var/log`, a ZFS dataset, an NFS mount, or a directory of symlinks and it is an S3 bucket *now*.
 - **Standard, verified wire compatibility.** AWS CLI, boto3, and mc work against it - proven by an interop e2e suite and a ceph/s3-tests ratchet, not by marketing.
-- **Protocol-flexible by design.** A pluggable frontend/backend architecture (S3, WebDAV, FTP/FTPS, SFTP, and ownCloud all shipped) over a neutral object model - one implementation per protocol and per storage, not one per combination.
+- **Protocol-flexible by design.** A pluggable frontend/backend architecture (S3, WebDAV, FTP/FTPS, SFTP, ownCloud, and HTTP/3 all shipped) over a neutral object model - one implementation per protocol and per storage, not one per combination.
 - **Extensible metadata.** A probe-based MetadataProvider seam attaches enrichment capabilities to buckets when - and only when - the underlying filesystem supports them. The first provider reads ZFS per-dataset file-event logs, giving per-object history and version-style listings that hosted S3 cannot give you.
 
 ## The pitch: what proves zeta-object different
@@ -28,7 +28,7 @@ Most "S3-compatible" servers are the same idea restated: a service that owns a b
 2. **Existing directories become S3 buckets with zero migration.** Bucket `logs` at `/var/log` means the decade of log files already on disk is immediately listable, downloadable, and presign-able over S3 - byte-for-byte, no import, no copy. Symlinks are followed, so a bucket can live anywhere.
 3. **Filesystem capabilities become S3 capabilities.** When a bucket sits on a ZFS dataset polled by the zmetad daemon (per-dataset file-op history exported to SQLite), zeta-object serves `GET /<bucket>?events` and `GET /<bucket>?versions` derived from the kernel's own record of what happened to each file - create, rename, truncate, delete - with loss indicators. No hosted S3 offers object history; no opaque object server can borrow it from the filesystem. When the filesystem does not support it, the capability is simply absent (a clean 503), never faked. The kernel side of that log is not in stock OpenZFS: it ships on the `extended-metadata` branch of [`bhodgens/zfs-metadata`](https://github.com/bhodgens/zfs-metadata) - see [the prerequisite](#prerequisite-the-extended-metadata-branch-of-the-openzfs-fork).
 4. **Pluggable on both axes, honest about semantics.** Frontends (client protocols) and backends (storage) plug into one neutral object model, and the seams reject what a protocol cannot express instead of silently emulating it. A parity gate proves an enabled metadata provider changes nothing about core S3 responses.
-5. **Small enough to read, hardened enough to trust.** Two small Go binaries (the gateway plus the optional web console), a tiny audited dependency set (all licenses in docs/licenses/), and a gate wall: 1,376 unit test functions, an 837-assert e2e suite over 38 cases, race detector, fuzzing, ceph/s3-tests conformance ratchet, staticcheck/gosec, and a pre-commit chain that enforces all of it. The codebase is small enough that an afternoon of reading covers every line that touches your data.
+5. **Small enough to read, hardened enough to trust.** Two small Go binaries (the gateway plus the optional web console), a tiny audited dependency set (all licenses in docs/licenses/), and a gate wall: 1,376 unit test functions, an 842-assert e2e suite over 38 cases, race detector, fuzzing, ceph/s3-tests conformance ratchet, staticcheck/gosec, and a pre-commit chain that enforces all of it. The codebase is small enough that an afternoon of reading covers every line that touches your data.
 
 The honest, per-operation capability matrix for every protocol — what is implemented, what degrades and how, what is absent — lives in [docs/protocol-compatibility.md](docs/protocol-compatibility.md). The per-operation **S3 behavior contract** (request/response shapes, error codes, and every deliberate divergence from AWS S3, maintained under the upstream-zfs documentation contract): [docs/s3-behavior.md](docs/s3-behavior.md).
 
@@ -54,6 +54,8 @@ The honest, per-operation capability matrix for every protocol — what is imple
 **Object tagging** - `x-amz-tagging` on PUT, the `?tagging` GET/PUT/DELETE sub-resource, `TagCount` on GET/HEAD, and tag COPY/REPLACE directives on CopyObject, with S3 validation limits (10 tags, 128-byte keys, 256-byte values, reserved `aws:` prefix → `InvalidTag`). Tags live in the per-object `.metadata/` JSON sidecar (the charter-sanctioned metadata path) for both bucket kinds today; ZFS-native tag storage lands with upstream zfs-metadata#13 behind the `tagStore` seam — until then the sidecar is the v1 store for ZFS buckets too.
 
 **Operations** - HTTPS-only (TLS 1.2 minimum), graceful 30s shutdown drain, per-key write serialization, atomic writes (temp + fsync + rename) so a crash never truncates an object, path-traversal rejection, optional `max_put_bytes` per backend (default 5 GiB, the S3 single-PUT limit).
+
+**HTTP/3 transport** - an optional `h3` frontend serves the WebDAV data plane over QUIC (UDP), authenticated by TLS client certificates; every HTTP frontend advertises it with Alt-Svc and clients fall back to TCP when UDP is blocked. See [HTTP/3 transport](#http3-transport).
 
 **Management API** - a separate loopback-bound listener authenticated by a TLS client certificate (mTLS), serving a JSON surface (not S3 XML) to read server state, change configuration at runtime, persist it, inspect and manage buckets, reload identities and the client CA, and purge metadata history; dataset destruction stays a host-level operator action. See [Management API](#management-api).
 
@@ -82,7 +84,7 @@ Quality gates and tests:
 ```bash
 make test         # unit tests with coverage summary
 make check        # full local gate: build, vet, fmt, lint, tests, race, vuln, secrets
-make e2e          # end-to-end suite: 837 asserts over 38 cases (incl. boto3 + mc + rclone interop)
+make e2e          # end-to-end suite: 842 asserts over 38 cases (incl. boto3 + mc + rclone interop)
 ```
 
 ## Credentials Configuration
@@ -413,7 +415,7 @@ zeta-object uses a JSON configuration file (see `config.json.example` for a comm
 | `buckets` | `{}` | Map of bucket names to custom filesystem paths (string form, or `{"path": ..., "backend": ..., "auditReads": ...}` object form). |
 | `auditLog` | - | Optional `{"path": "..."}` enabling the append-only request audit log. Absent = disabled. See [Principal breadcrumbs and audit trail](#principal-breadcrumbs-and-audit-trail). |
 | `backends` | - | Optional backend registry: backend type name to construction config. Unknown types abort startup. |
-| `frontends` | - | Optional frontend list (default: one S3 frontend on `listenAddr`). Each entry may set its own `listenAddr` for a dedicated TLS listener. |
+| `frontends` | - | Optional frontend list (default: one S3 frontend on `listenAddr`). Each entry may set its own `listenAddr` for a dedicated TLS listener (`h3` entries listen on UDP for QUIC). |
 | `identities` | `[]` | Optional additional auth identities (name, accessKey, secretKey, optional per-bucket `grants`, optional `sshPublicKeys`). See [Multiple identities](#multiple-identities-and-per-bucket-grants). |
 | `auth` | - | Optional auth settings; `auth.mode: "none"` enables the loud zero-auth dev mode. |
 | `zmetad_db_path` | `/var/lib/zfs/zmetad.db` | Path to the zmetad SQLite export database the ZFS-events provider reads. See [Metadata Capability Endpoints](#metadata-capability-endpoints-zfs-events). |
@@ -554,6 +556,41 @@ zeta-object speaks WebDAV (RFC 4918, class 1 subset) so macOS Finder, Linux davf
 ### Limitations
 
 Locking is exclusive write locks on files only: Depth 0, `Timeout: Second-N` capped at 3600s, tokens are `opaquelocktoken:` UUIDs, and locks are server-side advisory coordination state under the bucket's `.metadata/.locks/` (the file backend is the contract; a kernel/ZFS-enforced fence stays an open question upstream — zfs-metadata#14). Shared locks, Depth-infinity locks, and locks on collections remain unsupported. Otherwise: no versioning, no quotas, no dead properties, no collection COPY/MOVE, no Depth-infinity PROPFIND. Wire-level coverage lives in e2e case `scripts/e2e/cases/19-webdav.sh` (plus the locking e2e case); the mount-level checks above are manual by design (they need a kernel filesystem and interactive cert trust).
+
+## HTTP/3 transport
+
+QUIC is a UDP-based transport with TLS 1.3 encryption built into the
+handshake; HTTP/3 is HTTP over QUIC. zeta-object's optional `h3` frontend
+serves the same WebDAV data plane over HTTP/3 on its own UDP port,
+authenticating clients by TLS client certificate (the certificate CN must
+be a known identity) instead of Basic auth. The HTTP frontends advertise
+the UDP endpoint with an `alt-svc: h3="<port>"; persist=1` response header:
+an HTTP/3-capable client discovers the endpoint from that header, migrates
+automatically, and falls back to plain TCP when UDP is blocked - the same
+objects are readable over both transports. QUIC's loss recovery is
+per-stream, so a dropped packet stalls one stream instead of every request
+behind it, which is why the transport earns its keep on wifi and
+long-latency links. Wire-level proof: e2e case 38
+(`scripts/e2e/cases/38-h3-webdav.sh`); details in
+[docs/protocol-compatibility.md](docs/protocol-compatibility.md).
+
+```jsonc
+"frontends": [
+  { "type": "s3" },
+  { "type": "webdav", "listenAddr": "127.0.0.1:8444", "bucket": "photos" },
+  { "type": "h3", "listenAddr": "127.0.0.1:8445", "bucket": "photos",
+    "options": { "clientCAFile": "certs/client-ca.pem" } }
+]
+```
+
+*   `type` (required): `h3`. `listenAddr` (REQUIRED): a UDP host:port - an
+    h3 frontend can never share the default HTTPS mux. `bucket` (required):
+    pins the single bucket, exactly like the webdav frontend's key.
+    `clientCAFile` (REQUIRED): a PEM bundle of the trusted client CAs.
+    The listener reuses the process `certFile`/`keyFile` pair and requires
+    and verifies a client certificate: a client without one (or with one
+    from an unknown CA) fails the TLS handshake - there is no HTTP 401
+    over h3 for certificate failures.
 
 ## ownCloud frontend
 
@@ -954,7 +991,7 @@ Inspect configured actions with `./scripts/show-bucket-actions.sh data/`.
 
 zeta-object is baselined against the industry-standard [ceph/s3-tests](https://github.com/ceph/s3-tests) suite. `make conformance` builds the server, launches it on a free HTTPS port, runs the in-scope pytest subset (277 tests - buckets, objects, listing, multipart, copy, conditional, range, presigned), and exits non-zero only when a previously-passing test regresses against the committed ratchet `scripts/conformance/baseline.txt`. The full matrix with per-failure triage: [docs/conformance/2026-09-28-matrix.md](docs/conformance/2026-09-28-matrix.md).
 
-The e2e suite (`make e2e`, 837 asserts over 38 cases) additionally covers every user-facing surface - including custom buckets, backend/frontend configuration, the metadata endpoints, object tagging, multi-range GET, WebDAV locking, versioning, ZFS bucket datasets, all four protocol frontends, and live boto3/mc/rclone interop - per the repo rule in [AGENTS.md](AGENTS.md). The full per-operation protocol matrix: [docs/protocol-compatibility.md](docs/protocol-compatibility.md).
+The e2e suite (`make e2e`, 842 asserts over 38 cases) additionally covers every user-facing surface - including custom buckets, backend/frontend configuration, the metadata endpoints, object tagging, multi-range GET, WebDAV locking, versioning, ZFS bucket datasets, all four protocol frontends, and live boto3/mc/rclone interop - per the repo rule in [AGENTS.md](AGENTS.md). The full per-operation protocol matrix: [docs/protocol-compatibility.md](docs/protocol-compatibility.md).
 
 ## Architecture
 
@@ -998,7 +1035,7 @@ make clean    # remove build artifacts
 ```bash
 make test              # unit tests with coverage summary
 make check             # build, vet, fmt, lint, tests, race, vuln, secrets
-make e2e               # 837-assert end-to-end suite, 38 cases
+make e2e               # 842-assert end-to-end suite, 38 cases
 make parity-test       # metadata-provider parity gate (FS vs provider-backed identical)
 make test-cover-enforce # aggregate coverage floor (ratchets up over time)
 make conformance       # ceph/s3-tests subset vs committed ratchet
