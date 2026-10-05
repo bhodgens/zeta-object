@@ -370,9 +370,9 @@ Output: APPROVED or list of specific gaps.
 | 01-admin-frontend-mtls | COMPLETE | 1 | c79dd5a; parent re-verified gates; +CertFile/KeyFile on Options (deviation) |
 | 02-runtime-config-store | COMPLETE | 1 | committed; 12 store tests; child bug claim #6 disproved by parent grep (config.go:240/:347) |
 | 03-shared-bucket-manager | COMPLETE | 1 | e99093e; moved-block evidence reviewed; floors re-measured; one lock table verified |
-| 04-admin-routes | IN_PROGRESS | 0 | dispatched (Group C) |
-| 05-docs | PENDING | 0 | |
-| 06-e2e-case-35 | PENDING | 0 | |
+| 04-admin-routes | COMPLETE | 1 | committed; parent verified 401-per-route, OpAdmin ungrantable, AllowDatasetDestroy false, 8 audit keys |
+| 05-docs | IN_PROGRESS | 0 | dispatched (Group D) |
+| 06-e2e-case-35 | IN_PROGRESS | 0 | dispatched (Group D) |
 | 07-live-validation | PENDING | 0 | |
 
 Status values: PENDING | IN_PROGRESS | IMPLEMENTED | REVIEWED | COMPLETE | BLOCKED
@@ -396,6 +396,20 @@ Status values: PENDING | IN_PROGRESS | IMPLEMENTED | REVIEWED | COMPLETE | BLOCK
 Run: `python3 ~/.hermes/skills/software-development/hierarchical-planning/scripts/check_template_compliance.py docs/plans --strict-leaves`
 (against `docs/plans` - the PARENT; a flat-leaf tree scanned alone is
 misread as a forest root).
+
+## Known limitations (v1, discovered during execution)
+
+- **Per-bucket tunables apply only to config-declared buckets.** `PUT
+  /buckets/{name}/settings` (auditReads, reflinkRetention) works for a
+  bucket that appears in the config `buckets` map. An auto-provisioned
+  bucket cannot take per-bucket tunables without a restart-required
+  layout change, because the store's buckets-patch path treats an entry
+  without a path/backend as a fail-loud parse error. Documented in
+  `adminBucketSettingsService`; leaf 05 must state it in the README.
+- **Purge takes a dataset name** and passes it to the frozen
+  `MetadataProvider.Purge` bucket-path signature; the provider resolves
+  it. If the provider is unavailable the route answers with the
+  provider's honest reason.
 
 ## Open Questions
 
