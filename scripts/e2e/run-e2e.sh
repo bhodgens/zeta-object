@@ -41,6 +41,42 @@ if [ ! -s "$WORK/cert.pem" ]; then
 	exit 1
 fi
 
+# --- management-API client-certificate fixtures (case 35) ---------------------
+# The admin frontend authenticates every request by TLS CLIENT certificate and
+# verifies it against a configured client CA file. Generate: a trusted CA; a
+# client certificate signed by it with a pinned Common Name (e2e-admin); and a
+# SECOND CA with its own client certificate (same CN) for the rejection test.
+# When openssl is unavailable the whole management case is skipped gracefully
+# (E2E_ADMIN_AVAILABLE=0 and no admin frontend in the config).
+E2E_ADMIN_AVAILABLE=0
+E2E_ADMIN_CN='e2e-admin'
+E2E_ADMIN_CONFIG_SECRET='e2e35-config-secret-DO-NOT-LEAK'
+E2E_ADMIN_CA_DIR=''
+if command -v openssl >/dev/null 2>&1; then
+	E2E_ADMIN_CA_DIR="$WORK/admin-ca"
+	mkdir -p "$E2E_ADMIN_CA_DIR"
+	printf 'keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n' > "$E2E_ADMIN_CA_DIR/client.ext"
+	# trusted CA + admin client certificate.
+	openssl req -x509 -newkey rsa:2048 -keyout "$E2E_ADMIN_CA_DIR/ca1-key.pem" \
+		-out "$E2E_ADMIN_CA_DIR/ca1.pem" -days 1 -nodes -subj '/CN=e2e-admin-ca' >/dev/null 2>&1
+	openssl req -newkey rsa:2048 -keyout "$E2E_ADMIN_CA_DIR/client-key.pem" \
+		-out "$E2E_ADMIN_CA_DIR/client.csr" -nodes -subj "/CN=$E2E_ADMIN_CN" >/dev/null 2>&1
+	openssl x509 -req -in "$E2E_ADMIN_CA_DIR/client.csr" -CA "$E2E_ADMIN_CA_DIR/ca1.pem" \
+		-CAkey "$E2E_ADMIN_CA_DIR/ca1-key.pem" -CAcreateserial \
+		-out "$E2E_ADMIN_CA_DIR/client.pem" -days 1 -extfile "$E2E_ADMIN_CA_DIR/client.ext" >/dev/null 2>&1
+	# untrusted CA + its own client certificate (wrong issuer -> handshake reject).
+	openssl req -x509 -newkey rsa:2048 -keyout "$E2E_ADMIN_CA_DIR/ca2-key.pem" \
+		-out "$E2E_ADMIN_CA_DIR/ca2.pem" -days 1 -nodes -subj '/CN=e2e-other-ca' >/dev/null 2>&1
+	openssl req -newkey rsa:2048 -keyout "$E2E_ADMIN_CA_DIR/wrong-key.pem" \
+		-out "$E2E_ADMIN_CA_DIR/wrong.csr" -nodes -subj "/CN=$E2E_ADMIN_CN" >/dev/null 2>&1
+	openssl x509 -req -in "$E2E_ADMIN_CA_DIR/wrong.csr" -CA "$E2E_ADMIN_CA_DIR/ca2.pem" \
+		-CAkey "$E2E_ADMIN_CA_DIR/ca2-key.pem" -CAcreateserial \
+		-out "$E2E_ADMIN_CA_DIR/wrong.pem" -days 1 -extfile "$E2E_ADMIN_CA_DIR/client.ext" >/dev/null 2>&1
+	if [ -s "$E2E_ADMIN_CA_DIR/client.pem" ] && [ -s "$E2E_ADMIN_CA_DIR/wrong.pem" ] && [ -s "$E2E_ADMIN_CA_DIR/ca1.pem" ]; then
+		E2E_ADMIN_AVAILABLE=1
+	fi
+fi
+
 # --- free port (never fixed) ---------------------------------------------------
 FREE_PORT=$(python3 - <<'PY'
 import socket
@@ -55,12 +91,46 @@ if [ -z "$FREE_PORT" ]; then
 	exit 1
 fi
 
+# Dedicated free port for the admin (management API) listener.
+E2E_ADMIN_PORT=$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)
+if [ -z "$E2E_ADMIN_PORT" ]; then
+	echo 'FATAL: could not detect a free port for the admin listener'
+	exit 1
+fi
+
+# Optional config fragments: the admin frontends entry, the audit log, and one
+# config identity whose literal secretKey the case proves is masked by GET
+# /config. Empty when the client-cert fixtures could not be built.
+ADMIN_CFG_FRAGMENTS=''
+AUDIT_LOG_PATH="$WORK/audit.jsonl"
+if [ "$E2E_ADMIN_AVAILABLE" = 1 ]; then
+	ADMIN_CFG_FRAGMENTS=$(cat <<FRAG
+,
+  "auditLog": {"path": "$AUDIT_LOG_PATH"},
+  "identities": [
+    {"name": "e2e35-config-id", "accessKey": "e2e35-config-ak", "secretKey": "$E2E_ADMIN_CONFIG_SECRET", "grants": {"*": "readwrite"}}
+  ],
+  "frontends": [
+    {"type": "s3"},
+    {"type": "admin", "listenAddr": "127.0.0.1:$E2E_ADMIN_PORT", "options": {"clientCAFile": "$E2E_ADMIN_CA_DIR/ca1.pem"}}
+  ]
+FRAG
+)
+fi
+
 cat > "$WORK/config.json" <<EOF
 {
   "dataDir": "$E2E_DATA_DIR",
   "listenAddr": ":$FREE_PORT",
   "certFile": "$WORK/cert.pem",
-  "keyFile": "$WORK/key.pem"
+  "keyFile": "$WORK/key.pem"$ADMIN_CFG_FRAGMENTS
 }
 EOF
 
@@ -104,6 +174,12 @@ fi
 
 # Shared env for cases (leaf 10 needs the sentinel dir; leaf 11 needs the log path).
 export E2E_DATA_DIR E2E_SENTINEL_DIR E2E_SERVER_LOG="$WORK/server.log" E2E_SERVER_PID="$SERVER_PID" E2E_ENDPOINT="$ENDPOINT"
+# Case 35 (management API): the client-certificate fixtures, the admin listener
+# URL, the audit log path, and the masked-secret literal it asserts on.
+export E2E_ADMIN_AVAILABLE E2E_ADMIN_CN E2E_ADMIN_CONFIG_SECRET E2E_ADMIN_PORT
+export E2E_ADMIN_URL="https://127.0.0.1:$E2E_ADMIN_PORT" E2E_AUDIT_LOG="$AUDIT_LOG_PATH"
+export E2E_ADMIN_CLIENT_CERT="$E2E_ADMIN_CA_DIR/client.pem" E2E_ADMIN_CLIENT_KEY="$E2E_ADMIN_CA_DIR/client-key.pem"
+export E2E_ADMIN_WRONG_CERT="$E2E_ADMIN_CA_DIR/wrong.pem" E2E_ADMIN_WRONG_KEY="$E2E_ADMIN_CA_DIR/wrong-key.pem"
 
 # --- run cases -----------------------------------------------------------------
 CASE_RESULTS=()   # "name:PASS:FAIL"
@@ -129,7 +205,7 @@ PY
   "dataDir": "$E2E_DATA_DIR",
   "listenAddr": "127.0.0.1:$FREE_PORT",
   "certFile": "$WORK/cert.pem",
-  "keyFile": "$WORK/key.pem"
+  "keyFile": "$WORK/key.pem"$ADMIN_CFG_FRAGMENTS
 }
 EOF
 	ZETAOBJECT_CONFIG="$WORK/config.json" ./zeta-object-server >>"$WORK/server.log" 2>&1 &
