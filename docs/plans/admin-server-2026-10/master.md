@@ -283,8 +283,8 @@ Output: APPROVED or list of specific gaps.
 | 03-ui-shell-theme | COMPLETE | 1 | in 76590ab; shell hooks verified in parent |
 | 04-ui-screens | COMPLETE | 1 | 3cb4cf5; screens under web/assets/screens; it also caught the asset-layout 404 |
 | 05-proxy-routes | COMPLETE | 1 | 038d9cc; TLS/cookie policy done + smoke-verified by parent; asset layout fix 4a7cd15 |
-| 06-docs | IN_PROGRESS | 0 | dispatched (Group C) |
-| 07-e2e-case-36 | IN_PROGRESS | 0 | dispatched (Group C) |
+| 06-docs | COMPLETE | 1 | b012395; example + README checked against code; caFile wording sharpened by parent |
+| 07-e2e-case-36 | COMPLETE | 1 | e040c39; parent re-ran make e2e: 837/0 exit 0, case 36 PASS 55 asserts |
 
 Status values: PENDING | IN_PROGRESS | IMPLEMENTED | REVIEWED | COMPLETE | BLOCKED
 
