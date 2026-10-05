@@ -470,7 +470,7 @@ Output: APPROVED or list of specific gaps.
 |-------|--------|------------|-------------|
 | 01-webdav-range | COMPLETE | 1 | 2a09a18; parent re-ran gates: webdav+s3+root suites green, lint 0; stream-discard choice (fsbackend Get ignores opts.Range); no rangespan move; 416 empty-body pinned |
 | 02-h3-frontend | COMPLETE | 1 | 8ef560c; parent re-ran gates incl CGO_ENABLED=0 build; quic-go v0.63.0 pinned; handshake-failure shape: quic.TransportError + IsCryptoError (0x174 cert required); known-types x3 updated; root coverage 79.4 |
-| 05-webdav-versioning | PENDING | | |
+| 05-webdav-versioning | COMPLETE | 1 | 46b45bf; parent re-ran gates + parity 8/8; s3 capture fail-CLOSED (object_handlers.go:80) mirrored; snapshots DELETE=409 + MOVE src-marker probed vs real handler; export_versioning_test_surface.go added (test-only aliases) |
 | 06-zfs-read-surfaces | PENDING | | |
 | 07-batch-ops | PENDING | | |
 | 03-e2e-case-docs | PENDING | | |
