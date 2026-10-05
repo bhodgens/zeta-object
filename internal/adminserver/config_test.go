@@ -1,6 +1,7 @@
 package adminserver
 
 import (
+	"crypto/tls"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,13 +131,66 @@ func TestConfigListenAddrLoopbackGuard(t *testing.T) {
 
 func TestConfigAllowNonLoopbackOverridesGuard(t *testing.T) {
 	body := `{"listenAddr":"0.0.0.0:9443","allowNonLoopback":true,` +
+		`"certFile":"/tmp/console.pem","keyFile":"/tmp/console-key.pem",` +
 		`"gatewayUrl":"https://x","caFile":"/a","clientCert":"/b","clientKey":"/c","operatorToken":"t"}`
 	cfg, err := LoadConfig(writeConfig(t, body))
 	if err != nil {
-		t.Fatalf("allowNonLoopback override rejected: %v", err)
+		t.Fatalf("allowNonLoopback override with a listener certificate rejected: %v", err)
 	}
 	if !cfg.AllowNonLoopback {
 		t.Fatal("AllowNonLoopback not loaded")
+	}
+	if !cfg.TLSEnabled() {
+		t.Fatal("listener certificate pair not loaded")
+	}
+}
+
+func TestConfigAllowNonLoopbackWithoutCertificateAborts(t *testing.T) {
+	body := `{"listenAddr":"0.0.0.0:9443","allowNonLoopback":true,` +
+		`"gatewayUrl":"https://x","caFile":"/a","clientCert":"/b","clientKey":"/c","operatorToken":"t"}`
+	_, err := LoadConfig(writeConfig(t, body))
+	if err == nil {
+		t.Fatal("allowNonLoopback without a listener certificate: want abort, got nil")
+	}
+	if !strings.Contains(err.Error(), "certFile") {
+		t.Fatalf("abort %q does not name the missing certificate", err)
+	}
+}
+
+func TestConfigCertificatePairMustBeComplete(t *testing.T) {
+	for name, pair := range map[string]string{
+		"certOnly": `"certFile":"/tmp/console.pem",`,
+		"keyOnly":  `"keyFile":"/tmp/console-key.pem",`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := `{"listenAddr":"127.0.0.1:9443",` + pair +
+				`"gatewayUrl":"https://x","caFile":"/a","clientCert":"/b","clientKey":"/c","operatorToken":"t"}`
+			if _, err := LoadConfig(writeConfig(t, body)); err == nil {
+				t.Fatalf("half a listener certificate pair (%s): want abort, got nil", name)
+			}
+		})
+	}
+}
+
+func TestConfigTLSTransportSelection(t *testing.T) {
+	plain := &Config{}
+	if plain.TLSEnabled() {
+		t.Error("TLSEnabled() = true with no certificate pair")
+	}
+	if plain.TLSConfig() != nil {
+		t.Error("TLSConfig() non-nil with no certificate pair")
+	}
+
+	tlsCfg := &Config{CertFile: "/t/c.pem", KeyFile: "/t/k.pem"}
+	if !tlsCfg.TLSEnabled() {
+		t.Error("TLSEnabled() = false with a full certificate pair")
+	}
+	tc := tlsCfg.TLSConfig()
+	if tc == nil {
+		t.Fatal("TLSConfig() nil with a full certificate pair")
+	}
+	if tc.MinVersion != tls.VersionTLS12 {
+		t.Errorf("TLSConfig MinVersion = %x, want TLS 1.2", tc.MinVersion)
 	}
 }
 

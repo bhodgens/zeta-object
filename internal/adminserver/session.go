@@ -129,7 +129,11 @@ func (s *sessionStore) parse(value string) (sessionPayload, error) {
 }
 
 // mint creates a new session, sets both cookies, and returns the CSRF token.
-func (s *sessionStore) mint(w http.ResponseWriter) (string, error) {
+// The Secure attribute follows the response transport: a cookie is Secure only
+// when this response arrived over TLS, so a plain-loopback console (which
+// Safari would otherwise reject a Secure cookie on) still works.
+func (s *sessionStore) mint(w http.ResponseWriter, r *http.Request) (string, error) {
+	secure := r.TLS != nil
 	id, err := randomToken(16)
 	if err != nil {
 		return "", err
@@ -154,17 +158,17 @@ func (s *sessionStore) mint(w http.ResponseWriter) (string, error) {
 		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
 	})
 	// The CSRF companion cookie is intentionally readable by the UI's
 	// same-origin JavaScript (double-submit style), so it is NOT HttpOnly.
-	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- CSRF token is deliberately readable by same-origin UI JavaScript (double-submit); Secure and SameSite=Strict are set
+	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- CSRF token is deliberately readable by same-origin UI JavaScript (double-submit); SameSite=Strict is set
 		Name:     CSRFCookieName,
 		Value:    csrf,
 		Path:     "/",
 		HttpOnly: false,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
 	})
 	return csrf, nil
@@ -203,8 +207,10 @@ func (s *sessionStore) validate(r *http.Request) (csrf string, ok bool) {
 	return p.CSRF, true
 }
 
-// clear removes a session and expires both cookies.
+// clear removes a session and expires both cookies. Like mint, the Secure
+// attribute follows the response transport.
 func (s *sessionStore) clear(w http.ResponseWriter, r *http.Request) {
+	secure := r.TLS != nil
 	if c, err := r.Cookie(SessionCookieName); err == nil {
 		if p, err := s.parse(c.Value); err == nil {
 			s.mu.Lock()
@@ -213,13 +219,13 @@ func (s *sessionStore) clear(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, name := range []string{SessionCookieName, CSRFCookieName} {
-		http.SetCookie(w, &http.Cookie{ // #nosec G124 -- session cookie is HttpOnly; the CSRF companion is deliberately readable (double-submit); both set Secure and SameSite=Strict
+		http.SetCookie(w, &http.Cookie{ // #nosec G124 -- session cookie is HttpOnly; the CSRF companion is deliberately readable (double-submit); both set SameSite=Strict
 			Name:     name,
 			Value:    "",
 			Path:     "/",
 			MaxAge:   -1,
 			HttpOnly: name == SessionCookieName,
-			Secure:   true,
+			Secure:   secure,
 			SameSite: http.SameSiteStrictMode,
 		})
 	}

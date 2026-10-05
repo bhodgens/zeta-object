@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bhodgens/zeta-object/internal/adminserver"
+	"github.com/bhodgens/zeta-object/internal/adminserver/gateway"
 )
 
 const (
@@ -30,7 +31,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("admin-server: %v", err)
 	}
-	srv, err := adminserver.NewServer(cfg)
+
+	// The console's identity TO the gateway is its mTLS client pair; the
+	// listener certificate pair (certFile/keyFile) is separate and optional.
+	gw, err := gateway.New(gateway.Config{
+		BaseURL:    cfg.GatewayURL,
+		CAFile:     cfg.CAFile,
+		ClientCert: cfg.ClientCert,
+		ClientKey:  cfg.ClientKey,
+	})
+	if err != nil {
+		log.Fatalf("admin-server: %v", err)
+	}
+
+	srv, err := adminserver.NewServer(cfg, gw)
 	if err != nil {
 		log.Fatalf("admin-server: %v", err)
 	}
@@ -43,13 +57,25 @@ func main() {
 		WriteTimeout:      serverWriteTimeout,
 		IdleTimeout:       serverIdleTimeout,
 	}
+	// TLS mode (certFile+keyFile set) makes every cookie Secure via the
+	// transport; plain loopback mode is only reachable when neither is set and
+	// allowNonLoopback is false (LoadConfig enforces that).
+	tlsCfg := cfg.TLSConfig()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("admin-server listening on %s", cfg.ListenAddr)
+		if tlsCfg != nil {
+			httpServer.TLSConfig = tlsCfg
+			log.Printf("admin-server listening on https://%s", cfg.ListenAddr)
+			if err := httpServer.ListenAndServeTLS(cfg.CertFile, cfg.KeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- err
+			}
+			return
+		}
+		log.Printf("admin-server listening on http://%s", cfg.ListenAddr)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}

@@ -1,9 +1,11 @@
 package adminserver
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -13,8 +15,101 @@ import (
 
 const testOperatorToken = "operator-secret-token"
 
-// newTestServer builds a Server with a minimal valid config.
+// stubGateway is an in-package stand-in for the mTLS gateway client. Each
+// method records how it was called and returns a canned result, so the console
+// routing and the proxy passthrough can be tested without a TLS server.
+type stubGateway struct {
+	gotMethod string
+	gotPath   string
+	gotName   string
+	gotBody   json.RawMessage
+	gotQuery  url.Values
+
+	err error // transport or gateway failure when set
+
+	body json.RawMessage
+
+	// calls counts every method call.
+	calls int
+}
+
+// newStubGateway returns a stub that answers every route with "{}" 200.
+func newStubGateway() *stubGateway {
+	return &stubGateway{body: json.RawMessage(`{}`)}
+}
+
+func (g *stubGateway) result(query url.Values) (json.RawMessage, error) {
+	g.calls++
+	g.gotQuery = query
+	if g.err != nil {
+		return nil, g.err
+	}
+	return g.body, nil
+}
+
+func (g *stubGateway) Status(_ context.Context, q url.Values) (json.RawMessage, error) {
+	g.gotMethod, g.gotPath = http.MethodGet, "/status"
+	return g.result(q)
+}
+
+func (g *stubGateway) GetConfig(_ context.Context, q url.Values) (json.RawMessage, error) {
+	g.gotMethod, g.gotPath = http.MethodGet, "/config"
+	return g.result(q)
+}
+
+func (g *stubGateway) PutConfig(_ context.Context, body json.RawMessage, q url.Values) (json.RawMessage, error) {
+	g.gotMethod, g.gotPath, g.gotBody = http.MethodPut, "/config", body
+	return g.result(q)
+}
+
+func (g *stubGateway) SaveConfig(_ context.Context, q url.Values) (json.RawMessage, error) {
+	g.gotMethod, g.gotPath = http.MethodPost, "/config/save"
+	return g.result(q)
+}
+
+func (g *stubGateway) ReloadAuth(_ context.Context, q url.Values) (json.RawMessage, error) {
+	g.gotMethod, g.gotPath = http.MethodPost, "/auth/reload"
+	return g.result(q)
+}
+
+func (g *stubGateway) ListBuckets(_ context.Context, q url.Values) (json.RawMessage, error) {
+	g.gotMethod, g.gotPath = http.MethodGet, "/buckets"
+	return g.result(q)
+}
+
+func (g *stubGateway) CreateBucket(_ context.Context, body json.RawMessage, q url.Values) (json.RawMessage, error) {
+	g.gotMethod, g.gotPath, g.gotBody = http.MethodPost, "/buckets", body
+	return g.result(q)
+}
+
+func (g *stubGateway) GetBucket(_ context.Context, name string, q url.Values) (json.RawMessage, error) {
+	g.gotMethod, g.gotPath, g.gotName = http.MethodGet, "/buckets", name
+	return g.result(q)
+}
+
+func (g *stubGateway) DeleteBucket(_ context.Context, name string, q url.Values) (json.RawMessage, error) {
+	g.gotMethod, g.gotPath, g.gotName = http.MethodDelete, "/buckets", name
+	return g.result(q)
+}
+
+func (g *stubGateway) PutBucketSettings(_ context.Context, name string, body json.RawMessage, q url.Values) (json.RawMessage, error) {
+	g.gotMethod, g.gotPath, g.gotName, g.gotBody = http.MethodPut, "/buckets/settings", name, body
+	return g.result(q)
+}
+
+func (g *stubGateway) Purge(_ context.Context, body json.RawMessage, q url.Values) (json.RawMessage, error) {
+	g.gotMethod, g.gotPath, g.gotBody = http.MethodPost, "/purge", body
+	return g.result(q)
+}
+
+// newTestServer builds a Server with a minimal valid config and a stub gateway.
 func newTestServer(t *testing.T) *Server {
+	t.Helper()
+	return newTestServerWithGateway(t, newStubGateway())
+}
+
+// newTestServerWithGateway builds a Server around the supplied gateway stub.
+func newTestServerWithGateway(t *testing.T, gw Gateway) *Server {
 	t.Helper()
 	cfg := &Config{
 		ListenAddr:    "127.0.0.1:0",
@@ -24,7 +119,7 @@ func newTestServer(t *testing.T) *Server {
 		ClientKey:     "client-key.pem",
 		OperatorToken: testOperatorToken,
 	}
-	srv, err := NewServer(cfg)
+	srv, err := NewServer(cfg, gw)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -70,8 +165,10 @@ func TestLoginMintsSessionCookie(t *testing.T) {
 	if !sess.HttpOnly {
 		t.Error("session cookie is not HttpOnly")
 	}
-	if !sess.Secure {
-		t.Error("session cookie is not Secure")
+	// This request did not arrive over TLS, so the Secure attribute must be
+	// omitted (Safari rejects a Secure cookie on plain http, even on loopback).
+	if sess.Secure {
+		t.Error("session cookie is Secure on an HTTP response")
 	}
 	if sess.SameSite != http.SameSiteStrictMode {
 		t.Errorf("session cookie SameSite = %v, want Strict", sess.SameSite)

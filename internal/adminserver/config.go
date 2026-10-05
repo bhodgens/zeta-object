@@ -2,6 +2,7 @@ package adminserver
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -40,7 +41,16 @@ type Config struct {
 	// OperatorToken is the operator's shared secret. An empty value is a
 	// startup abort — never an unauthenticated console.
 	OperatorToken string `json:"operatorToken"`
-	// AllowNonLoopback permits a non-loopback listenAddr (default false).
+	// CertFile and KeyFile are the console LISTENER's own server certificate
+	// pair (distinct from ClientCert/ClientKey, which are the console's
+	// identity TO the gateway). They are OPTIONAL: both set means the console
+	// serves HTTPS; neither set means plain HTTP, which is only allowed on a
+	// loopback listener.
+	CertFile string `json:"certFile"`
+	KeyFile  string `json:"keyFile"`
+	// AllowNonLoopback permits a non-loopback listenAddr (default false). It
+	// requires the listener certificate pair: the console never serves plain
+	// HTTP off-host.
 	AllowNonLoopback bool `json:"allowNonLoopback"`
 }
 
@@ -73,7 +83,8 @@ func LoadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// validate enforces the required-key and loopback rules (Contract 1).
+// validate enforces the required-key, listener-certificate, and loopback
+// rules (Contract 1, including the console TLS/cookie policy).
 func (c *Config) validate() error {
 	required := []struct{ name, value string }{
 		{"operatorToken", c.OperatorToken},
@@ -87,10 +98,35 @@ func (c *Config) validate() error {
 			return fmt.Errorf("admin config: required key %q is empty", r.name)
 		}
 	}
+	// certFile/keyFile are OPTIONAL, but they are a pair: one without the
+	// other is a configuration bug, never a silent fallback.
+	if (c.CertFile == "") != (c.KeyFile == "") {
+		return fmt.Errorf("admin config: certFile and keyFile must be set together")
+	}
+	if !c.TLSEnabled() && c.AllowNonLoopback {
+		return fmt.Errorf("admin config: allowNonLoopback requires certFile and keyFile; " +
+			"the console refuses to serve plain HTTP off-host")
+	}
 	if c.AllowNonLoopback {
 		return nil
 	}
 	return validateLoopbackAddr(c.ListenAddr)
+}
+
+// TLSEnabled reports whether the console serves HTTPS: both halves of its own
+// listener certificate pair are set.
+func (c *Config) TLSEnabled() bool {
+	return c.CertFile != "" && c.KeyFile != ""
+}
+
+// TLSConfig returns the console listener's TLS configuration when TLS is
+// enabled (TLS 1.2 minimum), otherwise nil (plain HTTP). It never reads the
+// certificate material; the caller passes the file paths to ListenAndServeTLS.
+func (c *Config) TLSConfig() *tls.Config {
+	if !c.TLSEnabled() {
+		return nil
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS12}
 }
 
 // validateLoopbackAddr rejects a listenAddr that does not resolve to a
