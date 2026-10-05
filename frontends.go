@@ -465,6 +465,7 @@ type startupPlanT struct {
 	registry  *frontend.Registry
 	mux       *http.ServeMux
 	shared    []frontend.Frontend // mounted on the default mux
+	mounts    []frontendMount     // every configured mount (shared + dedicated); findQUICFrontend scans this
 	listeners []listenerSpec      // dedicated TLS listeners
 }
 
@@ -478,7 +479,7 @@ func startupPlan(cfg []FrontendConfig, b backend.Backend, creds auth.CredentialS
 	if err != nil {
 		return startupPlanT{}, err
 	}
-	return startupPlanT{registry: reg, mux: mux, shared: shared, listeners: listeners}, nil
+	return startupPlanT{registry: reg, mux: mux, shared: shared, mounts: mounts, listeners: listeners}, nil
 }
 
 // applyListenAddrOverride applies the ZETAOBJECT_LISTEN_ADDR env override to the

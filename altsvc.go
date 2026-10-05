@@ -82,10 +82,15 @@ func (a *altSvcWriter) WriteHeader(code int) {
 // mux AND every dedicated-listener http.Server — is wrapped with the Alt-Svc
 // advertisement. The QUIC frontend's own handler is never wrapped. When no
 // QUIC frontend is mounted, nothing changes.
-func applyAltSvcAdvertisement(mux *http.ServeMux, shared []frontend.Frontend, mounts []frontendMount, extraServers []*http.Server) {
+// Returns the mux to serve: the shared-mux re-wrap REBUILDS the mux (a
+// ServeMux cannot re-register "/" in place - duplicate-pattern panic - and
+// cannot be struct-copied - it carries a mutex), so the caller must serve
+// the returned value. Call BEFORE any listener starts (startup ordering in
+// main()).
+func applyAltSvcAdvertisement(mux *http.ServeMux, shared []frontend.Frontend, mounts []frontendMount, extraServers []*http.Server) *http.ServeMux {
 	q := findQUICFrontend(mounts)
 	if q == nil {
-		return
+		return mux
 	}
 	value, err := altSvcHeaderValue(q)
 	if err != nil {
@@ -95,12 +100,20 @@ func applyAltSvcAdvertisement(mux *http.ServeMux, shared []frontend.Frontend, mo
 	}
 	// Shared-mux frontends: re-mount each non-QUIC handler wrapped. The
 	// QUIC frontend itself is never mux-mounted (dedicated listener only),
-	// but the guard keeps the rule explicit.
-	for _, f := range shared {
-		if _, isQUIC := f.(frontend.QUICListenerFrontend); isQUIC {
-			continue
+	// but the guard keeps the rule explicit. The mux already carries each
+	// shared frontend's handler under "/" (mountFrontends), so the wrapped
+	// handler goes into a FRESH mux: re-registering "/" on the SAME mux
+	// panics (duplicate pattern), and a ServeMux cannot be struct-copied
+	// over (it carries a mutex). main serves the returned mux.
+	if len(shared) > 0 {
+		rebuilt := http.NewServeMux()
+		for _, f := range shared {
+			if _, isQUIC := f.(frontend.QUICListenerFrontend); isQUIC {
+				continue
+			}
+			rebuilt.Handle("/", wrapWithAltSvc(f.Handler(), value))
 		}
-		mux.Handle("/", wrapWithAltSvc(f.Handler(), value))
+		mux = rebuilt
 	}
 	// Dedicated-listener HTTP servers: wrap in place.
 	for _, es := range extraServers {
@@ -108,4 +121,5 @@ func applyAltSvcAdvertisement(mux *http.ServeMux, shared []frontend.Frontend, mo
 			es.Handler = wrapWithAltSvc(es.Handler, value)
 		}
 	}
+	return mux
 }

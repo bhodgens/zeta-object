@@ -148,7 +148,7 @@ func TestAltSvc_WiringThroughApply(t *testing.T) {
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})}
-	applyAltSvcAdvertisement(mux, nil, []frontendMount{{frontend: q}}, []*http.Server{srv})
+	mux = applyAltSvcAdvertisement(mux, nil, []frontendMount{{frontend: q}}, []*http.Server{srv})
 	rec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if got := rec.Header().Get("Alt-Svc"); got != `h3=":9443"; persist=1` {
@@ -158,7 +158,7 @@ func TestAltSvc_WiringThroughApply(t *testing.T) {
 	shared := []frontend.Frontend{&stubFrontend{name: "webdav"}}
 	mux2 := http.NewServeMux()
 	srv2 := &http.Server{}
-	applyAltSvcAdvertisement(mux2, shared, []frontendMount{{frontend: q}}, []*http.Server{srv2})
+	mux2 = applyAltSvcAdvertisement(mux2, shared, []frontendMount{{frontend: q}}, []*http.Server{srv2})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec2 := httptest.NewRecorder()
 	mux2.ServeHTTP(rec2, req)

@@ -202,12 +202,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("Frontend initialization failed: %v", err)
 	}
-	srv := newServer(serverConfig.ListenAddr, plan.mux, serverConfig.CertFile, serverConfig.KeyFile)
 	extraServers, nonHTTPServers, quicServers := buildDedicatedListeners(plan.listeners)
 	// Alt-Svc advertisement (quic-h3-2026-10 leaf 02 Task 3): when any
 	// mount is a QUICListenerFrontend, every HTTP-serving frontend's
 	// handler carries alt-svc: h3="<port>"; persist=1. The h3 frontend's
-	// own responses are never wrapped.
-	applyAltSvcAdvertisement(plan.mux, plan.shared, nil, extraServers)
+	// own responses are never wrapped. The mounts list (not nil) is what
+	// lets findQUICFrontend see a dedicated-listener h3 entry - the
+	// wire-level gap case 38's probe caught (leaf 03): with mounts=nil the
+	// advertisement silently never applied to the dedicated webdav/TCP
+	// listeners either. The shared-mux re-wrap REBUILDS the mux, so the
+	// returned value is what the default listener must serve (built here,
+	// after the wrap, before runServer starts any listener).
+	plan.mux = applyAltSvcAdvertisement(plan.mux, plan.shared, plan.mounts, extraServers)
+	srv := newServer(serverConfig.ListenAddr, plan.mux, serverConfig.CertFile, serverConfig.KeyFile)
 	runServer(srv, extraServers, nonHTTPServers, quicServers)
 }

@@ -198,7 +198,8 @@ type FrontendConfig struct {
 // UnmarshalJSON decodes a frontends entry with DisallowUnknownFields: a
 // typo like "bogus" must abort startup, never silently drop (master
 // Contract 2). Accepted keys: "type" and "listenAddr" for every frontend;
-// "bucket" additionally for "webdav" only.
+// "bucket" additionally for "webdav", "owncloud", and "h3" (the h3
+// frontend pins its wrapped webdav's single bucket through it).
 func (c *FrontendConfig) UnmarshalJSON(data []byte) error {
 	type plain FrontendConfig
 	var p plain
@@ -208,8 +209,8 @@ func (c *FrontendConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	cfg := FrontendConfig(p)
-	if cfg.Type != "" && cfg.Type != "webdav" && cfg.Type != "owncloud" && cfg.Bucket != "" {
-		return fmt.Errorf("frontend type %q does not accept the \"bucket\" key (webdav/owncloud only)", cfg.Type)
+	if cfg.Type != "" && cfg.Type != "webdav" && cfg.Type != "owncloud" && cfg.Type != "h3" && cfg.Bucket != "" {
+		return fmt.Errorf("frontend type %q does not accept the \"bucket\" key (webdav/owncloud/h3 only)", cfg.Type)
 	}
 	*c = cfg
 	return nil
