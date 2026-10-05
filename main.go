@@ -158,12 +158,21 @@ func main() {
 	// Audit sink install (before the listener opens; nil = disabled).
 	s3.InstallAuditWriter(auditWriter)
 
+	// Runtime configuration store (management-api-2026-10 leaf 02): the
+	// live configuration the management API (leaf 04) reads and mutates.
+	// Built from the loaded config AFTER credentials resolve, so the store
+	// masks the process env-pair credential on read.
+	initConfigStore()
+
 	// Leaf 03 frontend registry: construct the configured frontends via the
 	// factory map, register them, and mount: handlers without their own
 	// listenAddr go on the shared mux; entries with a listenAddr get a
 	// dedicated TLS listener (same cert pair). Any failure (unknown type,
 	// ambiguous duplicate mount, factory error) aborts startup loudly.
-	installS3Seams()
+	// The seams are installed from the store's snapshot so the store is the
+	// single owner of the live configuration values.
+	startupConfig := configStore.Snapshot()
+	installS3Seams(&startupConfig)
 	// Shared bucket manager (management-api-2026-10 leaf 03): wire the ONE
 	// process lock table (fslock), the bucket path resolver, the configured
 	// custom-bucket map and the dataset provisioner (nil when the feature is

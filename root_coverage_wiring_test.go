@@ -126,7 +126,7 @@ func TestInstallS3SeamsMetadataResolverUnavailable(t *testing.T) {
 	// installS3Seams registers the real zfs-events provider; guard against
 	// a duplicate Register panic if another test already installed.
 	if metadata.Lookup("zfs-events") == nil {
-		installS3Seams()
+		installS3Seams(&serverConfig)
 	}
 
 	req := buildSignedGetWithQuery(t, "/"+bucket, "events", "events")

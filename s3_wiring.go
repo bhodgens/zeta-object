@@ -43,47 +43,23 @@ func (mainCredentialSource) SecretKey(accessKeyID string) (string, bool) {
 	return "", false
 }
 
-// installS3Seams wires every process-level seam the s3 frontend consumes.
-// Called from main() before the listener opens (and from tests that drive
-// the frontend against real fs storage).
-func installS3Seams() {
-	// Configuration view.
-	s3.InstallServerConfigView(s3.ServerConfigView{
-		Buckets:          serverConfig.Buckets,
-		DataDir:          serverConfig.DataDir,
-		AuditReads:       serverConfig.BucketAuditReads,
-		ReflinkRetention: serverConfig.BucketReflinkRetention,
-	})
+// installS3Seams wires every process-level seam the s3 frontend consumes
+// from cfg. Called from main() before the listener opens (and from tests
+// that drive the frontend against real fs storage). The configuration
+// arrives as a PARAMETER (management-api-2026-10 leaf 02) so the same
+// installer can be re-run against a store snapshot on a hot config change
+// instead of reading the package global directly.
+func installS3Seams(cfg *ServerConfig) {
+	// Runtime-applyable seams (config view, region, versioning, provisioner):
+	// shared verbatim with the config store's hot-apply path (config_store.go).
+	// A rejected provisioner install aborts startup (mirrors main.go's
+	// validation abort) rather than serving creates that silently fall back to
+	// plain dirs.
+	if err := applyHotSeams(cfg); err != nil {
+		log.Fatalf("ZFS bucket datasets provisioning install failed: %v", err)
+	}
 
-	// SigV4 verification region (region-config-2026-10 leaf 02): the
-	// config loader always resolves Region (default us-east-1), which
-	// makes this STRICT region compare in production - a client signing
-	// for another region fails with SignatureDoesNotMatch naming the
-	// expected region (issue #10 acceptance). The permissive mode
-	// (SetRegion("")) is a test-only escape hatch, unreachable from a
-	// launched server by design. Startup-only wiring.
-	s3.SetRegion(serverConfig.Region)
-
-	// ZFS versioning mode + zmetad DB handle (s3-versioning-2026-10
-	// leaf 03): the config loader has validated + defaulted
-	// zfs_versioning, so the factory always receives a concrete mode.
-	// The DB opens read-only ONCE at startup (WAL lets readers run
-	// against the live daemon); an unopenable/missing DB stays nil and
-	// snapshots-mode resolution fails per request with the store's
-	// honest not-tracked error - never a silent degradation.
-	s3.InstallZfsVersioningMode(serverConfig.ZfsVersioning)
-	s3.InstallZfsVersioningReflinkRetention(serverConfig.ZfsVersioningReflinkRetention)
-
-	// ZFS bucket datasets (zfs-bucket-datasets leaf 03): when the
-	// feature is on, main() has already run validateZfsBucketDatasets
-	// (fail-loud — see main.go), so zfsBucketsParentDataset holds the
-	// resolved parent. Installing the provisioner is itself fail-loud:
-	// a rejected install aborts startup (mirrors main.go's validation
-	// abort) rather than serving creates that would silently fall back
-	// to plain dirs. Feature off (the default): hooks stay nil and the
-	// legacy plain-dir path runs byte-identically.
-	installZfsDatasetProvisionerIfNeeded()
-	if db, dbErr := metadata.OpenZmetadDB(context.Background(), serverConfig.ZmetadDBPath); dbErr == nil {
+	if db, dbErr := metadata.OpenZmetadDB(context.Background(), cfg.ZmetadDBPath); dbErr == nil {
 		s3.InstallZmetadDB(db)
 	} else {
 		log.Printf("zmetad database unavailable (%v): snapshots-mode versioning will answer honestly-not-found", dbErr)
@@ -96,9 +72,10 @@ func installS3Seams() {
 	})
 
 	// Above-seam multipart staging root: getBucketPath semantics exactly
-	// (custom path wins, else dataDir/bucket).
+	// (custom path wins, else dataDir/bucket) computed from the installed
+	// configuration, not the package global.
 	s3.InstallFSRootResolver(func(bucket string) string {
-		return getBucketPath(bucket)
+		return bucketPathFor(cfg, bucket)
 	})
 
 	// Credentials.
@@ -129,7 +106,7 @@ func installS3Seams() {
 	// DevAuthenticator as the process authenticator source — every request
 	// authenticates as the loud anonymous wildcard identity. Opt-in only;
 	// config validation errors abort startup before this line.
-	if serverConfig.Auth.Mode == authModeNone {
+	if cfg.Auth.Mode == authModeNone {
 		dev := auth.NewDevAuthenticator(nil)
 		dev.Banner()
 		s3.InstallDevAuthenticator(dev)
@@ -159,12 +136,19 @@ func installS3Seams() {
 	// never makes a non-ZFS bucket claim availability (unavailable probes
 	// return nil → contracted 503).
 	//
-	// Config flow mirrors the dataDir seam above: installS3Seams reads
-	// the loaded serverConfig global directly. Defaults land at config
-	// load (config.go), so the provider always receives concrete values.
-	registered := metadata.NewZmetadEventsProvider(serverConfig.ZmetadDBPath)
-	metadata.SetZmetadBinary(registered, serverConfig.ZmetadBinary)
-	metadata.Register(registered)
+	// Config flow mirrors the dataDir seam above: installS3Seams computes
+	// every seam from the configuration value it was passed (its store
+	// snapshot at startup). Defaults land at config load (config.go), so
+	// the provider always receives concrete values.
+	//
+	// Registration is idempotent so installS3Seams may be RE-RUN: the hot
+	// config-apply path and tests re-install seams, and metadata.Register
+	// panics on a duplicate. The first install owns the provider.
+	if metadata.Lookup("zfs-events") == nil {
+		registered := metadata.NewZmetadEventsProvider(cfg.ZmetadDBPath)
+		metadata.SetZmetadBinary(registered, cfg.ZmetadBinary)
+		metadata.Register(registered)
+	}
 	s3.InstallMetadataProvider(func(bucketPath string) metadata.MetadataProvider {
 		// A FRESH provider instance per bucket (bughunt M1): the
 		// registry singleton is shared across buckets, and its
@@ -172,8 +156,8 @@ func installS3Seams() {
 		// recordsLost between concurrent ?events on different buckets.
 		// Construction is cheap (no I/O until Probe opens the DB);
 		// Probe keeps the per-request availability semantics.
-		p := metadata.NewZmetadEventsProvider(serverConfig.ZmetadDBPath)
-		metadata.SetZmetadBinary(p, serverConfig.ZmetadBinary)
+		p := metadata.NewZmetadEventsProvider(cfg.ZmetadDBPath)
+		metadata.SetZmetadBinary(p, cfg.ZmetadBinary)
 		res, err := p.Probe(context.Background(), bucketPath)
 		if err != nil || !res.Available {
 			return nil
@@ -201,14 +185,66 @@ func mainActionContext(ctx s3.ActionContext) ActionContext {
 	}
 }
 
+// applyHotSeams installs the runtime-applyable configuration seams from cfg
+// through the EXISTING installers: the s3 config view, the SigV4 region, the
+// ZFS versioning mode + reflink retention, and the ZFS bucket-datasets
+// provisioner. It is the exact hot section installS3Seams begins with,
+// extracted so the config store (config_store.go) hot-applies a changed
+// configuration through the same code. Returns an error (never aborts) so
+// the store can reject a bad hot patch without killing the process;
+// installS3Seams turns it into the startup abort.
+func applyHotSeams(cfg *ServerConfig) error {
+	// Configuration view (buckets map + dataDir + per-bucket tunables).
+	s3.InstallServerConfigView(s3.ServerConfigView{
+		Buckets:          cfg.Buckets,
+		DataDir:          cfg.DataDir,
+		AuditReads:       cfg.BucketAuditReads,
+		ReflinkRetention: cfg.BucketReflinkRetention,
+	})
+
+	// SigV4 verification region (region-config-2026-10 leaf 02): the
+	// config loader always resolves Region (default us-east-1), which
+	// makes this STRICT region compare in production - a client signing
+	// for another region fails with SignatureDoesNotMatch naming the
+	// expected region (issue #10 acceptance).
+	s3.SetRegion(cfg.Region)
+
+	// ZFS versioning mode + retention (s3-versioning-2026-10 leaf 03):
+	// the config loader has validated + defaulted zfs_versioning, so the
+	// factory always receives a concrete mode.
+	s3.InstallZfsVersioningMode(cfg.ZfsVersioning)
+	s3.InstallZfsVersioningReflinkRetention(cfg.ZfsVersioningReflinkRetention)
+
+	// ZFS bucket datasets (zfs-bucket-datasets leaf 03): feature on
+	// installs the provisioner from the startup-resolved parent; feature
+	// off leaves the legacy plain-dir path (hooks nil). The store can
+	// toggle this both ways, so off explicitly uninstalls.
+	if cfg.ZfsBucketDatasets {
+		if err := installZfsDatasetProvisionerFor(cfg); err != nil {
+			return err
+		}
+	} else {
+		s3.UninstallZfsDatasetProvisioner()
+		s3.ClearZfsBucketDatasetParent()
+	}
+	return nil
+}
+
 // getBucketPath returns the filesystem path for a bucket (custom mapping
-// first, then dataDir) — unchanged pre-move semantics; the s3 frontend
-// reaches the same math through its injected fs-root resolver.
+// first, then dataDir) — unchanged pre-move semantics against the package
+// global; the s3 frontend reaches the same math through its injected fs-root
+// resolver from the installed configuration.
 func getBucketPath(bucketName string) string {
-	if customPath, ok := serverConfig.Buckets[bucketName]; ok {
+	return bucketPathFor(&serverConfig, bucketName)
+}
+
+// bucketPathFor is getBucketPath's math against an EXPLICIT configuration
+// (custom path wins, else dataDir/bucket).
+func bucketPathFor(cfg *ServerConfig, bucketName string) string {
+	if customPath, ok := cfg.Buckets[bucketName]; ok {
 		return customPath
 	}
-	return filepath.Join(serverConfig.DataDir, bucketName)
+	return filepath.Join(cfg.DataDir, bucketName)
 }
 
 // multipartSweepEntry is installed by the s3 frontend (installS3Seams
@@ -271,11 +307,23 @@ func startMultipartExpirySweeper() {
 // back to plain dirs. Feature off (the default): hooks stay nil and the
 // legacy plain-dir path runs byte-identically.
 func installZfsDatasetProvisionerIfNeeded() {
-	if !serverConfig.ZfsBucketDatasets {
-		return
-	}
-	if err := s3.InstallZfsDatasetProvisioner(zfsBucketsParentDataset, serverConfig.ZfsBinary); err != nil {
+	if err := installZfsDatasetProvisionerFor(&serverConfig); err != nil {
 		log.Fatalf("ZFS bucket datasets provisioning install failed: %v", err)
 	}
+}
+
+// installZfsDatasetProvisionerFor installs the dataset provisioner when cfg
+// enables the feature, resolving from the startup-resolved
+// zfsBucketsParentDataset. It returns the install error (never aborts) so
+// the config store can reject a bad hot patch; the startup wrapper above
+// turns it into a fatal. Feature off is a no-op.
+func installZfsDatasetProvisionerFor(cfg *ServerConfig) error {
+	if !cfg.ZfsBucketDatasets {
+		return nil
+	}
+	if err := s3.InstallZfsDatasetProvisioner(zfsBucketsParentDataset, cfg.ZfsBinary); err != nil {
+		return err
+	}
 	s3.SetZfsBucketDatasetParent(zfsBucketsParentDataset)
+	return nil
 }
