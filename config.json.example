@@ -48,6 +48,17 @@
   // pass in docs/plans/owncloud-2026-09/decision.md §6 is run — see
   // docs/owncloud-compatibility.md.
   //
+  // Admin (management API): a separate listener serving a JSON REST surface
+  // (NOT the S3 API), authenticated by a TLS client certificate (mTLS). It
+  // needs its own "listenAddr" (it cannot share the HTTPS mux) and is
+  // LOOPBACK-ONLY by default: a listen address whose host does not resolve
+  // entirely to loopback aborts startup unless "allowNonLoopback" is "true".
+  // Options: "clientCAFile" (REQUIRED; PEM bundle of trusted client CAs; the
+  // client certificate's Subject Common Name is the admin principal),
+  // "adminPrincipals" (optional comma-separated CN allow-list; empty admits
+  // every CA-verified principal), "allowNonLoopback" (optional; "true" opts
+  // out of the loopback guard). See the README "Management API" section.
+  //
   // "frontends": [
   //   { "type": "s3" },
   //   { "type": "webdav", "listenAddr": ":8444", "bucket": "photos" },
@@ -55,7 +66,11 @@
   //   { "type": "ftp", "listenAddr": ":2121",
   //     "options": { "passivePortMin": "50000", "passivePortMax": "50100" } },
   //   { "type": "sftp", "listenAddr": ":2022",
-  //     "options": { "hostKeyFile": "certs/host_ed25519" } }
+  //     "options": { "hostKeyFile": "certs/host_ed25519" } },
+  //   { "type": "admin", "listenAddr": "127.0.0.1:9443",
+  //     "options": { "clientCAFile": "certs/admin-ca.pem",
+  //                  "adminPrincipals": "alice,bob",
+  //                  "allowNonLoopback": "false" } }
   // ],
 
   // Optional multi-identity authentication. Absent = the environment
@@ -94,8 +109,10 @@
   // Optional zmetad provider settings (ZFS event history, ?events
   // endpoints). "zmetad_db_path" is the SQLite database the zmetad daemon
   // exports to (default "/var/lib/zfs/zmetad.db"); "zmetad_binary" is the
-  // executable used for history purge (default "zmetad" on PATH). See the
-  // README "Metadata Capability Endpoints (ZFS events)" section.
+  // executable used for history purge (default "zmetad" on PATH). The
+  // management API exposes purge as POST /purge (it clears event history AND
+  // the gap/loss record); the S3 API has no purge route. See the README
+  // "Metadata Capability Endpoints (ZFS events)" section.
   // "zmetad_db_path": "/var/lib/zfs/zmetad.db",
   // "zmetad_binary": "zmetad",
 

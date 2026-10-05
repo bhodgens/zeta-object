@@ -55,6 +55,8 @@ The honest, per-operation capability matrix for every protocol — what is imple
 
 **Operations** - HTTPS-only (TLS 1.2 minimum), graceful 30s shutdown drain, per-key write serialization, atomic writes (temp + fsync + rename) so a crash never truncates an object, path-traversal rejection, optional `max_put_bytes` per backend (default 5 GiB, the S3 single-PUT limit).
 
+**Management API** - a separate loopback-bound listener authenticated by a TLS client certificate (mTLS), serving a JSON surface (not S3 XML) to read server state, change configuration at runtime, persist it, inspect and manage buckets, reload identities and the client CA, and purge metadata history; dataset destruction stays a host-level operator action. See [Management API](#management-api).
+
 **Gateway architecture** - `backends` config selects storage per bucket (filesystem today; the seam carries a 17-subtest conformance suite every backend must pass); `frontends` config selects client protocols with optional dedicated TLS listeners; unknown backend/frontend types fail startup loudly, never silently.
 
 ## Quickstart
@@ -187,6 +189,169 @@ Enter `minioadmin`/`minioadmin` (or your custom pair). The signature region must
 aws s3 ls --profile zetaobject --endpoint-url https://localhost:8443 --no-verify-ssl
 ```
 
+## Management API
+
+zeta-object exposes a management API for server state and bucket
+administration. It is a **separate listener** with a **JSON** REST shape
+that is deliberately **NOT the S3 API**: every response is
+`application/json`, and no management route speaks the S3 XML wire format.
+It runs in the same process as the S3 frontend and shares the same
+privilege; the security boundary is the credential and the authorization
+decision, not a package boundary.
+
+### Credential (mTLS)
+
+The management API is authenticated by a **TLS client certificate**
+(mutual TLS). The listener presents the process server certificate
+(`certFile`/`keyFile`) and requires a client certificate signed by a CA in
+your configured bundle. The administrative identity is the certificate's
+Subject **Common Name** (CN); that CN is the principal recorded in the
+audit log. A missing or invalid certificate, an unknown issuer, an expired
+certificate, and a certificate with an empty CN all answer an
+indistinguishable `401` (the response never says which check failed). A
+verified certificate whose CN is outside a configured allow-list answers
+`403`.
+
+### Listener and the loopback default
+
+The management API binds to **loopback only** by default. A listen address
+whose host does not resolve entirely to loopback (including `:9443`, which
+binds every interface) **aborts startup** with an error naming the address.
+To bind a non-loopback address you must set `options.allowNonLoopback` to
+`"true"` on the frontend entry. That is an explicit operator decision: the
+management listener speaks with full authority, so exposing it on a public
+address is a deliberate choice, not a convenience.
+
+### Configuration
+
+Add an `admin` entry to the `frontends` list. It needs its own
+`listenAddr`; it cannot share the HTTPS mux.
+
+```jsonc
+"frontends": [
+  { "type": "s3" },
+  { "type": "admin", "listenAddr": "127.0.0.1:9443",
+    "options": {
+      "clientCAFile": "certs/admin-ca.pem",  // REQUIRED: PEM bundle of trusted client CAs
+      "adminPrincipals": "alice,bob",        // optional allow-list of client-certificate CNs
+      "allowNonLoopback": "false"            // "true" opts out of the loopback guard
+    } }
+]
+```
+
+- `clientCAFile` (REQUIRED): a PEM bundle of the trusted client CAs. It is
+  read at startup and re-read by `POST /auth/reload`.
+- `adminPrincipals` (optional): a comma-separated allow-list of certificate
+  Subject Common Names. Absent or empty admits every CA-verified principal.
+- `allowNonLoopback` (optional, default `"false"`): `"true"` permits a
+  non-loopback listen address.
+
+Unknown option keys abort startup, as everywhere else.
+
+### Worked example
+
+Generate a CA and an operator client certificate (openssl), put the CA in
+`clientCAFile`, start the server, then call the API with the client
+certificate:
+
+```bash
+curl --cert certs/admin-client.pem --key certs/admin-client.key \
+     --cacert certs/cert.pem \
+     https://127.0.0.1:9443/status
+```
+
+`--cert`/`--key` present the client certificate; the server verifies it
+against `clientCAFile` and, when `adminPrincipals` is set, checks the CN.
+
+### Routes
+
+Every route requires a verified client certificate. There is no
+unauthenticated route, not even `/status`. Every authenticated request
+appends exactly one record to the audit log with `op` = `admin` and the
+certificate CN as the principal.
+
+| Method | Path | Behavior |
+|---|---|---|
+| GET | `/status` | server version, uptime, listeners, frontends, backends, restart-required keys, and metadata-provider availability (an honest `{available, reason}`, never invented) |
+| GET | `/config` | full effective configuration with secrets masked, plus the restart-required list |
+| PUT | `/config` | partial update through the runtime store; `200` with `applied` and `restartRequired`; `400` with the validator error and nothing changed on error |
+| POST | `/config/save` | persist the live configuration to the config file atomically |
+| POST | `/auth/reload` | re-read identities AND the client CA (see Key and CA rotation) |
+| GET | `/buckets` | list buckets with backend and per-bucket tunables |
+| POST | `/buckets` | create a bucket (name in the JSON body) |
+| GET | `/buckets/{name}` | one bucket: backend, tunables, whether it is a dataset. Object count is NOT reported (no index exists) |
+| DELETE | `/buckets/{name}` | delete; plain-directory buckets only; a dataset-backed bucket answers `409 DatasetBucketNotDeletable` (see Destructive scope) |
+| PUT | `/buckets/{name}/settings` | per-bucket tunables (`auditReads`, `reflinkRetention`) |
+| POST | `/purge` | metadata history purge for a named dataset; body `{"dataset":"pool/ds"}` (see the purge warning) |
+
+Wire statuses on the management surface: an unknown path answers
+`404 NotFound`; a known path with the wrong method answers
+`405 MethodNotAllowed`. Errors use the JSON envelope
+
+```json
+{"error":{"code":"...","message":"..."}}
+```
+
+with the HTTP status alongside it. Bucket errors reuse the object model's
+canonical codes (for example `404 NoSuchBucket`, `409 BucketNotEmpty`).
+
+### Runtime configuration model
+
+Changes made through `PUT /config` and the bucket-settings route apply at
+runtime where a runtime apply path exists, and are reported as
+restart-required otherwise. The response is explicit: `applied` holds the
+keys that took effect, `restartRequired` holds the keys that need a
+restart. A setting with no runtime path is never silently "applied".
+
+- **Hot-apply:** `identities`, `region`, `zfs_versioning`,
+  `zfs_versioning_reflink_retention`, `zfs_bucket_datasets`, and the
+  per-bucket `auditReads` / `reflinkRetention` tunables.
+- **Restart-required:** `dataDir`, `listenAddr`, `certFile`, `keyFile`,
+  `frontends`, `backends`, `auditLog`, `zmetad_db_path`, `zmetad_binary`,
+  `auth`, `zfs_binary`.
+
+An invalid patch changes nothing and returns `400` with the validator's
+named error.
+
+**Memory is authoritative while the process runs.** The startup config
+file is a snapshot: edits to it are not picked up until a restart, and
+runtime changes are not written to it unless you ask. `POST /config/save`
+writes the live configuration back to the config file atomically (temp
+file plus rename). Until you call it, a runtime change lives only in
+memory and is lost on restart.
+
+### Key and CA rotation
+
+`POST /auth/reload` re-runs the identity reload path (the same code SIGHUP
+runs) AND re-reads the admin listener's client-CA bundle. To rotate the
+administrative credential: replace the CA file on disk, then call
+`POST /auth/reload`. Certificates signed by the new CA are trusted and the
+old ones are rejected on the next handshake, **without a restart**. A
+missing, unreadable, or invalid CA bundle fails closed: the listener keeps
+trusting the previous CA rather than trusting nothing or everything.
+
+### Destructive scope
+
+The management API **cannot destroy ZFS datasets**. Dataset destruction
+stays a host-level operator action (`zfs destroy`). `DELETE
+/buckets/{name}` removes **plain-directory buckets only**; a
+dataset-backed bucket answers `409` with code `DatasetBucketNotDeletable`
+and the exact remediation. The S3 `DeleteBucket` path keeps its existing
+behavior, including its dataset mode: the two surfaces differ
+deliberately.
+
+`POST /purge` is the only irreversibly destructive route: it clears the
+bucket's event history AND the permanent gap/loss record (see below). It
+passes the named dataset to the metadata provider, which execs `zmetad
+--purge <dataset>` on the host.
+
+### V1 limitation
+
+`PUT /buckets/{name}/settings` (per-bucket `auditReads` and
+`reflinkRetention`) applies to a bucket declared in the config `buckets`
+map. An auto-provisioned directory bucket cannot take per-bucket tunables
+without a restart-required layout change.
+
 ## Configuration
 
 zeta-object uses a JSON configuration file (see `config.json.example` for a commented sample). Default path: `config.json` in the current directory; override with `ZETAOBJECT_CONFIG`. Unknown keys and malformed values fail startup loudly - a typo can never silently disable a setting.
@@ -206,7 +371,7 @@ zeta-object uses a JSON configuration file (see `config.json.example` for a comm
 | `identities` | `[]` | Optional additional auth identities (name, accessKey, secretKey, optional per-bucket `grants`, optional `sshPublicKeys`). See [Multiple identities](#multiple-identities-and-per-bucket-grants). |
 | `auth` | - | Optional auth settings; `auth.mode: "none"` enables the loud zero-auth dev mode. |
 | `zmetad_db_path` | `/var/lib/zfs/zmetad.db` | Path to the zmetad SQLite export database the ZFS-events provider reads. See [Metadata Capability Endpoints](#metadata-capability-endpoints-zfs-events). |
-| `zmetad_binary` | `zmetad` | zmetad executable reserved for the provider-level purge operation (`--purge`); purge is not exposed over HTTP (see Purge below). Defaults to a `PATH` lookup. |
+| `zmetad_binary` | `zmetad` | zmetad executable used for the history purge (`zmetad --purge <dataset>`). The management API exposes purge as `POST /purge`; the S3 API has no purge route. See [Purge](#purge-operator-only-exposed-on-the-management-api). Defaults to a `PATH` lookup. |
 | `region` | `us-east-1` | SigV4 verification region; values are lowercased at load. See [Auth](#feature-highlights). |
 | `zfs_versioning` | `reflink` | ZFS-bucket versioning mechanism: `reflink` (FICLONE block-clone per-write versions under `.metadata/.versions-r/` — the default; fail-soft on filesystems without block cloning), `snapshots` (faux versioning from existing snapshots), `sidecar` (true per-write + delete markers), or `both` (reflink merged with sidecar-layout history). Applies to ZFS-backed buckets only — non-ZFS buckets always use the sidecar mechanism. Unknown values abort startup. See [S3 Versioning](#s3-versioning). |
 | `zfs_versioning_reflink_retention` | `0` (unlimited) | Reflink-mode version retention FALLBACK: count of version files retained PER KEY (newest N kept; oldest beyond the cap are pruned with their sidecar entries after each recorded version). `0`/unset = unlimited; a negative value aborts startup. Applies to buckets WITHOUT their own `reflinkRetention` (see the buckets object form). See [S3 Versioning](#s3-versioning). |
@@ -596,23 +761,25 @@ folded into one number):
 days), so listing depth is bounded by that window; the gap/swap counts are
 lifetime and are never retention-deleted.
 
-### Purge (operator-only, not an HTTP endpoint)
+### Purge (operator-only; exposed on the management API)
 
-History purge is deliberately NOT exposed over the S3 API: no route calls
-it. The capability exists at the provider level (it execs
-`zmetad --purge <dataset>`: the coordinated wipe clears BOTH the database
-rows - events, gaps, sync_state, objmap - AND the kernel ring buffer, and
-resets the loss history). zeta-object never purges via SQL itself - a
-hand-rolled delete would leave the kernel ring uncleared and cause a full
-re-import, and dropping sync_state corrupts the watermark.
+History purge is deliberately NOT exposed over the S3 API: no S3 route
+calls it, because the credentials that grant object write access should
+not also grant erasure of the audit-flavored history. The capability
+exists at the provider level (it execs `zmetad --purge <dataset>`: the
+coordinated wipe clears BOTH the database rows - events, gaps, sync_state,
+objmap - AND the kernel ring buffer, and resets the loss history).
+zeta-object never purges via SQL itself - a hand-rolled delete would leave
+the kernel ring uncleared and cause a full re-import, and dropping
+sync_state corrupts the watermark.
 
-Rationale for keeping it off the wire: the data purge destroys is
-audit-flavored (event history plus the permanent gap/loss record), and the
-credentials that grant object write access should not also grant erasure
-of that history. To purge a dataset's history, run `zmetad --purge
-<dataset>` on the ZFS host (the same operator who runs zmetad). If an
-admin-tier grant lands later, wiring an authenticated purge endpoint
-gated on that tier is the right shape.
+The management API exposes it as `POST /purge` (body
+`{"dataset":"pool/ds"}`), gated on the administrative client certificate
+(the admin tier). It is the only irreversibly destructive management
+route: it destroys event history AND the permanent gap/loss record. Run it
+deliberately. The S3 API still has no purge route; the ALTERNATIVE for an
+operator without a client certificate is to run `zmetad --purge
+<dataset>` on the ZFS host (the same operator who runs zmetad).
 
 ## S3 Versioning
 
@@ -770,7 +937,7 @@ Every pull goes through the pre-commit chain (secrets scan, vet, error-pattern c
 ## Known Limitations
 
 *   No ACLs or bucket policies; authorization is per-identity grants (the `identities` config block — bucket-level and prefix/op/time-scoped rich expressions).
-*   Key rotation for `identities` is a SIGHUP reload (edit config.json → `kill -HUP`); the env pair still needs a restart. No OAuth/OIDC/token-based auth for S3 (SigV4 cannot express it).
+*   Key rotation for `identities` is a SIGHUP reload (edit config.json → `kill -HUP`) or a management API `POST /auth/reload`; the env pair still needs a restart. No OAuth/OIDC/token-based auth for S3 (SigV4 cannot express it).
 *   Region: defaults to `us-east-1`; set `region` in config.json to pin another region (strict credential-scope compare — a mismatch fails with `SignatureDoesNotMatch` naming the expected region). When `region` is left unset, default mode accepts any well-formed client region permissively with a log notice — a dev escape hatch; set `region` for a strict production posture.
 *   Object keys with `..` or `.metadata` path segments are rejected, and keys must be in canonical form (safety over S3 compatibility; no `a//b` aliasing).
 *   S3 versioning snapshots mode (ZFS buckets) is windowed by the host's snapshot policy: only writes that predate an existing snapshot are version-visible, and snapshot reads require zmetad tracking (an untracked dataset answers honestly-not-found). The ZFS-events-derived version listing (`?events&versions`) remains a separate extension, not S3 versioning.

@@ -91,7 +91,7 @@ bytes. e2e 32 (sidecar), zfs-validate section 10 (snapshots, real ZFS).
 | Loss accounting | Implemented | `recordsLost` = lifetime known-lost (survives retention); `ringSwaps` = kernel-log identity swaps, never folded into record counts. zfs-validate |
 | Freshness | Degrades | events appear within one zmetad poll (default 30s); `SIGUSR1` forces an out-of-band collect |
 | events=off dataset | Degrades | zmetad prunes untracked datasets -> clean `503` (same wire behavior as the capability being absent). zfs-validate section 5 |
-| Purge | Operator-only | `zmetad --purge <dataset>` on the host; deliberately NOT an HTTP endpoint (audit-flavored data; write credentials must not grant erasure) |
+| Purge | Implemented (management API, opt-in) | `POST /purge` on the management surface, gated on the administrative client certificate; the S3 API has no purge route. Clears event history AND the gap/loss record; execs `zmetad --purge <dataset>` on the host. e2e 35 (`scripts/e2e/cases/35-management-api.sh`), zfs-validate ([docs/validation-management-api-2026-10-04.md](validation-management-api-2026-10-04.md)) |
 
 ## WebDAV (RFC 4918 class 1 subset)
 
@@ -146,6 +146,50 @@ Finder and Windows mount with Basic auth. e2e 19 (59 asserts), e2e 31
 | symlink/readlink | Degrades | `SSH_FX_OP_UNSUPPORTED` |
 | rename | Degrades | Get+Put+Delete; no atomicity |
 | Multipart, conditional reads, versioning | Absent | no SFTP expression |
+
+## Management API
+
+A separate listener, authenticated by a TLS client certificate (mTLS), serving
+a JSON REST shape that is deliberately NOT the S3 API (see the README
+"Management API" section). Every route requires a verified client certificate;
+there is no unauthenticated route. The administrative identity is the
+certificate Subject Common Name, recorded as the principal in the audit log
+with `op` = `admin`. Errors use the JSON envelope
+`{"error":{"code":"...","message":"..."}}`; an unknown path is `404
+NotFound` and a wrong method on a known path is `405 MethodNotAllowed`.
+
+Status "Implemented (opt-in)" means the surface exists and is covered by
+tests but only runs when an `admin` entry is configured in `frontends`.
+Proof for every row: e2e case 35
+(`scripts/e2e/cases/35-management-api.sh`, generated certificates, skips
+gracefully without `openssl`) and the live ZFS proof in
+[docs/validation-management-api-2026-10-04.md](validation-management-api-2026-10-04.md)
+(mTLS handshake, plain-bucket create/delete over the API, and the
+dataset-delete refusal verified against `zfs list`).
+
+| Route | Status | Wire statuses | Notes / proof |
+|---|---|---|---|
+| `GET /status` | Implemented (opt-in) | `200`; `401` without a valid client certificate; `403` when the CN is outside `adminPrincipals` | version, uptime, listeners, frontends, backends, restart-required keys, honest `{available, reason}` metadata-provider probe. e2e 35, zfs-validate |
+| `GET /config` | Implemented (opt-in) | `200`; `401`/`403` as everywhere | full effective config with secrets masked, plus the restart-required list. e2e 35, zfs-validate |
+| `PUT /config` | Implemented (opt-in) | `200` with `{applied, restartRequired}`; `400 InvalidConfiguration` with the validator error (nothing changes) | partial update through the runtime store. e2e 35 |
+| `POST /config/save` | Implemented (opt-in) | `200 {saved:true}`; `500 PersistFailed` | persists the live config to the config file atomically (temp file plus rename). e2e 35 |
+| `POST /auth/reload` | Implemented (opt-in) | `200 {reloaded:true}`; `500 ReloadFailed` | re-runs the identity reload path AND re-reads the client CA (a replaced CA revokes old client certificates without a restart). e2e 35 |
+| `GET /buckets` | Implemented (opt-in) | `200`; `401`/`403` as everywhere | buckets with backend and per-bucket tunables, merged with configured custom buckets. e2e 35 |
+| `POST /buckets` | Implemented (opt-in) | `200 {created:true,name}`; `400 InvalidArgument` on an empty name; canonical object-model errors otherwise | create via the shared bucket manager. e2e 35, zfs-validate |
+| `GET /buckets/{name}` | Implemented (opt-in) | `200`; `404 NoSuchBucket` when absent | backend, tunables, whether it is a dataset; object count is NOT reported (no index exists). e2e 35 |
+| `DELETE /buckets/{name}` | Implemented (opt-in) | `200 {deleted:true}` for a plain-directory bucket; `409 DatasetBucketNotDeletable` for a dataset-backed bucket; `404 NoSuchBucket` when absent | plain-directory buckets only; the API never destroys a dataset. e2e 35, zfs-validate |
+| `PUT /buckets/{name}/settings` | Implemented (opt-in) | `200 {updated:true}`; `400 InvalidConfiguration` when the bucket is not in the config `buckets` map | per-bucket `auditReads` / `reflinkRetention` through the hot-apply path. e2e 35 |
+| `POST /purge` | Implemented (opt-in) | `200 {purged:true,dataset}`; `400 InvalidArgument` on an empty dataset; `503 MetadataProviderUnavailable`; `500 PurgeFailed` | the only irreversibly destructive route: clears event history AND the gap/loss record. e2e 35, zfs-validate |
+
+**The two delete surfaces differ deliberately.** The management
+`DELETE /buckets/{name}` refuses a dataset-backed bucket with `409
+DatasetBucketNotDeletable` and never asks the manager to destroy a dataset
+(`AllowDatasetDestroy` false). The S3 `DELETE /<bucket>` path keeps its
+existing behavior, including its `zfs_bucket_datasets` mode where a bucket
+delete runs `zfs destroy` on the bucket's own dataset (and answers `409
+BucketHasSnapshots` when snapshots are present). The management API's
+decision - no dataset destruction through the API - does not change the S3
+wire behavior.
 
 ## Cross-cutting guarantees (every protocol)
 
