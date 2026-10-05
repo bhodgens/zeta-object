@@ -96,7 +96,7 @@ jobs:
           # s3 85.8, sftp 68.4, webdav 81.8, owncloud 89.7, metadata 89.0,
           # objectmodel 92.7.
           case "${{ matrix.package }}" in
-            github.com/bhodgens/zeta-object)       FLOOR=77 ;; # measured 79.3 (re-measured 78.8 2026-10-04)
+            github.com/bhodgens/zeta-object)       FLOOR=79 ;; # measured 79.5 local / 81.1 CI after the management-api + admin-server wiring tests (2026-10-04); RAISE as tests land
             github.com/bhodgens/zeta-object/internal/auth)                 FLOOR=0  ;; # type-only seam interface: zero executable statements (contract pinned by tests)
             github.com/bhodgens/zeta-object/internal/backend)              FLOOR=91 ;; # measured 93.9
             github.com/bhodgens/zeta-object/internal/backend/conformance)  FLOOR=77 ;; # measured 79.0 - remaining bodies are violation-reporting, proven by detection_test.go child harness
