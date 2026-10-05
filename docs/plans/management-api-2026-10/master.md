@@ -371,9 +371,9 @@ Output: APPROVED or list of specific gaps.
 | 02-runtime-config-store | COMPLETE | 1 | committed; 12 store tests; child bug claim #6 disproved by parent grep (config.go:240/:347) |
 | 03-shared-bucket-manager | COMPLETE | 1 | e99093e; moved-block evidence reviewed; floors re-measured; one lock table verified |
 | 04-admin-routes | COMPLETE | 1 | committed; parent verified 401-per-route, OpAdmin ungrantable, AllowDatasetDestroy false, 8 audit keys |
-| 05-docs | IN_PROGRESS | 0 | dispatched (Group D) |
-| 06-e2e-case-35 | IN_PROGRESS | 0 | dispatched (Group D) |
-| 07-live-validation | PENDING | 0 | |
+| 05-docs | COMPLETE | 1 | a9cea74; docs checked against code, 0 em-dashes, example parses |
+| 06-e2e-case-35 | COMPLETE | 1 | b55b469; parent re-ran make e2e: 782/0, case 35 PASS 32 asserts |
+| 07-live-validation | IN_PROGRESS | 0 | dispatched (Group E, live host) |
 
 Status values: PENDING | IN_PROGRESS | IMPLEMENTED | REVIEWED | COMPLETE | BLOCKED
 
