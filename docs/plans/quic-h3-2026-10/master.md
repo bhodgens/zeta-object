@@ -49,14 +49,16 @@
    what the S3 PUT/DELETE captures, with byte-identical sidecar
    layout and `?versions` output. Nothing protocol-gated exists in
    the config and none may be added. (Leaf 05.)
-6. **Client program (user decision, 2026-10-04).** zeta-cache ships
-   with: a sync engine (index DB + journal, conflict-copy), a
-   scheduler (sync/eviction passes), a quota enforcer (device-side
+6. **Client program (user decision, 2026-10-04; named 2026-10-05).**
+   The client tool is **zeta-cache**, a subdirectory of THIS repo
+   (`zeta-cache/`, its own Go module) - the repo root stays clean.
+   It ships with: a sync engine (index DB + journal, conflict-copy),
+   a scheduler (sync/eviction passes), a quota enforcer (device-side
    cache cap), and a macOS GUI status tool (sync state, conflicts,
-   pause/resume, policy config). The GUI is macOS-first
-   (menu-bar app); Linux follows (tray app) after the daemon
-   stabilizes. Scope lives in a SEPARATE plan when the client tree
-   starts; the server tree assumes only the wire behaviors above.
+   pause/resume, policy config). The GUI is macOS-first (menu-bar
+   app); Linux follows (tray app) after the daemon stabilizes. Scope
+   lives in a SEPARATE plan tree when zeta-cache starts; the server
+   tree assumes only the wire behaviors above.
 7. **All ZFS features are UNIVERSAL per bucket (user decision,
    2026-10-04).** Every ZFS-backed capability operates at the bucket
    layer, below the protocol seam: versioning capture (decision 5,
@@ -64,8 +66,15 @@
    surfaces - event history and version listings (leaf 06: the same
    JSON the S3 `?events` / `?versions` endpoints return is served by
    the webdav path; h3 inherits by wrapping). No ZFS capability may
-   be reachable from only one protocol. The standing rule: any new
-   ZFS capability lands in ALL frontends or it is not done.
+   be reachable from only one protocol; any new ZFS capability lands
+   in ALL frontends or it is not done.
+8. **Event cursor is an optimization, not a dependency (user
+   decision, 2026-10-05).** The client sync engine uses the
+   zmetad-backed event cursor (leaf 06's surfaces) when the bucket
+   is ZFS-backed and falls back to ETag-diff PROPFIND scans when it
+   is not (plain-directory buckets have no event stream). The client
+   MUST work correctly - possibly slower - against a non-ZFS server;
+   no zeta-cache feature may REQUIRE zfs-metadata.
 
 ## Goal
 
