@@ -43,6 +43,20 @@
    mechanism - no special negotiation beyond the TLS handshake.
    Plain-TCP webdav keeps Basic auth for ad-hoc clients (Finder,
    rclone); the two credential models coexist per frontend entry.
+5. **Versioning capture is UNIVERSAL per bucket (user decision,
+   2026-10-04).** `zfs_versioning` capture applies to every write
+   path into a versioned bucket: a WebDAV PUT/DELETE captures exactly
+   what the S3 PUT/DELETE captures, with byte-identical sidecar
+   layout and `?versions` output. Nothing protocol-gated exists in
+   the config and none may be added. (Leaf 05.)
+6. **Client program (user decision, 2026-10-04).** zeta-cache ships
+   with: a sync engine (index DB + journal, conflict-copy), a
+   scheduler (sync/eviction passes), a quota enforcer (device-side
+   cache cap), and a macOS GUI status tool (sync state, conflicts,
+   pause/resume, policy config). The GUI is macOS-first
+   (menu-bar app); Linux follows (tray app) after the daemon
+   stabilizes. Scope lives in a SEPARATE plan when the client tree
+   starts; the server tree assumes only the wire behaviors above.
 
 ## Goal
 
@@ -301,8 +315,9 @@ type QUICListenerFrontend interface {
 |---|----------|------|-------------|-------------|-------------|
 | 01 | 01-webdav-range.md | leaf | none | 60K | A |
 | 02 | 02-h3-frontend.md | leaf | none (disjoint files from 01) | 80K | A |
-| 03 | 03-e2e-case-docs.md | leaf | 01, 02 | 60K | B |
+| 03 | 03-e2e-case-docs.md | leaf | 01, 02, 05 | 60K | B |
 | 04 | 04-live-validation.md | leaf | 03 | 40K | C (live host) |
+| 05 | 05-webdav-versioning.md | leaf | 01 (rangespan outcome) | 60K | A2 |
 
 **Concurrency groups:** A: 01 and 02 simultaneously (disjoint files:
 01 owns `internal/frontend/webdav/get.go` + a possible new
@@ -310,10 +325,14 @@ type QUICListenerFrontend interface {
 `internal/frontend/frontend.go`, `frontends.go`, `main_server.go`,
 and the new `internal/frontend/h3` package). If leaf 01 must move
 rangespan, the move touches `internal/frontend/s3/` - still disjoint
-from 02. B: 03 after both (probe pins leaf 02's quic-go API shapes;
-docs pin leaf 01's semantics). C: 04 last, on zfs-meta -
-`run-zfs-validation.sh` is the highest-collision file in the repo:
-before dispatching, check `git log --oneline -3 -- 
+from 02. A2: 05 after 01 and 02 COMMIT (it edits webdav put/delete/
+copymove - 01 owns get.go - and possibly extracts from
+`internal/frontend/s3/versionstore.go`; the rangespan outcome from 01
+decides its extraction pattern). B: 03 after 01, 02, 05 (the probe
+pins leaf 02's quic-go API shapes; docs pin 01's and 05's semantics;
+the case gains the two-protocol version check). C: 04 last, on
+zfs-meta - `run-zfs-validation.sh` is the highest-collision file in
+the repo: before dispatching, check `git log --oneline -3 -- 
 scripts/zfs-validate/run-zfs-validation.sh` and `git status` for
 sibling hunks; if a sibling owns it, WAIT or run leaf 04 in-session.
 
@@ -413,6 +432,7 @@ Output: APPROVED or list of specific gaps.
 |-------|--------|------------|-------------|
 | 01-webdav-range | PENDING | | |
 | 02-h3-frontend | PENDING | | |
+| 05-webdav-versioning | PENDING | | |
 | 03-e2e-case-docs | PENDING | | |
 | 04-live-validation | PENDING | | |
 
