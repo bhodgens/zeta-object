@@ -57,6 +57,15 @@
    (menu-bar app); Linux follows (tray app) after the daemon
    stabilizes. Scope lives in a SEPARATE plan when the client tree
    starts; the server tree assumes only the wire behaviors above.
+7. **All ZFS features are UNIVERSAL per bucket (user decision,
+   2026-10-04).** Every ZFS-backed capability operates at the bucket
+   layer, below the protocol seam: versioning capture (decision 5,
+   leaf 05), dataset-per-bucket (already universal), and the READ
+   surfaces - event history and version listings (leaf 06: the same
+   JSON the S3 `?events` / `?versions` endpoints return is served by
+   the webdav path; h3 inherits by wrapping). No ZFS capability may
+   be reachable from only one protocol. The standing rule: any new
+   ZFS capability lands in ALL frontends or it is not done.
 
 ## Goal
 
@@ -318,6 +327,7 @@ type QUICListenerFrontend interface {
 | 03 | 03-e2e-case-docs.md | leaf | 01, 02, 05 | 60K | B |
 | 04 | 04-live-validation.md | leaf | 03 | 40K | C (live host) |
 | 05 | 05-webdav-versioning.md | leaf | 01 (rangespan outcome) | 60K | A2 |
+| 06 | 06-zfs-read-surfaces.md | leaf | 05 | 50K | A3 |
 
 **Concurrency groups:** A: 01 and 02 simultaneously (disjoint files:
 01 owns `internal/frontend/webdav/get.go` + a possible new
@@ -328,8 +338,10 @@ rangespan, the move touches `internal/frontend/s3/` - still disjoint
 from 02. A2: 05 after 01 and 02 COMMIT (it edits webdav put/delete/
 copymove - 01 owns get.go - and possibly extracts from
 `internal/frontend/s3/versionstore.go`; the rangespan outcome from 01
-decides its extraction pattern). B: 03 after 01, 02, 05 (the probe
-pins leaf 02's quic-go API shapes; docs pin 01's and 05's semantics;
+decides its extraction pattern). A3: 06 after 05 (extracts the shared
+ZFS read-surface package; depends on 05's placement outcome). B: 03
+after 01, 02, 05, 06 (the probe pins leaf 02's quic-go API shapes;
+docs pin 01's, 05's and 06's semantics;
 the case gains the two-protocol version check). C: 04 last, on
 zfs-meta - `run-zfs-validation.sh` is the highest-collision file in
 the repo: before dispatching, check `git log --oneline -3 -- 
@@ -433,6 +445,7 @@ Output: APPROVED or list of specific gaps.
 | 01-webdav-range | PENDING | | |
 | 02-h3-frontend | PENDING | | |
 | 05-webdav-versioning | PENDING | | |
+| 06-zfs-read-surfaces | PENDING | | |
 | 03-e2e-case-docs | PENDING | | |
 | 04-live-validation | PENDING | | |
 
