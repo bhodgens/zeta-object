@@ -66,8 +66,10 @@ server stopped, tally reported.
 - New harness sections in `checks.py` (or the harness's check
   mechanism - follow the existing section structure exactly):
   1. **h3 smoke:** PUT + GET round-trip over HTTP/3 against the
-     ZFS-backed bucket (Basic auth, the harness's credentials).
-  2. **h3 auth:** unauthenticated GET over h3 is 401.
+     ZFS-backed bucket (the probe presents its client certificate).
+  2. **h3 auth:** a probe with NO client certificate fails the TLS
+     handshake (connection error, not an HTTP status); a certificate
+     signed by the WRONG CA also fails the handshake.
   3. **h3 Range:** `bytes=0-99` over h3 is 206, bytes match the
      full-body slice exactly.
   4. **Range over TCP (parity):** the same span over the TCP webdav
@@ -152,8 +154,9 @@ UDP listener. The harness does this on exit - verify, do not assume.
       not fixed by weakening a check
 - [ ] Cleanup verified with commands, not assumed
 - [ ] The h3 checks would FAIL if the server dropped h3 support
-      (negative check: the auth 401 proves the transport actually
-      carries requests, and one check exercises a real error path)
+      (negative check: a no-cert handshake failure proves the
+      transport is actually up and verifying, and one check
+      exercises a real error path)
 
 Output: APPROVED or specific gaps with file:line.
 

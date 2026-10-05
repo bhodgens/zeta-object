@@ -166,25 +166,32 @@ loudly.
 - Create: `internal/frontend/h3/frontend.go` (the frontend: Name/
   Handler/Authenticator/Capabilities delegating to the wrapped webdav;
   Addr/TLSConfig for the seam)
-- Create: `internal/frontend/h3/frontend_test.go`
+- Create: `internal/auth/cert.go` (CertAuthenticator: TLS peer
+  certificate CN -> identity registry lookup; 401 fail-closed on an
+  unknown CN)
+- Create: `internal/auth/cert_test.go`
 - Modify: `frontends.go` (factory entry + option validation + the
   pinned known-types strings from Contract 3)
 
 **Step 1: Write failing tests:**
 - construction requires `bucket` (a missing bucket is an error naming
   the requirement - the webdav single-bucket re-root needs it);
-- `Name() == "h3"`; `Authenticator()` is non-nil and is the Basic
-  authenticator; `Capabilities()` equals the wrapped webdav's
+- construction requires `clientCAFile` (missing or unreadable is an
+  error naming the path);
+- `Name() == "h3"`; `Capabilities()` equals the wrapped webdav's
   (Buckets false in single-bucket mode, ConditionalReads true);
 - unknown option key aborts construction naming the key and the
   known empty set;
 - empty `listenAddr` aborts construction (never a shared-mux
   fallback);
 - `TLSConfig()` returns a config with the process pair loaded,
-  MinVersion TLS 1.3, and no client-cert requirement (webdav auth is
-  Basic over h3, not mTLS - assert `ClientAuth ==
-  tls.NoClientCert`);
-- Addr() round-trips the config value.
+  MinVersion TLS 1.3, `ClientAuth == tls.RequireAndVerifyClientCert`,
+  and ClientCAs loaded from `clientCAFile`;
+- Addr() round-trips the config value;
+- CertAuthenticator unit table: known CN resolves to the registry
+  identity; unknown CN fails closed; empty CN fails closed;
+  certificate signed by the wrong CA never reaches the adapter (TLS
+  rejects it).
 
 **Step 2:** `go test ./internal/frontend/h3/ -count=1` -> FAIL.
 

@@ -66,9 +66,12 @@ is implemented and what degrades to what.
   server - so the case should always run; do not add a soft skip
   path that hides real failures).
 - The probe asserts, over HTTP/3 (mode `h3`):
-  1. unauthenticated GET is 401 (Basic auth enforced over QUIC);
-  2. authenticated PUT of a file (multi-KB content with known bytes)
-     succeeds (201/204 per the webdav wire);
+  - the probe presents a client certificate (`-cert`, `-key` flags)
+    for all h3 requests; without one the TLS handshake FAILS (assert
+    on connection error - with RequireAndVerifyClientCert there is no
+    HTTP 401 over h3; the 401 assert lives in tcp mode);
+  2. certificate-authenticated PUT of a file (multi-KB content with
+     known bytes) succeeds (201/204 per the webdav wire);
   3. authenticated GET round-trips the exact bytes;
   4. `Range: bytes=0-99` GET is 206 with `Content-Range:
      bytes 0-99/<size>` and exactly the first 100 bytes;

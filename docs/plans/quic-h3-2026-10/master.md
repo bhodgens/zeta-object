@@ -30,12 +30,19 @@
 3. **Client platform scope:** FUSE-only v1 on Linux and macOS. The
    iCloud-grade macOS FileProvider extension is future work recorded in
    issue #14 (docs/plans/issue-fileprovider-macos-client.md).
-4. **No special client negotiation.** "Knowing these clients are its
-   own" is the existing credential model (identity registry, Basic
-   auth over WebDAV; mTLS stays the admin surface's model). The h3
-   endpoint is open to any client that speaks HTTP/3 - that is the
-   dumb-gateway charter, and Alt-Svc (RFC 7838) is the only discovery
-   mechanism.
+4. **Client authentication is a CERTIFICATE (mTLS), user decision
+   2026-10-04.** The h3 frontend verifies a client certificate
+   against a configured CA (`RequireAndVerifyClientCert`); the
+   certificate CN is the principal and maps into the existing
+   identity registry, so bucket grants and audit attribution work
+   unchanged. Per-device certificates (CN = device name). No
+   passwords on the cache path at all. This mirrors the admin
+   surface's credential model; unlike admin, unknown CNs are an
+   identity-registry question (401), and the endpoint is not
+   loopback-restricted. Alt-Svc (RFC 7838) stays the only discovery
+   mechanism - no special negotiation beyond the TLS handshake.
+   Plain-TCP webdav keeps Basic auth for ad-hoc clients (Finder,
+   rclone); the two credential models coexist per frontend entry.
 
 ## Goal
 
@@ -194,8 +201,21 @@ type QUICListenerFrontend interface {
 
 - Factory entry `frontendFactories["h3"]` in `frontends.go`. Option
   keys validated fail-loud through the existing `validateOptions`
-  helper: v1 has NONE (empty options object). An unknown option key
-  aborts startup naming the key and the known (empty) set.
+  helper: `clientCAFile` (REQUIRED, PEM bundle of the trusted client
+  CA(s) - read at startup; an unreadable path aborts startup naming
+  the file). No other option keys in v1. An unknown option key
+  aborts startup naming the key and the known set.
+- mTLS: the h3 TLS config sets `RequireAndVerifyClientCert` with
+  ClientCAs from `clientCAFile` (the pattern
+  `internal/frontend/admin/mtls.go` already proves). The principal is
+  the certificate Subject CN, resolved through the identity registry
+  by the `CertAuthenticator` (`internal/auth/cert.go`): known CN ->
+  that identity's bucket grants; unknown or empty CN -> 401
+  fail-closed. Per-device certificates: the operator issues one cert
+  per device, CN = device name.
+- The loopback guard does NOT apply to h3 (that is an admin-surface
+  control; the h3 listener serves off-host cache clients by design -
+  authorization is the certificate + bucket grants).
 - Known-types strings: adding the `h3` type changes the startup error's
   known list. GREP and update every pinned copy: the literal
   `known: [` appears in root-package tests and in
@@ -204,9 +224,6 @@ type QUICListenerFrontend interface {
   error text - check whether they enumerate the global set and update
   only if the test pins the global set). Every pinned literal gets the
   new type IN THE SAME LEAF.
-- Auth: the wrapped webdav authenticator is
-  `auth.NewBasicAuthenticator(identityRegistry)` - identical to the
-  webdav factory. No new credential type, no admin tier.
 - Alt-Svc middleware: when any mounted frontend is a
   `QUICListenerFrontend`, main wraps each HTTP-serving frontend's
   handler so every response carries
@@ -237,7 +254,11 @@ type QUICListenerFrontend interface {
   toolchain is present because the harness builds the server). The
   probe speaks the pinned quic-go API from Contract 4 and performs:
   PUT, full GET, single-span Range GET (206 + Content-Range assert),
-  PROPFIND depth-1, and an unauthenticated 401 probe - asserting
+  PROPFIND depth-1 - the probe presents a per-device CLIENT
+  CERTIFICATE over h3 (leaf 02 pins the clientCAFile option; the
+  harness generates a CA + one client cert the way case 35's mTLS
+  setup does), a no-cert connection fails the handshake, and the
+  TCP-mode 401 covers Basic auth rejection - asserting
   status lines and key headers, printing a PASS/FAIL tally, exiting
   non-zero on failure.
 - The harness config for the case carries an EXPLICIT frontends array:
