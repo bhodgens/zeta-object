@@ -49,8 +49,20 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case "OPTIONS":
 		f.handleOPTIONS(w, r)
 	case "GET":
+		// Leaf 06: the ZFS enrichment queries (?events on any GET,
+		// ?versions on a file GET) resolve BEFORE resource-kind
+		// resolution — a query on a collection must not fall into the
+		// collection-GET path. Unknown query params are ignored here
+		// (zfsSurfaceDispatch returns false) and take the plain path
+		// below, byte-unchanged. Auth and grants ran above.
+		if f.zfsSurfaceDispatch(w, r.WithContext(ctx), res) {
+			return
+		}
 		f.handleGET(w, r.WithContext(ctx), res, false)
 	case "HEAD":
+		if f.zfsSurfaceDispatch(w, r.WithContext(ctx), res) {
+			return
+		}
 		f.handleGET(w, r.WithContext(ctx), res, true)
 	case "PROPFIND":
 		f.handlePROPFIND(w, r.WithContext(ctx), res)
