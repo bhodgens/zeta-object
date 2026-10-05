@@ -368,9 +368,9 @@ Output: APPROVED or list of specific gaps.
 | Child | Status | Iterations | Review Notes |
 |-------|--------|------------|-------------|
 | 01-admin-frontend-mtls | COMPLETE | 1 | c79dd5a; parent re-verified gates; +CertFile/KeyFile on Options (deviation) |
-| 02-runtime-config-store | IN_PROGRESS | 0 | dispatched (Group B) |
+| 02-runtime-config-store | COMPLETE | 1 | committed; 12 store tests; child bug claim #6 disproved by parent grep (config.go:240/:347) |
 | 03-shared-bucket-manager | COMPLETE | 1 | e99093e; moved-block evidence reviewed; floors re-measured; one lock table verified |
-| 04-admin-routes | PENDING | 0 | |
+| 04-admin-routes | IN_PROGRESS | 0 | dispatched (Group C) |
 | 05-docs | PENDING | 0 | |
 | 06-e2e-case-35 | PENDING | 0 | |
 | 07-live-validation | PENDING | 0 | |
