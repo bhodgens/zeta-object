@@ -373,7 +373,7 @@ Output: APPROVED or list of specific gaps.
 | 04-admin-routes | COMPLETE | 1 | committed; parent verified 401-per-route, OpAdmin ungrantable, AllowDatasetDestroy false, 8 audit keys |
 | 05-docs | COMPLETE | 1 | a9cea74; docs checked against code, 0 em-dashes, example parses |
 | 06-e2e-case-35 | COMPLETE | 1 | b55b469; parent re-ran make e2e: 782/0, case 35 PASS 32 asserts |
-| 07-live-validation | IN_PROGRESS | 0 | dispatched (Group E, live host) |
+| 07-live-validation | COMPLETE | 1 | 140/140 PASS exit 0 first run; dataset-refusal proven on real ZFS with zfs list evidence; no server bugs |
 
 Status values: PENDING | IN_PROGRESS | IMPLEMENTED | REVIEWED | COMPLETE | BLOCKED
 
