@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 )
@@ -365,6 +366,24 @@ var serverConfig = ServerConfig{
 	ZmetadBinary: defaultZmetadBinary,
 }
 
+// configMu guards the serverConfig global against the reload-vs-request
+// race: POST /auth/reload (and SIGHUP) re-run loadConfig at runtime, which
+// REPLACES the global, while request goroutines read it (getBucketPath,
+// the actions sweeps, the metadata provider setup). Startup-only readers
+// (main's listener wiring, which snapshots CertFile/KeyFile into its TLS
+// configs before serving) read after the last startup write and need no
+// lock; every RUNTIME re-readable site must go through
+// serverConfigSnapshot() or hold configMu itself.
+var configMu sync.RWMutex
+
+// configMuLockedZmetadBinary reads the running zmetad binary under the
+// read lock (the purge service reads it per request, racing reloads).
+func configMuLockedZmetadBinary() string {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return serverConfig.ZmetadBinary
+}
+
 // defaultServerConfig returns a fully-populated ServerConfig with all
 // defaults applied. loadConfig always starts from a fresh copy so a failed
 // parse can never leave the global partially mutated.
@@ -395,7 +414,9 @@ func loadConfig(configPath string) error {
 	data, err := os.ReadFile(configPath)
 	if os.IsNotExist(err) {
 		log.Printf("Config file %s not found, using defaults", configPath)
+		configMu.Lock()
 		serverConfig = cfg
+		configMu.Unlock()
 		return nil
 	}
 	if err != nil {
@@ -465,7 +486,9 @@ func loadConfig(configPath string) error {
 		cfg.Frontends = []FrontendConfig{{Type: "s3"}}
 	}
 
+	configMu.Lock()
 	serverConfig = cfg
+	configMu.Unlock()
 	log.Printf("Loaded config: DataDir=%s, ListenAddr=%s, CertFile=%s, KeyFile=%s, CustomBuckets=%d",
 		serverConfig.DataDir, serverConfig.ListenAddr, serverConfig.CertFile,
 		serverConfig.KeyFile, len(serverConfig.Buckets))

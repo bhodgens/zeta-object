@@ -50,7 +50,7 @@ func buildAdminWiring(audit admin.AuditFunc) adminWiring {
 	if provider != nil {
 		// Apply the config-driven purge binary at WIRING time (leaf 04
 		// Task 2): the zmetad binary for `zmetad --purge`.
-		metadata.SetZmetadBinary(provider, serverConfig.ZmetadBinary)
+		metadata.SetZmetadBinary(provider, configMuLockedZmetadBinary())
 	}
 	svc := admin.Services{
 		Status:         adminStatusService,
@@ -423,7 +423,7 @@ func adminPurgeService(provider metadata.MetadataProvider) func(ctx context.Cont
 			return &admin.ServiceError{Status: 503, Code: "MetadataProviderUnavailable",
 				Message: "the zfs-events metadata provider is not registered"}
 		}
-		metadata.SetZmetadBinary(provider, serverConfig.ZmetadBinary)
+		metadata.SetZmetadBinary(provider, configMuLockedZmetadBinary())
 		if err := provider.Purge(ctx, dataset); err != nil {
 			return &admin.ServiceError{Status: 500, Code: "PurgeFailed", Message: err.Error()}
 		}

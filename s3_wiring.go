@@ -235,6 +235,13 @@ func applyHotSeams(cfg *ServerConfig) error {
 // global; the s3 frontend reaches the same math through its injected fs-root
 // resolver from the installed configuration.
 func getBucketPath(bucketName string) string {
+	// Hold the read lock ACROSS the resolution: a config reload (POST
+	// /auth/reload, SIGHUP) replaces the global while request goroutines
+	// resolve bucket paths - the exact race -race flagged on CI (loadConfig
+	// write vs this read). Returning a pointer with the lock released would
+	// re-open the race on the field reads, so the math runs under the lock.
+	configMu.RLock()
+	defer configMu.RUnlock()
 	return bucketPathFor(&serverConfig, bucketName)
 }
 

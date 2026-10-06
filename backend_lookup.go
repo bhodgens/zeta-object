@@ -162,7 +162,12 @@ func backendOpts(cfg ServerConfig, name string) map[string]string {
 // opens; this lazy path only serves tests (and would, if hit, still fail
 // loudly on an unknown backend name).
 func lazyBackendFor(bucket string) (backend.Backend, error) {
-	lookup, err := buildBackendLookup(serverConfig)
+	// Snapshot under the read lock: this lazy path can fire on the first
+	// request after boot, racing a config reload's global replacement.
+	configMu.RLock()
+	cfgCopy := serverConfig
+	configMu.RUnlock()
+	lookup, err := buildBackendLookup(cfgCopy)
 	if err != nil {
 		return nil, err
 	}

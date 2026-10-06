@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -797,7 +798,13 @@ func initializeInactivityTimers() {
 	}
 
 	// Scan custom buckets
-	for bucketName, bucketPath := range serverConfig.Buckets {
+	// Snapshot under the read lock: a config reload replaces the global
+	// while this background sweep reads it.
+	configMu.RLock()
+	bucketsSnapshot := maps.Clone(serverConfig.Buckets)
+	dataDir := serverConfig.DataDir
+	configMu.RUnlock()
+	for bucketName, bucketPath := range bucketsSnapshot {
 		actionsPath := filepath.Join(bucketPath, actionsFileName)
 		actions, err := loadActionsFile(actionsPath)
 		if err != nil {
@@ -810,7 +817,7 @@ func initializeInactivityTimers() {
 	}
 
 	// Scan auto-discovered buckets
-	dirs, err := os.ReadDir(serverConfig.DataDir)
+	dirs, err := os.ReadDir(dataDir)
 	if err != nil {
 		log.Printf("Error reading data directory for inactivity timers: %v", err)
 		return
@@ -821,14 +828,14 @@ func initializeInactivityTimers() {
 			continue
 		}
 
-		fullPath := filepath.Join(serverConfig.DataDir, dir.Name())
+		fullPath := filepath.Join(dataDir, dir.Name())
 		info, err := os.Stat(fullPath)
 		if err != nil || !info.IsDir() {
 			continue
 		}
 
 		// Skip if already handled as custom bucket
-		if _, exists := serverConfig.Buckets[dir.Name()]; exists {
+		if _, exists := bucketsSnapshot[dir.Name()]; exists {
 			continue
 		}
 
