@@ -281,6 +281,111 @@ def sign_on(port, method, path, query="", payload=b"", amz_meta=None, content_ty
                     amz_meta=amz_meta, content_type=content_type)
 PYEOF
 
+# ------------------------------------------- the shared check-floor helper --
+# ONE definition, exec'd by every checks-*.py below (the same way each of them
+# exec's probe.py). A check block's minimum result count lives HERE, once, so
+# the rule cannot drift between five copies.
+#
+# WHY IT EXISTS: every block tallies `len(results) - len(failed)` and exits
+# non-zero on a failure. With no LOWER BOUND on len(results), a run in which
+# no check executed printed "TOTAL: 0/0" and exited 0 — a green that verified
+# nothing (see the CHECK-FLOOR row require_floor appends). The floor is
+# computed from each block's OWN source with ast, never hand-written: add a
+# check() and the floor rises with it, delete one and it drops, so it cannot
+# silently drift away from the checks the block defines.
+#
+# The floor counts only the checks GUARANTEED to run — module-level statements,
+# plus the `if <branch_var> == <value>:` branch this invocation selected (a
+# checks-*.py that switches on an env var is one file run once per mode, so the
+# other branch's checks are not part of this run). A check nested in an if /
+# for / while / try / def is EXCLUDED on purpose: it may legitimately not
+# execute, and counting it would make the floor unsatisfiable. The floor can
+# therefore never be met by a skipped check — it is a floor on checks that
+# always execute, so reaching the tally line at all implies they all ran.
+cat > "$WORK/checks-floor.py" <<'PYEOF'
+# check-floor — fail a block that ran fewer checks than it guarantees.
+import ast as _ast, os as _os, sys as _sys
+
+_BLOCK = os.path.basename(os.path.abspath(__file__))
+_CONTROL = (_ast.If, _ast.For, _ast.AsyncFor, _ast.While, _ast.Try,
+            _ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)
+
+
+def _self_source():
+    # The floor must describe the CHECK BLOCK, not this helper: __file__ in the
+    # exec'd scope is the checks-*.py that exec'd us.
+    return open(os.path.abspath(__file__), encoding="utf-8").read()
+
+
+def _check_calls(node):
+    return sum(1 for c in _ast.walk(node)
+               if isinstance(c, _ast.Call) and isinstance(c.func, _ast.Name)
+               and c.func.id == "check")
+
+
+def _unconditional(node):
+    """check() calls reachable with no if/for/while/try/def in between."""
+    if isinstance(node, _CONTROL):
+        return 0
+    total = 0
+    for child in _ast.iter_child_nodes(node):
+        if isinstance(child, _CONTROL):
+            continue
+        if (isinstance(child, _ast.Call) and isinstance(child.func, _ast.Name)
+                and child.func.id == "check"):
+            total += 1
+        total += _unconditional(child)
+    return total
+
+
+def _branch_taken(stmt, var, val):
+    """True/False for `if <var> == <val>:`, None when the shape is not that."""
+    test = stmt.test
+    if (isinstance(test, _ast.Compare) and len(test.ops) == 1
+            and isinstance(test.ops[0], _ast.Eq)
+            and isinstance(test.left, _ast.Name) and test.left.id == var
+            and len(test.comparators) == 1
+            and isinstance(test.comparators[0], _ast.Constant)):
+        return test.comparators[0].value == val
+    return None
+
+
+def require_floor(block, results, branch_var=None, branch_val=None):
+    """Fail `results` unless every guaranteed check() actually ran.
+
+    Call this IMMEDIATELY BEFORE computing `failed`/printing the tally, so an
+    empty or truncated run exits non-zero instead of reporting green.
+    Returns (required, defined).
+    """
+    tree = _ast.parse(_self_source())
+    required = sum(_unconditional(s) for s in tree.body)
+    if branch_var is not None:
+        for stmt in tree.body:
+            if not isinstance(stmt, _ast.If):
+                continue
+            taken = _branch_taken(stmt, branch_var, branch_val)
+            if taken is None:
+                continue
+            required += sum(_unconditional(s)
+                            for s in (stmt.body if taken else stmt.orelse))
+            break
+        else:
+            # A renamed mode must be loud, never silently floorless.
+            raise RuntimeError(
+                "check-floor: %s has no top-level `if %s == ...:` branch, so "
+                "its minimum count cannot be derived" % (block, branch_var))
+    defined = _check_calls(tree)
+    if len(results) < required:
+        msg = ("CHECK FLOOR NOT MET — block %s: required >=%d results, got %d "
+               "(this block defines %d check() calls in total). The block was "
+               "truncated, skipped, or aborted before its checks ran."
+               % (block, required, len(results), defined))
+        print("FATAL: " + msg, file=_sys.stderr)
+        results.append(("%s CHECK-FLOOR (minimum %d results)" % (block, required),
+                        False, msg))
+    return required, defined
+PYEOF
+
 # ------------------------------------------------------------- checks ------
 cat > "$WORK/checks.py" <<'PYEOF'
 import hashlib, json, re, subprocess, sys, time
@@ -2374,9 +2479,12 @@ check("s15 webdav ?events&versions entries are NOT delete markers here",
 # ======================================================================
 S15_DEL = "s15-webdav-del.txt"
 purge(S15_DEL)
-wd("PUT", "/" + S15_DEL, data=b"s15-del-v1")
-wd("PUT", "/" + S15_DEL, data=b"s15-del-v2")   # -> one captured version (v1)
-wd("PUT", "/" + S15_DEL, data=b"s15-del-v3")   # -> a second (v2)
+_c, _ = wd("PUT", "/" + S15_DEL, data=b"s15-del-v1")
+check("s15 setup PUT v1 -> 200", _c == 200, f"status={_c}")
+_c, _ = wd("PUT", "/" + S15_DEL, data=b"s15-del-v2")   # -> one captured version (v1)
+check("s15 setup PUT v2 -> 200", _c == 200, f"status={_c}")
+_c, _ = wd("PUT", "/" + S15_DEL, data=b"s15-del-v3")   # -> a second (v2)
+check("s15 setup PUT v3 -> 200", _c == 200, f"status={_c}")
 del_code, _ = wd("DELETE", "/" + S15_DEL)
 check("s15 webdav DELETE on a versioned bucket -> 204", del_code == 204,
       f"status={del_code}")
@@ -2599,8 +2707,10 @@ check(f"s15 NO descriptor leak across {S15_N} ifMatch batch items "
 S15_CP_SRC = "s15-cp-src.txt"
 S15_CP_DST = "s15-cp-dst.txt"
 purge(S15_CP_SRC); purge(S15_CP_DST)
-wd("PUT", "/" + S15_CP_SRC, data=b"s15-cp-v1")
-wd("PUT", "/" + S15_CP_SRC, data=b"s15-cp-v2")   # one recorded version
+_c, _ = wd("PUT", "/" + S15_CP_SRC, data=b"s15-cp-v1")
+check("s15 setup COPY-source PUT v1 -> 200", _c == 200, f"status={_c}")
+_c, _ = wd("PUT", "/" + S15_CP_SRC, data=b"s15-cp-v2")   # one recorded version
+check("s15 setup COPY-source PUT v2 -> 200", _c == 200, f"status={_c}")
 c_code, _ = wd("COPY", "/" + S15_CP_SRC,
                hdrs=["Destination: /" + S15_CP_DST])
 check("s15 webdav COPY -> 201/204", c_code in (201, 204), f"status={c_code}")
@@ -2616,17 +2726,25 @@ check("s15 the COPY SOURCE kept its own single version (copy is not a write "
 # old partial-row matcher could answer with an UNRELATED object's events
 # (a bare-named object whose last segment matches the collection's).
 sh("mkdir -p %s/s15-coll/nested" % BUCKET_ROOT)
-wd("PUT", "/s15-coll/report.txt", data=b"s15-other-object")
-wd("PUT", "/report", data=b"s15-bare-report")
+_c, _ = wd("PUT", "/s15-coll/report.txt", data=b"s15-other-object")
+check("s15 setup decoy PUT s15-coll/report.txt -> 200", _c == 200, f"status={_c}")
+_c, _ = wd("PUT", "/report", data=b"s15-bare-report")
+check("s15 setup decoy PUT /report -> 200", _c == 200, f"status={_c}")
 force_collect(1.5)
 coll_code, coll_body = wd("GET", "/s15-coll/nested/?events")
 check("s15 ?events on a nested webdav collection -> 200", coll_code == 200,
       f"status={coll_code} {coll_body[:200]!r}")
 try:
     coll_ev = json.loads(coll_body.decode("utf-8", "replace"))
-    coll_events = coll_ev.get("events", [])
-except Exception:
-    coll_events = []
+except Exception as exc:
+    # FAIL CLOSED: a body we cannot decode is a broken surface, not an
+    # empty one. Defaulting to [] here made ANY decode error pass the
+    # emptiness assertion below (the exact silent-pass shape this section
+    # exists to refuse).
+    check("s15 nested-collection ?events body decodes as JSON", False,
+          f"undecodable body {coll_body[:200]!r}: {exc}")
+    coll_ev = {}
+coll_events = coll_ev.get("events", [])
 check("s15 nested-collection ?events is an honest EMPTY surface "
       "(no foreign object's keys)",
       coll_events == [], f"{len(coll_events)} events: {coll_events[:4]}")
