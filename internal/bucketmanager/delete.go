@@ -11,15 +11,25 @@ import (
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
-// delete is the Delete implementation: the custom-bucket 403 guard, then the
-// exist / emptiness / in-flight-upload guards (all BEFORE any provisioner
-// call — that ordering is the data-loss guard), then the dataset or
-// plain-directory branch. The logic is moved verbatim from
-// internal/frontend/s3/bucket_handlers.go deleteBucketHandler and
-// zfsdatasets_handlers.go deleteBucketDatasetPath.
+// delete is the Delete implementation: the bucket-name rule, then the
+// custom-bucket 403 guard, then the exist / emptiness / in-flight-upload
+// guards (all BEFORE any provisioner call — that ordering is the data-loss
+// guard), then the dataset or plain-directory branch. The logic is moved
+// verbatim from internal/frontend/s3/bucket_handlers.go deleteBucketHandler
+// and zfsdatasets_handlers.go deleteBucketDatasetPath, plus the name rule
+// (bughunt H3: without it, a ".." name resolved outside the data root and
+// RemoveAll deleted it).
 func (e Env) delete(ctx context.Context, name string, opts DeleteOptions) error {
 	if e.BucketPath == nil || e.Locks == nil {
 		return errNotInstalled()
+	}
+
+	// Bucket-name rule FIRST: refuse before resolving a path, stat-ing,
+	// reading, or asking a provisioner to destroy anything. Without it a
+	// traversal name (or "" / ".", which resolve to the data root itself)
+	// reached os.RemoveAll below.
+	if err := e.validateName(name); err != nil {
+		return err
 	}
 
 	// Prevent deletion of custom-configured buckets via API.

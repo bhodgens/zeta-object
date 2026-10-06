@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // maxManagementBodyBytes bounds a management request body (config patches are
@@ -66,12 +67,29 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, errorEnvelope{Error: errorBody{Code: code, Message: message}})
 }
 
-// writeServiceFailure maps a service error onto the JSON envelope: a
-// *ServiceError carries the status and code the service chose; anything else
-// is a generic 500 that leaks no internal detail.
+// writeServiceFailure maps a service error onto the JSON envelope, ALWAYS on
+// its honest status: a *ServiceError carries the status and code the service
+// chose, and a raw *objectmodel.Error (the backend-neutral taxonomy the shared
+// bucket manager returns, e.g. InvalidArgument/400 for a refused bucket name —
+// bughunt H3) carries its own. Anything else is a generic 500 that leaks no
+// internal detail.
+//
+// The objectmodel branch is what keeps a refused request a 400 instead of
+// masquerading as a server fault: before it, a service that returned the
+// taxonomy error unchanged (rather than re-wrapping it in a ServiceError) had
+// its 400 turned into {"code":"InternalError"} 500 — an honest client error
+// reported as an internal failure.
 func writeServiceFailure(w http.ResponseWriter, action string, err error) {
 	if se, ok := errors.AsType[*ServiceError](err); ok {
 		writeError(w, se.Status, se.Code, se.Message)
+		return
+	}
+	if oe, ok := errors.AsType[*objectmodel.Error](err); ok {
+		status := oe.HTTPStatus
+		if status == 0 {
+			status = http.StatusInternalServerError
+		}
+		writeError(w, status, oe.Code, oe.Message)
 		return
 	}
 	writeError(w, http.StatusInternalServerError, "InternalError", action+" failed")

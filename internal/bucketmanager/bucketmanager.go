@@ -127,16 +127,19 @@ func errNotInstalled() error {
 	return objectmodel.NewError(objectmodel.CodeInternalError, "Internal Server Error", 500)
 }
 
-// Create creates bucket name: the custom-bucket guard, the existing-path
-// guards, then either the dataset provisioning path or the plain-directory
-// MkdirAll path. Behavior is byte-identical to the pre-move S3 handler.
+// Create creates bucket name: the bucket-name rule, the custom-bucket guard,
+// the existing-path guards, then either the dataset provisioning path or the
+// plain-directory MkdirAll path. Behavior is byte-identical to the pre-move S3
+// handler for every name the S3 frontend admits (it validates first, so the
+// second check is unreachable there and harmless).
 func Create(ctx context.Context, name string) error {
 	return currentEnv().create(ctx, name)
 }
 
-// Delete deletes bucket name: the custom-bucket 403 guard, then the exist /
-// emptiness / in-flight-upload guards, then the dataset or plain-directory
-// branch. opts.AllowDatasetDestroy gates dataset destruction.
+// Delete deletes bucket name: the bucket-name rule, the custom-bucket 403
+// guard, then the exist / emptiness / in-flight-upload guards, then the
+// dataset or plain-directory branch. opts.AllowDatasetDestroy gates dataset
+// destruction.
 func Delete(ctx context.Context, name string, opts DeleteOptions) error {
 	return currentEnv().delete(ctx, name, opts)
 }
@@ -155,6 +158,11 @@ func List(ctx context.Context) ([]BucketInfo, error) {
 func (e Env) create(ctx context.Context, name string) error {
 	if e.BucketPath == nil || e.Locks == nil {
 		return errNotInstalled()
+	}
+	// Bucket-name rule FIRST: an invalid name must be refused before any path
+	// is resolved or any filesystem/provisioner work happens (bughunt H3).
+	if err := e.validateName(name); err != nil {
+		return err
 	}
 	// Custom-configured buckets are config-controlled: if the configured path
 	// exists on disk, PUT is idempotent success; if missing, report 409 with
@@ -199,8 +207,13 @@ func (e Env) createCustom(name, customPath string) error {
 // ensureCreatable applies the pre-move stat guards: a stat error that is
 // neither nil nor IsNotExist is a 500; an existing file is 409
 // BucketAlreadyExists; an existing directory is 409 BucketAlreadyOwnedByYou.
+//
+// Reached only through Env.create, which has ALREADY run Env.validateName on
+// name, so bucketPath is one path segment under the resolved data root. (This
+// comment previously claimed a validateBucketName check that no caller of this
+// function ever performed — see bughunt H3.)
 func (e Env) ensureCreatable(bucketPath, name string) error {
-	info, err := os.Stat(bucketPath) //nolint:gosec // G703: bucketPath built from validateBucketName-checked name
+	info, err := os.Stat(bucketPath) //nolint:gosec // G703: G703 is excluded repo-wide (.golangci.yml); name validated by Env.validateName in Env.create
 	if err != nil && !os.IsNotExist(err) {
 		log.Printf("Error statting bucket path %s: %v", bucketPath, err) //nolint:gosec // G703
 		return objectmodel.NewError(objectmodel.CodeInternalError, "Internal Server Error", 500)
@@ -228,7 +241,7 @@ func (e Env) createDataset(ctx context.Context, name, bucketPath, metadataPath s
 		return objectmodel.NewError(objectmodel.CodeInternalError, "Error creating bucket.", 500)
 	}
 
-	//nolint:gosec // G703: metadataPath under bucketPath built from validateBucketName-checked name
+	//nolint:gosec // G703: G703 is excluded repo-wide (.golangci.yml); metadataPath is under the bucketPath validated in Env.create
 	if err := os.Mkdir(metadataPath, 0755); err != nil {
 		log.Printf("Error creating metadata directory %s for bucket %s: %v — rolling back dataset %s", metadataPath, name, err, dataset)
 		if rollbackErr := e.Provisioner.Destroy(ctx, dataset); rollbackErr != nil {
