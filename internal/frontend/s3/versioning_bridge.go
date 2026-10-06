@@ -77,3 +77,27 @@ func RecordCapturedObjectVersionForBucket(bucketPath, bucketName, objectName str
 func DeleteObjectVersionedMarkerForBucket(bucketPath, bucketName, objectName string) (suppressPlainDelete bool, err error) {
 	return deleteObjectVersionedMarker(bucketPath, bucketName, objectName)
 }
+
+// PlainObjectDeleteMarker404 is the READ-side visibility rule the webdav
+// GET/HEAD path consults, byte-identical to the s3 GetObject handler's
+// gate (objectVersionedDispatch's caller, getObjectHandler): a plain read
+// on a key whose versioned history's latest entry is a delete marker must
+// answer 404 instead of serving the surviving data file — the DELETE
+// recorded a marker and SUPPRESSED the plain delete, so the bytes are
+// still on disk but no longer visible without a version id.
+//
+// bucketPath comes from the caller (the webdav frontend's own
+// bucket-path resolver — production wires the SAME getBucketPath value
+// the s3 frontend uses; no second config view exists). Off and
+// never-versioned buckets are unaffected (the consult short-circuits on
+// the Off state; the caller's normal path answers the plain 404 for a key
+// that is genuinely gone).
+//
+// Error handling is s3 parity and deliberately NOT fail-closed: like the
+// s3 gate's `mErr == nil && markerHidden`, a store read error returns
+// (false, err) and the caller PROCEEDS with the plain path. An unreadable
+// version sidecar must never turn a readable object into a 404; the s3
+// frontend logs no error for this arm either.
+func PlainObjectDeleteMarker404(bucketPath, bucketName, objectName string) (bool, error) {
+	return plainObjectDeleteMarker404(bucketPath, bucketName, objectName)
+}

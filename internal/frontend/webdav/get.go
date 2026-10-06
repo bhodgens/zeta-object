@@ -61,12 +61,28 @@ func (f *Frontend) serveCollectionHeaders(w http.ResponseWriter, isHead bool, _ 
 // vs all-unsatisfiable (416) per RFC 9110, and s3.WriteMultipartByteranges
 // is the multi-span wire form. If-None-Match is evaluated BEFORE Range: a
 // matching INM answers 304 regardless of any Range header.
+//
+// Delete-marker visibility: the marker consult runs FIRST, before the
+// conditional and before any Range or body decision, so a delete-marked
+// object can never leak a byte through a 206, a 304 or a full 200. See
+// deleteMarkerHides.
 func (f *Frontend) serveObject(w http.ResponseWriter, r *http.Request, res resource, obj objectmodel.Object, isHead bool) {
+	if f.deleteMarkerHides(w, res) {
+		return
+	}
 	etag := objectmodel.QuotedETag(obj.ETag)
 	if inm := r.Header.Get("If-None-Match"); inm != "" && etagMatchesAny(inm, etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
+	// Byte-range support is discoverable on every object response that
+	// carries a body or a range decision (s3 parity: object_handlers.go
+	// sets Accept-Ranges once, before the multi-range / single-range /
+	// full-body split, so a 200, a 206 and an unsatisfiable-range 416 all
+	// advertise it). Set AFTER the 304 branch, because s3 evaluates
+	// checkObjectPreconditions before advertising ranges — a 304 carries
+	// neither.
+	w.Header().Set("Accept-Ranges", "bytes")
 	// Parse the Range header against the object size BEFORE opening the
 	// stream: the 416 and multipart outcomes never need the backend, and
 	// the single-span span bounds are known up front.
@@ -145,6 +161,49 @@ func (f *Frontend) serveObject(w http.ResponseWriter, r *http.Request, res resou
 	if _, err := io.Copy(w, rc); err != nil {
 		log.Printf("webdav: mid-stream copy failure for %s/%s: %v", res.bucket, res.key, err)
 	}
+}
+
+// deleteMarkerHides is the READ-side half of the versioning contract, on
+// the same store the webdav DELETE wrote its marker into: a versioning
+// DELETE records a delete marker and SUPPRESSES the plain delete, so the
+// data file survives on disk while the object is gone from every plain
+// view. The s3 GET consults that marker (plainObjectDeleteMarker404, now
+// exported as s3.PlainObjectDeleteMarker404 through versioning_bridge.go)
+// and answers 404; without the same consult here, webdav GET/HEAD served
+// the surviving bytes after DELETE already answered 204 — the bug this
+// closes.
+//
+// It reports true when the response has been WRITTEN (404) and the caller
+// must stop; false means "not hidden, serve normally" — including every
+// error arm, which is s3 parity rather than a webdav choice:
+//
+//   - bucketPath "" (no resolver wired — the unit-test seam): no consult,
+//     today's plain serve, byte-identical.
+//   - a marker-read error: s3's gate reads `mErr == nil && markerHidden`,
+//     so it proceeds on error too. An unreadable version sidecar must not
+//     turn a readable object into a 404; the webdav DELETE path logs its
+//     store failures, and this read arm is silent on s3 as well.
+//
+// The consult runs before If-None-Match, before Range and before any body
+// write, so no hidden byte can escape through a 304 or a 206 either.
+func (f *Frontend) deleteMarkerHides(w http.ResponseWriter, res resource) bool {
+	if res.key == "" {
+		return false // no object key: nothing to hide (root/collection GET)
+	}
+	bucketPath := f.bucketPath(res.bucket)
+	if bucketPath == "" {
+		return false // unwired seam (unit-test shape): plain behavior
+	}
+	hidden, err := s3.PlainObjectDeleteMarker404(bucketPath, res.bucket, res.key)
+	if err != nil || !hidden {
+		return false // s3 parity: proceed on error, serve when not hidden
+	}
+	// RFC 4918: 404 with the generic <D:error> body, no object bytes. The
+	// s3 wire also carries x-amz-delete-marker: true here; webdav has no
+	// such header form, so the status plus the absence of the body is the
+	// whole contract.
+	writeDavError(w, http.StatusNotFound, "")
+	return true
 }
 
 // serveRangeUnsatisfiable answers an all-unsatisfiable Range header: 416
