@@ -271,7 +271,7 @@ func TestPROPFIND_FullPagination(t *testing.T) {
 }
 
 func TestObjectProps_ZeroByteRendersLength(t *testing.T) {
-	props := ObjectProps(objectmodel.Object{Key: "z", ETag: "e", LastModified: timeNow()}, false, "b", true, 0)
+	props := ObjectProps(objectmodel.Object{Key: "z", ETag: "e", LastModified: timeNow()}, false, "b", true, 0, "e")
 	found := false
 	for _, p := range props {
 		if p.Name == "getcontentlength" {

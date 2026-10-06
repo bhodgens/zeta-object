@@ -41,7 +41,7 @@ Most "S3-compatible" servers are the same idea restated: a service that owns a b
 2. **Existing directories become S3 buckets with zero migration.** Bucket `logs` at `/var/log` means the decade of log files already on disk is immediately listable, downloadable, and presign-able over S3 - byte-for-byte, no import, no copy. Symlinks are followed, so a bucket can live anywhere.
 3. **Filesystem capabilities become S3 capabilities.** When a bucket sits on a ZFS dataset polled by the zmetad daemon (per-dataset file-op history exported to SQLite), zeta-object serves `GET /<bucket>?events` and `GET /<bucket>?versions` derived from the kernel's own record of what happened to each file - create, rename, truncate, delete - with loss indicators. No hosted S3 offers object history; no opaque object server can borrow it from the filesystem. When the filesystem does not support it, the capability is simply absent (a clean 503), never faked. The kernel side of that log is not in stock OpenZFS: it ships on the `extended-metadata` branch of [`bhodgens/zfs-metadata`](https://github.com/bhodgens/zfs-metadata) - see [the prerequisite](#prerequisite-the-extended-metadata-branch-of-the-openzfs-fork).
 4. **Pluggable on both axes, honest about semantics.** Frontends (client protocols) and backends (storage) plug into one neutral object model, and the seams reject what a protocol cannot express instead of silently emulating it. A parity gate proves an enabled metadata provider changes nothing about core S3 responses.
-5. **Small enough to read, hardened enough to trust.** Two small Go binaries (the gateway plus the optional web console), a tiny audited dependency set (all licenses in docs/licenses/), and a gate wall: 1,376 unit test functions, an 842-assert e2e suite over 38 cases, race detector, fuzzing, ceph/s3-tests conformance ratchet, staticcheck/gosec, and a pre-commit chain that enforces all of it. The codebase is small enough that an afternoon of reading covers every line that touches your data.
+5. **Small enough to read, hardened enough to trust.** Two small Go binaries (the gateway plus the optional web console), a tiny audited dependency set (all licenses in docs/licenses/), and a gate wall: 1,376 unit test functions, an 881-assert e2e suite over 39 cases, race detector, fuzzing, ceph/s3-tests conformance ratchet, staticcheck/gosec, and a pre-commit chain that enforces all of it. The codebase is small enough that an afternoon of reading covers every line that touches your data.
 
 The honest, per-operation capability matrix for every protocol — what is implemented, what degrades and how, what is absent — lives in [docs/protocol-compatibility.md](docs/protocol-compatibility.md). The per-operation **S3 behavior contract** (request/response shapes, error codes, and every deliberate divergence from AWS S3, maintained under the upstream-zfs documentation contract): [docs/s3-behavior.md](docs/s3-behavior.md).
 
@@ -97,7 +97,7 @@ Quality gates and tests:
 ```bash
 make test         # unit tests with coverage summary
 make check        # full local gate: build, vet, fmt, lint, tests, race, vuln, secrets
-make e2e          # end-to-end suite: 842 asserts over 38 cases (incl. boto3 + mc + rclone interop)
+make e2e          # end-to-end suite: 881 asserts over 39 cases (incl. boto3 + mc + rclone interop)
 ```
 
 ## Credentials Configuration
@@ -1009,7 +1009,7 @@ Inspect configured actions with `./scripts/show-bucket-actions.sh data/`.
 
 zeta-object is baselined against the industry-standard [ceph/s3-tests](https://github.com/ceph/s3-tests) suite. `make conformance` builds the server, launches it on a free HTTPS port, runs the in-scope pytest subset (277 tests - buckets, objects, listing, multipart, copy, conditional, range, presigned), and exits non-zero only when a previously-passing test regresses against the committed ratchet `scripts/conformance/baseline.txt`. The full matrix with per-failure triage: [docs/conformance/2026-09-28-matrix.md](docs/conformance/2026-09-28-matrix.md).
 
-The e2e suite (`make e2e`, 842 asserts over 38 cases) additionally covers every user-facing surface - including custom buckets, backend/frontend configuration, the metadata endpoints, object tagging, multi-range GET, WebDAV locking, versioning, ZFS bucket datasets, all four protocol frontends, and live boto3/mc/rclone interop - per the repo rule in [AGENTS.md](AGENTS.md). The full per-operation protocol matrix: [docs/protocol-compatibility.md](docs/protocol-compatibility.md).
+The e2e suite (`make e2e`, 881 asserts over 39 cases) additionally covers every user-facing surface - including custom buckets, backend/frontend configuration, the metadata endpoints, object tagging, multi-range GET, WebDAV locking, versioning, ZFS bucket datasets, all four protocol frontends, and live boto3/mc/rclone interop - per the repo rule in [AGENTS.md](AGENTS.md). The full per-operation protocol matrix: [docs/protocol-compatibility.md](docs/protocol-compatibility.md).
 
 ## Architecture
 
@@ -1053,7 +1053,7 @@ make clean    # remove build artifacts
 ```bash
 make test              # unit tests with coverage summary
 make check             # build, vet, fmt, lint, tests, race, vuln, secrets
-make e2e               # 842-assert end-to-end suite, 38 cases
+make e2e               # 881-assert end-to-end suite, 39 cases
 make parity-test       # metadata-provider parity gate (FS vs provider-backed identical)
 make test-cover-enforce # aggregate coverage floor (ratchets up over time)
 make conformance       # ceph/s3-tests subset vs committed ratchet

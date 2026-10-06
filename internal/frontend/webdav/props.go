@@ -53,14 +53,19 @@ type PropEntry struct {
 	OC bool
 }
 
-// ObjectProps maps an object (or collection) onto the five Contract-5
+// ObjectProps maps a resource onto the five Contract-5
 // properties PLUS the ownCloud-namespace discovery properties (issue #5):
 // oc:fileid, oc:permissions on every resource, and oc:size on collections
 // (files already carry getcontentlength). Collections report
 // httpd/unix-directory, a collection resourcetype, and NO
-// getcontentlength/getetag; files report size, quoted strong ETag, content
+// getcontentlength; files report size, quoted strong ETag, content
 // type (default application/octet-stream), and an empty resourcetype.
 // Zero-byte objects render getcontentlength = 0.
+//
+// etag is the resource's ETag value: the stored object ETag for files, the
+// derived immediate-children token ("dir-<hex>", colltoken.go) for
+// collections with a usable derivation, or "" when neither exists (the
+// historical quoted-empty rendering).
 //
 // The permission strings are a pinned, documented SIMPLIFICATION of the real
 // ownCloud grammar (docs/owncloud-compatibility.md): readwrite file = "RW",
@@ -73,7 +78,7 @@ type PropEntry struct {
 // field, no database, no server-owned index (project charter) — the same
 // bucket+key hashes to the same fileid across requests and restarts, and
 // the id has no meaning outside this hash.
-func ObjectProps(o objectmodel.Object, isCollection bool, bucket string, write bool, ocSize int64) []PropEntry {
+func ObjectProps(o objectmodel.Object, isCollection bool, bucket string, write bool, ocSize int64, etag string) []PropEntry {
 	ct := o.ContentType
 	if ct == "" {
 		ct = "application/octet-stream"
@@ -97,8 +102,10 @@ func ObjectProps(o objectmodel.Object, isCollection bool, bucket string, write b
 	}
 	// getetag on EVERY resource (real OC10 collections return one; the
 	// ownCloud 6.x discovery job treats its absence as an invalid reply).
+	// For collections the value is the DERIVED change token (colltoken.go),
+	// not a stored object ETag.
 	props = append(props,
-		PropEntry{Name: "getetag", Present: true, Chardata: objectmodel.QuotedETag(o.ETag)},
+		PropEntry{Name: "getetag", Present: true, Chardata: objectmodel.QuotedETag(etag)},
 	)
 	// ownCloud namespace (issue #5): the real client's discovery job
 	// requires fileid + permissions on EVERY resource, and size on

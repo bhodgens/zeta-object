@@ -106,6 +106,7 @@ Implemented methods: `OPTIONS`, `PROPFIND` (Depth 0/1), `GET`, `HEAD`,
 | Collection locks | Absent | files only; collections/root answer `405` + `Allow`. davfs2 builds that hard-require directory locks: `use_locks 0` (documented) |
 | Shared locks, Depth-infinity locks | Absent | `400` |
 | Conditional requests (If-Match etc.) | Implemented | e2e 06 |
+| Collection change tokens (`getetag` on collections) | Implemented | a collection's `getetag` is a DERIVED immediate-children token (`"dir-<hex>"`, FNV-1a over sorted name+size+mtime of direct children; never stored - charter-clean). Stable across requests, moved by direct-child create/overwrite/delete, NOT moved by a change strictly below an existing child directory; identical at Depth 0 and Depth 1. Lets a sync client skip unchanged subtrees with one Depth-0 PROPFIND. The token is an optimization hint only - conflict decisions stay on file ETags / If-Match. e2e 19 (part 19g) |
 | Range requests (single span) | Implemented | 206 + `Content-Range`, suffix (`bytes=-50`) and open-ended forms, unsatisfiable = `416` with `Content-Range: bytes */size`; the S3 range grammar is shared, so the semantics are transport-independent. e2e 38 (over both TCP and HTTP/3) |
 | Batch delete (`POST ?delete`), JSON batch (`POST ?batch`) | Implemented | the s3 DeleteObjects endpoint and the JSON batch bridge are mounted on the webdav frontend too; per-key result entries, nothing executes on a malformed manifest. Proof: the shared implementation's suites (S3 wire e2e 08; the bridge is exercised over webdav by the batch unit suite) - a dedicated batch-over-webdav e2e case is future hardening |
 | Chunked PUT | Implemented | real clients send it. e2e case for issue #6 |
@@ -114,7 +115,7 @@ Implemented methods: `OPTIONS`, `PROPFIND` (Depth 0/1), `GET`, `HEAD`,
 | Quotas, versioning | Absent | not exposed |
 
 Mount notes: davfs2 works with its DEFAULT config (`use_locks 1`); macOS
-Finder and Windows mount with Basic auth. e2e 19 (59 asserts), e2e 31
+Finder and Windows mount with Basic auth. e2e 19 (72 asserts), e2e 31
 (47 asserts); mount-level checks are manual by design.
 
 ### Transports

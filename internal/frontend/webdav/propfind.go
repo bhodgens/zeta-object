@@ -195,13 +195,14 @@ func fixupPrefixedClosers(body []byte) []byte {
 
 // propfindEntry is one resource row of the 207 body.
 type propfindEntry struct {
-	href   string
-	bucket string // effective bucket (oc:fileid derivation coordinate)
-	obj    objectmodel.Object
-	isColl bool
-	found  bool  // false ⇒ 404 propstat
-	write  bool  // identity's write grant on the bucket ⇒ oc:permissions
-	ocSize int64 // collection aggregate size (oc:size); 0 for files
+	href      string
+	bucket    string // effective bucket (oc:fileid derivation coordinate)
+	obj       objectmodel.Object
+	isColl    bool
+	found     bool   // false ⇒ 404 propstat
+	write     bool   // identity's write grant on the bucket ⇒ oc:permissions
+	ocSize    int64  // collection aggregate size (oc:size); 0 for files
+	collToken string // derived immediate-children token; "" on files/rows where derivation did not run
 }
 
 // propfindEntries resolves the requested resource (+children at Depth 1)
@@ -246,13 +247,18 @@ func (f *Frontend) propfindEntries(r *http.Request, res resource, depth1, write 
 	if kind == kindFile && f.objectHiddenByDeleteMarker(res.bucket, res.key) {
 		return nil, objectmodel.ErrNoSuchKey(f.davPath(res))
 	}
-	out := []propfindEntry{f.entryFor(ctx, res, obj, kind == kindCollection, write)}
+	out := []propfindEntry{f.entryFor(ctx, res, obj, kind == kindCollection, write, !depth1)}
 	if depth1 {
 		children, err := f.childEntries(ctx, res, write)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, children...)
+		// The requested collection's token comes from the SAME child rows
+		// the 207 lists — no extra backend walk (colltoken.go).
+		if len(out) > 0 && out[0].isColl && out[0].bucket != "" {
+			out[0].collToken = tokenFromChildren(children)
+		}
 	}
 	return out, nil
 }
@@ -275,19 +281,26 @@ func (f *Frontend) rootEntries(ctx context.Context, depth1, write bool) ([]propf
 	if f.bucket != "" {
 		// Mode B: root IS the configured bucket; list its top level.
 		res := resource{bucket: f.bucket, isCollection: true, isRoot: true}
-		out := []propfindEntry{{
+		root := propfindEntry{
 			href:   "/",
 			bucket: f.bucket,
 			isColl: true,
 			found:  true,
 			write:  write,
-		}}
+		}
+		// getetag on the root row: Depth 0 pays its own walk; at Depth 1
+		// the token comes from the listed children below (no extra walk).
+		if !depth1 {
+			f.tokenForEntry(ctx, &root, res.collectionPrefix())
+		}
+		out := []propfindEntry{root}
 		if depth1 {
 			children, err := f.childEntries(ctx, res, write)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, children...)
+			root.collToken = tokenFromChildren(children)
 		}
 		return out, nil
 	}
@@ -315,9 +328,12 @@ func (f *Frontend) rootEntries(ctx context.Context, depth1, write bool) ([]propf
 }
 
 // entryFor builds one row for a resolved resource. Collections get their
-// oc:size aggregate computed via a full List under the prefix (derived at
-// request time — nothing is cached or persisted).
-func (f *Frontend) entryFor(ctx context.Context, res resource, obj objectmodel.Object, isColl, write bool) propfindEntry {
+// oc:size aggregate computed via a full List under the prefix, and their
+// getetag from the derived immediate-children change token (colltoken.go) —
+// both derived at request time; nothing is cached or persisted. deriveToken
+// is false at Depth 1, where the caller overwrites the token from the child
+// rows it already listed (no second walk).
+func (f *Frontend) entryFor(ctx context.Context, res resource, obj objectmodel.Object, isColl, write, deriveToken bool) propfindEntry {
 	e := propfindEntry{
 		href:   f.davPath(res),
 		bucket: res.bucket,
@@ -333,6 +349,12 @@ func (f *Frontend) entryFor(ctx context.Context, res resource, obj objectmodel.O
 		// the whole PROPFIND — the DAV properties remain correct.
 		if size, err := collectionSize(ctx, f.be, res.bucket, res.collectionPrefix()); err == nil {
 			e.ocSize = size
+		}
+		// getetag: derived token for a Depth-0 probe only. At Depth 1 the
+		// caller overwrites it from the listed children (cheaper, same
+		// value — the walk must not double-list at Depth 1).
+		if deriveToken {
+			f.tokenForEntry(ctx, &e, res.collectionPrefix())
 		}
 	}
 	return e
@@ -373,6 +395,8 @@ func (f *Frontend) childEntries(ctx context.Context, res resource, write bool) (
 		if size, err := collectionSize(ctx, f.be, res.bucket, child.collectionPrefix()); err == nil {
 			e.ocSize = size
 		}
+		// getetag: derived immediate-children token (same policy).
+		f.tokenForEntry(ctx, &e, child.collectionPrefix())
 		out = append(out, e)
 		return nil
 	})
@@ -532,7 +556,7 @@ func propNames(e propfindEntry) []string {
 	if !e.found {
 		return nil
 	}
-	props := ObjectProps(e.obj, e.isColl, e.bucket, e.write, e.ocSize)
+	props := objectPropsForEntry(e)
 	names := make([]string, 0, len(props))
 	for _, p := range props {
 		names = append(names, p.Name)
@@ -542,7 +566,7 @@ func propNames(e propfindEntry) []string {
 
 // liveEntry renders one named live property for the entry.
 func liveEntry(e propfindEntry, name string) activeProp {
-	for _, p := range ObjectProps(e.obj, e.isColl, ocBucket(e), e.write, e.ocSize) {
+	for _, p := range objectPropsForEntry(e) {
 		if p.Name != name {
 			continue
 		}
@@ -566,8 +590,17 @@ func liveEntry(e propfindEntry, name string) activeProp {
 	return emptyProp(e, name)
 }
 
-// ocBucket is the bucket coordinate used for oc:fileid derivation.
-func ocBucket(e propfindEntry) string { return e.bucket }
+// objectPropsForEntry adapts a propfindEntry onto ObjectProps: collections
+// with a derived token get that token as their getetag value (files keep the
+// stored object ETag; collections WITHOUT a derivation — mode-A root rows,
+// List errors — keep the historical quoted-empty rendering).
+func objectPropsForEntry(e propfindEntry) []PropEntry {
+	etag := e.obj.ETag
+	if e.isColl && e.collToken != "" {
+		etag = "dir-" + e.collToken
+	}
+	return ObjectProps(e.obj, e.isColl, e.bucket, e.write, e.ocSize, etag)
+}
 
 // allPropfind is the parsePropfindBody result for an allprop request (the
 // RFC 4918 default when the body is empty).

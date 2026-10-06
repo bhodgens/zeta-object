@@ -358,4 +358,103 @@ W19_CDOWN=$(curl -sk --user "${W19_USER}:${W19_PASS}" \
 	"https://127.0.0.1:$W19_PORT_B/chunked.txt" 2>/dev/null)
 assert_contains 'chunked PUT round-trip body' "$W19_CDOWN" 'chunked by curl'
 
+# --- part 19g: collection change tokens (getetag on collections) -----------
+# A collection's getetag is the DERIVED immediate-children token
+# ("dir-<hex>"): present, quoted, stable across requests, moved by a direct
+# child create/overwrite/delete, NOT moved by a change strictly below a
+# child directory, and identical at Depth 0 and Depth 1. Sync clients use it
+# to skip unchanged subtrees; the token is a hint — conflict decisions stay
+# on file ETags.
+w19_toks() { # extracts the getetag of the FIRST <d:response> block in the 207
+	# (non-greedy: stop at the first </d:response> so a Depth-1 body with
+	# child rows yields the REQUESTED resource's etag, not a child's).
+	printf '%s' "$W19_BODY" | sed 's|</d:response>|</d:response>\n|g' \
+		| sed -n 's/.*<d:getetag>&#34;\([^&#]*\)&#34;.*/\1/p' | head -1
+}
+
+# Sub-directory with one file; root has one file too.
+w19_req PUT "/$W19_BKT/tokdir/nested.txt" --data-binary 'nested'
+assert_eq 'token seed: nested PUT' 201 "$W19_STATUS"
+
+# Depth 1 on the bucket: token present and dir-prefixed on the collection
+# row; the file row keeps its stored etag shape.
+w19_req PROPFIND "/$W19_BKT/tokdir/" -H 'Depth: 1' --data-binary ''
+assert_eq 'token: collection PROPFIND 207' 207 "$W19_STATUS"
+assert_contains 'collection carries dir- token' "$W19_BODY" '&#34;dir-'
+
+# Stability across two identical requests.
+w19_req PROPFIND "/$W19_BKT/tokdir/" -H 'Depth: 0' --data-binary ''
+W19_TOK_A=$(w19_toks)
+w19_req PROPFIND "/$W19_BKT/tokdir/" -H 'Depth: 0' --data-binary ''
+W19_TOK_B=$(w19_toks)
+assert_eq 'token stable across requests' "$W19_TOK_A" "$W19_TOK_B"
+assert_contains 'token has dir- prefix' "$W19_TOK_A" 'dir-'
+
+# Depth 0 == Depth 1 for the same collection.
+w19_req PROPFIND "/$W19_BKT/tokdir/" -H 'Depth: 1' --data-binary ''
+W19_TOK_D1=$(w19_toks)
+assert_eq 'Depth 0 == Depth 1 token' "$W19_TOK_A" "$W19_TOK_D1"
+
+# Direct child create moves the token.
+w19_req PUT "/$W19_BKT/tokdir/new.txt" --data-binary 'new'
+assert_eq 'token seed: sibling PUT' 201 "$W19_STATUS"
+w19_req PROPFIND "/$W19_BKT/tokdir/" -H 'Depth: 0' --data-binary ''
+W19_TOK_C=$(w19_toks)
+if [ "$W19_TOK_A" = "$W19_TOK_C" ]; then
+	assert_eq 'token moved on child create' moved unchanged
+else
+	assert_eq 'token moved on child create' moved moved
+fi
+
+# Direct child delete moves the token again.
+w19_req DELETE "/$W19_BKT/tokdir/new.txt"
+assert_eq 'token seed: sibling DELETE' 204 "$W19_STATUS"
+w19_req PROPFIND "/$W19_BKT/tokdir/" -H 'Depth: 0' --data-binary ''
+W19_TOK_D=$(w19_toks)
+if [ "$W19_TOK_C" = "$W19_TOK_D" ]; then
+	assert_eq 'token moved on child delete' moved unchanged
+else
+	assert_eq 'token moved on child delete' moved moved
+fi
+
+# A change strictly BELOW an EXISTING child directory does NOT move the
+# parent token. (Creating the child directory itself WOULD move it — a new
+# direct child — so deeper/ is created BEFORE the parent token is taken.)
+w19_req PUT "/$W19_BKT/tokdir/deeper/.seed" --data-binary 'seed'
+assert_eq 'token seed: deeper dir exists' 201 "$W19_STATUS"
+w19_req PROPFIND "/$W19_BKT/tokdir/" -H 'Depth: 0' --data-binary ''
+W19_TOK_D2=$(w19_toks)
+w19_req PUT "/$W19_BKT/tokdir/deeper/leaf.txt" --data-binary 'leaf'
+assert_eq 'token seed: nested PUT' 201 "$W19_STATUS"
+w19_req PROPFIND "/$W19_BKT/tokdir/" -H 'Depth: 0' --data-binary ''
+W19_TOK_E=$(w19_toks)
+assert_eq 'parent token unmoved by nested-only change' "$W19_TOK_D2" "$W19_TOK_E"
+# ...but the CHILD collection's token moved (leaf.txt is its direct child).
+w19_req PROPFIND "/$W19_BKT/tokdir/deeper/" -H 'Depth: 0' --data-binary ''
+W19_TOK_CHILD=$(w19_toks)
+w19_req DELETE "/$W19_BKT/tokdir/deeper/leaf.txt" > /dev/null
+w19_req PUT "/$W19_BKT/tokdir/deeper/leaf2.txt" --data-binary 'leaf2' > /dev/null
+w19_req PROPFIND "/$W19_BKT/tokdir/deeper/" -H 'Depth: 0' --data-binary ''
+W19_TOK_CHILD2=$(w19_toks)
+if [ "$W19_TOK_CHILD" = "$W19_TOK_CHILD2" ]; then
+	assert_eq 'child token moved by its own child' moved unchanged
+else
+	assert_eq 'child token moved by its own child' moved moved
+fi
+
+# Files never carry the dir- prefix.
+w19_req PROPFIND "/$W19_BKT/tokdir/nested.txt" -H 'Depth: 0' --data-binary ''
+assert_contains 'file etag present' "$W19_BODY" 'getetag'
+case "$W19_BODY" in
+*"dir-"*) assert_eq 'file etag is not a dir token' clean polluted ;;
+*) assert_eq 'file etag is not a dir token' clean clean ;;
+esac
+
+# Cleanup the token probes (case cleanup removes the bucket wholesale, but
+# keep the tree tidy for later parts if any are appended).
+w19_req DELETE "/$W19_BKT/tokdir/deeper/leaf.txt" > /dev/null
+w19_req DELETE "/$W19_BKT/tokdir/deeper/" > /dev/null
+w19_req DELETE "/$W19_BKT/tokdir/nested.txt" > /dev/null
+w19_req DELETE "/$W19_BKT/tokdir/" > /dev/null
+
 e2e_finish
