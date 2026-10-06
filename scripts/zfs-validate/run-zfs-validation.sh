@@ -2022,11 +2022,638 @@ PYEOF
 H3_RC=0
 run_h3_section || H3_RC=$?
 
+# ---- section 15: bughunt fix campaign, webdav write-side versioning ------
+# A dedicated server phase identical in shape to section 14 (s3 + webdav
+# TCP + h3 UDP on ONE process) but with zfs_versioning="sidecar" — the
+# ONLY mode with delete markers, so the delete-marker read rule (ce7594a)
+# and the marker-recording path are reachable. Section 14 pins snapshots
+# mode, which REFUSES markers, so those behaviors cannot be asserted there.
+#
+# Every pkill pattern is one-char bracketed so it can never self-match the
+# ssh channel that CONTAINS the pattern.
+run_fix_section() {
+  FIX_WD_PORT=9713
+  FIX_UDP_PORT=9714
+  log "Section 15: bughunt fix-campaign phase (sidecar versioning, TCP :$FIX_WD_PORT, UDP :$FIX_UDP_PORT)"
+
+  cat > "$WORK/start-fixphase.sh" <<EOF
+#!/usr/bin/env bash
+cd '$REMOTE_DIR'
+FIX_PIDS=\$(pgrep -af 'zeta-serve[r]' | awk '{print \$1}')
+[ -n "\$FIX_PIDS" ] && kill \$FIX_PIDS 2>/dev/null
+sudo -n pkill -f '[.]/zeta-serve[r]' 2>/dev/null || true
+sleep 0.5
+cat > '$REMOTE_DIR/config-fix.json' <<FCFG
+{
+  "dataDir": "/testpool/",
+  "listenAddr": ":$PORT",
+  "certFile": "cert.pem",
+  "keyFile": "key.pem",
+  "zfs_versioning": "sidecar",
+  "zmetad_db_path": "$REMOTE_DIR/zmetad.db",
+  "zmetad_binary": "/usr/local/sbin/zmetad",
+  "identities": [
+    { "name": "val", "accessKey": "$AK", "secretKey": "$SK", "grants": { "*": "readwrite" } },
+    { "name": "val2", "accessKey": "$AK2", "secretKey": "$SK2", "grants": { "*": "readwrite" } }
+  ],
+  "frontends": [
+    { "type": "s3" },
+    { "type": "webdav", "listenAddr": "127.0.0.1:$FIX_WD_PORT", "bucket": "$BUCKET" },
+    { "type": "h3", "listenAddr": "127.0.0.1:$FIX_UDP_PORT", "bucket": "$BUCKET",
+      "options": { "clientCAFile": "$REMOTE_DIR/ca.pem" } }
+  ]
+}
+FCFG
+export ZETAOBJECT_CONFIG='$REMOTE_DIR/config-fix.json'
+setsid nohup ./zeta-server < /dev/null >> fix-server.log 2>&1 &
+echo \$! > '$REMOTE_DIR/fix-server.pid'
+for i in \$(seq 1 60); do
+  if timeout 2 bash -c "echo > /dev/tcp/127.0.0.1/$FIX_WD_PORT" 2>/dev/null; then
+    if grep -q "127.0.0.1:$FIX_UDP_PORT" fix-server.log 2>/dev/null; then
+      echo "FIX_SERVER_UP"; exit 0
+    fi
+  fi
+  sleep 0.2
+done
+echo "FIX_SERVER_FAILED"; tail -20 fix-server.log; exit 1
+EOF
+  scp -q "$WORK/start-fixphase.sh" "$HOST:$REMOTE_DIR/start-fixphase.sh"
+  local up
+  up=$(ssh -o BatchMode=yes "$HOST" "bash $REMOTE_DIR/start-fixphase.sh") \
+    || die "fix phase server did not come up (wd :$FIX_WD_PORT udp :$FIX_UDP_PORT): $up"
+  echo "$up"
+
+  set +e
+  ( cd "$WORK" && S15_WD_PORT=$FIX_WD_PORT S15_UDP_PORT=$FIX_UDP_PORT \
+      S15_S3_PORT=$PORT python3 checks-fix.py )
+  FIX_RC=$?
+  set -e
+
+  # teardown: kill by OBSERVED pid from the pidfile, then the harness's
+  # standard bracketed belt-and-braces sweep.
+  ssh -o BatchMode=yes "$HOST" "
+    if [ -f $REMOTE_DIR/fix-server.pid ]; then
+      FIX_PID=\$(cat $REMOTE_DIR/fix-server.pid)
+      kill \$FIX_PID 2>/dev/null || true
+    fi
+    sleep 0.5
+    sudo -n pkill -f '[.]/zeta-serve[r]' 2>/dev/null || true
+    pgrep -af 'zeta-serve[r]' || true
+  " || true
+  return $FIX_RC
+}
+
+# Section 15's checks script: written here so it lands in $WORK alongside
+# checks.py. Reuses the harness's probe.py signer (exec'd, never copied),
+# the deployed h3probe binary, and section 10's namespace-agnostic
+# ListObjectVersions ElementTree walk — no second comparator anywhere.
+cat > "$WORK/checks-fix.py" <<'PYEOF'
+# Section 15: the bughunt fix campaign's data-plane + versioning semantics
+# against REAL ZFS, on a FRESH sidecar-mode dataset (the mode that HAS
+# delete markers — the phase-1 config pins snapshots mode, which refuses
+# them, so the ce7594a read rule is unreachable there).
+#
+# Phase shape: s3 :9707 + webdav TCP :9713 + h3 UDP :9714 on ONE process,
+# zfs_versioning="sidecar". The transports are already proven by section
+# 14; this phase proves the FIXED BEHAVIORS:
+#
+#   15a. webdav write-side versioning capture is LIVE in production wiring
+#        (b433eb1): the gate used to test f.bucketPathFn, which production
+#        never sets — every webdav PUT/DELETE skipped capture. PUT twice
+#        over WEBDAV on a versioned bucket: a version data file must appear
+#        under .metadata/.versions/<sha256(key)>/ holding the PRIOR bytes,
+#        and both the s3 ?versions listing AND the ?events&versions listing
+#        fetched OVER WEBDAV must show the prior version.
+#   15b. DELETE marker + read visibility (ce7594a): DELETE over webdav on a
+#        versioned bucket records a marker, suppresses the plain delete,
+#        and a subsequent GET over webdav MUST be 404 with zero bytes (it
+#        used to serve the surviving bytes).
+#   15c. batch copy preserves source metadata + tags (7a8ad1b M1).
+#   15d. ifMatch batch items do not leak descriptors (7a8ad1b H4).
+#   15e. 87dd8fc: a webdav COPY records NO version, and ?events on a NESTED
+#        collection is an honest empty surface.
+import base64, hashlib, json, os, re, shlex, subprocess, sys, time
+
+HOST = "zfs-meta"
+DATASET = "testpool/zval"
+# dataDir is "/testpool/" and the bucket is "zval", so THE BUCKET ROOT IS
+# THE SCRATCH DATASET ITSELF: /testpool/zval (not /testpool/zval/zval).
+BUCKET_ROOT = "/testpool/zval"
+BUCKET = "zval"
+WD_PORT = int(os.environ.get("S15_WD_PORT", "9713"))
+UDP_PORT = int(os.environ.get("S15_UDP_PORT", "9714"))
+PORT_S3 = int(os.environ.get("S15_S3_PORT", "9707"))
+
+def sh(cmd, timeout=120):
+    r = subprocess.run(["ssh", "-o", "BatchMode=yes", HOST, cmd],
+                       capture_output=True, timeout=timeout)
+    return (r.stdout + r.stderr).decode("utf-8", "replace").strip()
+
+REMOTE_BASE = sh("echo $HOME") + "/zeta-validate"
+
+results = []
+def check(name, ok, detail=""):
+    results.append((name, bool(ok), str(detail)[:400]))
+
+def force_collect(secs=1.8):
+    sh("pkill -USR1 -f 'zmeta[d].*zeta-validate' 2>/dev/null; true")
+    time.sleep(secs)
+
+# ---- wire helpers -------------------------------------------------------
+# webdav over the loopback TCP listener, driven by curl ON the host — the
+# same client sections 14c/14f use. Request bodies travel as a base64-
+# decoded host temp file so arbitrary bytes survive the ssh channel.
+def wd(method, path, data=None, hdrs=None):
+    parts = ["curl", "-sS", "-k", "--max-time", "30", "-w", "%{http_code}",
+             "-u", "valuser:valpass"]
+    if method.upper() == "HEAD":
+        parts += ["--head"]
+    else:
+        parts += ["-o", "/tmp/s15-body.bin", "-X", method]
+    for h in (hdrs or []):
+        parts += ["-H", h]
+    if data is not None and method.upper() != "HEAD":
+        sh("echo %s | base64 -d > /tmp/s15-req.bin"
+           % base64.b64encode(data).decode())
+        parts += ["--data-binary", "@/tmp/s15-req.bin"]
+    parts += ["https://127.0.0.1:%d%s" % (WD_PORT, path)]
+    out = sh(" ".join("'" + p.replace("'", "'\\''") + "'" for p in parts))
+    body = sh("cat /tmp/s15-body.bin 2>/dev/null | base64 -w0")
+    try:
+        raw = base64.b64decode(body) if body else b""
+    except Exception:
+        raw = b""
+    try:
+        code = int(out.strip().splitlines()[-1])
+    except Exception:
+        code = 0
+    return code, raw
+
+def remote_bytes(path):
+    """Read a host file as bytes (base64 over the ssh channel)."""
+    out = sh("base64 -w0 %s 2>/dev/null" % shlex.quote(path))
+    try:
+        return base64.b64decode(out) if out else b""
+    except Exception:
+        return b""
+
+def purge(key):
+    """Remove a key and its sidecar/version dir from the dataset (the
+    section's own cleanup, plus a fresh start for repeat runs)."""
+    sha = hashlib.sha256(key.encode()).hexdigest()
+    sh("rm -rf %s/%s %s/.metadata/%s.meta %s/.metadata/.versions/%s 2>/dev/null; true"
+       % (BUCKET_ROOT, key, BUCKET_ROOT, key, BUCKET_ROOT, sha))
+
+# h3 fetch through the deployed probe binary (section 14's probe).
+def probe_once(args, timeout=120):
+    argv = [REMOTE_BASE + "/h3probe"] + args
+    quoted = " ".join("'" + a.replace("'", "'\\''") + "'" for a in argv)
+    r = subprocess.run(["ssh", "-o", "BatchMode=yes", HOST, quoted],
+                       capture_output=True, timeout=timeout)
+    out = (r.stdout + r.stderr).decode("utf-8", "replace")
+    m = re.search(r"^STATUS (\d+)$", out, re.M)
+    status = int(m.group(1)) if m else 0
+    body = out[m.end():] if m else ""
+    cut = re.search(r"(PASS fetch|FAIL fetch|h3probe:)", body)
+    if cut:
+        body = body[:cut.start()]
+    return status, body, out
+
+H3_URL = "https://127.0.0.1:%d" % UDP_PORT
+CERT = REMOTE_BASE + "/h3-client.pem"
+KEY = REMOTE_BASE + "/h3-key.pem"
+
+# The s3 mount needs SigV4 — exec the harness's OWN probe.py signer (the
+# same code sections 3/10/14g use; never a second signer).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe.py")).read())
+
+def enable_versioning():
+    body = (b'<VersioningConfiguration '
+            b'xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            b'<Status>Enabled</Status></VersioningConfiguration>')
+    return sign_on(PORT_S3, "PUT", "/%s" % BUCKET, query="versioning",
+                   payload=body, content_type="application/xml")
+
+def s3_versions():
+    """(status, document bytes) for the bucket's real ListObjectVersions."""
+    return sign_on(PORT_S3, "GET", "/%s" % BUCKET, query="versions")
+
+def s3_versions_for(key):
+    """Version + delete-marker entries for ONE key from the s3 listing.
+
+    The sidecar-mode renderer emits <Version> and <DeleteMarker> as
+    SEPARATE sibling elements (versions_listing.go), so the walk collects
+    both element names — the namespace-agnostic ElementTree form section 10
+    uses, extended to the marker element rather than reimplemented."""
+    import xml.etree.ElementTree as ET
+    st, _h, doc = s3_versions()
+    if st != 200:
+        return st, []
+    out = []
+    for el in ET.fromstring(doc).iter():
+        tag = el.tag.rsplit("}", 1)[-1]
+        if tag not in ("Version", "DeleteMarker"):
+            continue
+        rec = {"key": "", "vid": "", "latest": False, "marker": tag == "DeleteMarker"}
+        for c in el:
+            t = c.tag.rsplit("}", 1)[-1]
+            if t == "Key":
+                rec["key"] = c.text or ""
+            elif t == "VersionId":
+                rec["vid"] = c.text or ""
+            elif t == "IsLatest":
+                rec["latest"] = (c.text or "") == "true"
+        if rec["key"] == key:
+            out.append(rec)
+    return st, out
+
+def ext_versions_for(doc, key):
+    """Entries for ONE key from the derived ListObjectVersionsExt XML the
+    ?events&versions surface renders (capability_endpoints.go's
+    ObjectVersionExt: <Version> children incl. <IsDeleteMarker>)."""
+    import xml.etree.ElementTree as ET
+    out = []
+    for el in ET.fromstring(doc).iter():
+        if el.tag.rsplit("}", 1)[-1] != "Version":
+            continue
+        rec = {"key": "", "vid": "", "latest": False, "marker": False}
+        for c in el:
+            t = c.tag.rsplit("}", 1)[-1]
+            if t == "Key":
+                rec["key"] = c.text or ""
+            elif t == "VersionId":
+                rec["vid"] = c.text or ""
+            elif t == "IsLatest":
+                rec["latest"] = (c.text or "") == "true"
+            elif t == "IsDeleteMarker":
+                rec["marker"] = (c.text or "").strip().lower() == "true"
+        if rec["key"] == key:
+            out.append(rec)
+    return out
+
+# ======================================================================
+# 15a. webdav write-side version capture is LIVE (b433eb1)
+# ======================================================================
+s, _sh, _b = enable_versioning()
+check("s15 PUT ?versioning Enabled on sidecar-mode bucket -> 200", s == 200,
+      f"{s} {_b[:150]}")
+
+S15_KEY = "s15-webdav-ver.txt"
+purge(S15_KEY)
+code, _ = wd("PUT", "/" + S15_KEY, data=b"s15-webdav-v1")
+check("s15 webdav PUT v1 (create) -> 201", code == 201, f"status={code}")
+code, _ = wd("PUT", "/" + S15_KEY, data=b"s15-webdav-v2")
+check("s15 webdav PUT v2 (overwrite) -> 204", code == 204, f"status={code}")
+# The sidecar store records the object's CURRENT bytes as one entry per
+# write, so N writes leave N-1 history entries under the key (the first
+# write has no prior version to capture and is the live object). Two
+# overwrites are therefore needed before TWO entries exist: the entry
+# holding v1 is written by PUT v2, and the entry holding v2 by PUT v3.
+code, _ = wd("PUT", "/" + S15_KEY, data=b"s15-webdav-v3")
+check("s15 webdav PUT v3 (second overwrite) -> 204", code == 204, f"status={code}")
+
+# The captured prior version must EXIST ON DISK. keySha is sha256(key) and
+# the bucket root IS the scratch dataset (dataDir "/testpool/").
+s15_keysha = hashlib.sha256(S15_KEY.encode()).hexdigest()
+s15_vdir = "%s/.metadata/.versions/%s" % (BUCKET_ROOT, s15_keysha)
+s15_ls = sh("ls %s 2>/dev/null" % s15_vdir)
+s15_files = [l.strip() for l in s15_ls.splitlines() if l.strip()]
+check("s15 webdav overwrite CREATED a version file on the ZFS dataset",
+      len(s15_files) >= 1, f"ls {s15_vdir} -> {s15_ls[:200]!r}")
+s15_contents = {remote_bytes("%s/%s" % (s15_vdir, f)) for f in s15_files}
+check("s15 the captured version files hold the PRIOR bytes (v1 and v2)",
+      s15_contents >= {b"s15-webdav-v1", b"s15-webdav-v2"},
+      f"files={s15_files[:4]} contents={[c[:20] for c in s15_contents]}")
+
+# THE assertion the dead gate would have failed: the s3 listing must show
+# the prior version for a key overwritten over WEBDAV.
+s15_st, s15_ents = s3_versions_for(S15_KEY)
+check("s15 s3 ?versions shows the webdav-written key at all", s15_st == 200
+      and len(s15_ents) >= 1, f"status={s15_st} entries={s15_ents}")
+check("s15 s3 ?versions lists 2 versions for a 3x WEBDAV-written key "
+      "(capture was LIVE; the store records the current bytes per write)",
+      len(s15_ents) == 2, f"entries={s15_ents}")
+check("s15 exactly one of those entries is IsLatest",
+      len(s15_ents) >= 2 and sum(1 for e in s15_ents if e["latest"]) == 1,
+      str(s15_ents)[:300])
+check("s15 no delete marker on a PUT-only key",
+      all(not e["marker"] for e in s15_ents), str(s15_ents)[:300])
+# Reading the prior version by id returns the OLD bytes: the listing names
+# a REAL retained version, not a rendered ghost.
+if s15_ents:
+    prior = [e for e in s15_ents if not e["latest"]] or s15_ents[-1:]
+    pid = prior[0]["vid"]  # the OLDEST entry == the v1 bytes
+    rs, _rh, rb = sign_on(PORT_S3, "GET", f"/{BUCKET}/{S15_KEY}",
+                          query=f"versionId={pid}")
+    check("s15 s3 GET ?versionId=<oldest> returns the v1 bytes",
+          rs == 200 and rb == b"s15-webdav-v1",
+          f"versionId={pid} status={rs} len={len(rb)} {rb[:60]!r}")
+    cs, _ch, cb = sign_on(PORT_S3, "GET", f"/{BUCKET}/{S15_KEY}")
+    check("s15 plain s3 GET still serves the CURRENT bytes after the overwrite",
+          cs == 200 and cb == b"s15-webdav-v3", f"status={cs} len={len(cb)}")
+
+# ...and the same listing fetched OVER WEBDAV (?events&versions) must show
+# the webdav-written key's history. A forced zmetad collect first (the same
+# helper sections 3/8/14e use) — the provider window is the oldest-N rows,
+# so on a dataset that is only this section's traffic the key is inside it.
+force_collect(2.0)
+vx_code, vx_body = wd("GET", "/?events&versions&max-events=1000")
+check("s15 ?events&versions over WEBDAV -> 200 ext XML",
+      vx_code == 200 and b"ListObjectVersionsExt" in vx_body,
+      f"status={vx_code} {vx_body[:200]!r}")
+ext_ents = ext_versions_for(vx_body, S15_KEY) if vx_code == 200 else []
+check("s15 webdav ?events&versions shows the WEBDAV-written key's history",
+      len(ext_ents) >= 2,
+      f"{len(ext_ents)} ext entries for {S15_KEY}; doc={vx_body[:300]!r}")
+check("s15 webdav ?events&versions entries are NOT delete markers here",
+      all(not e["marker"] for e in ext_ents), str(ext_ents)[:300])
+
+# ======================================================================
+# 15b. DELETE marker + read visibility over webdav (ce7594a)
+# ======================================================================
+S15_DEL = "s15-webdav-del.txt"
+purge(S15_DEL)
+wd("PUT", "/" + S15_DEL, data=b"s15-del-v1")
+wd("PUT", "/" + S15_DEL, data=b"s15-del-v2")   # -> one captured version (v1)
+wd("PUT", "/" + S15_DEL, data=b"s15-del-v3")   # -> a second (v2)
+del_code, _ = wd("DELETE", "/" + S15_DEL)
+check("s15 webdav DELETE on a versioned bucket -> 204", del_code == 204,
+      f"status={del_code}")
+# The marker was recorded and the plain delete suppressed: the data file
+# is STILL on disk (that is what makes the read-side consult load-bearing).
+still = sh("ls -l %s/%s 2>/dev/null" % (BUCKET_ROOT, S15_DEL))
+check("s15 webdav DELETE suppressed the plain delete (data file survives)",
+      S15_DEL in still, still[:200])
+# THE ce7594a assertion: GET over webdav must be 404 with NO object bytes.
+get_code, get_body = wd("GET", "/" + S15_DEL)
+check("s15 webdav GET after DELETE -> 404 (delete marker hides the bytes)",
+      get_code == 404, f"status={get_code}")
+check("s15 webdav GET after DELETE returns ZERO object bytes "
+      "(only the RFC 4918 error document)",
+      b"s15-del-v" not in get_body, f"body={get_body[:120]!r}")
+head_code, _ = wd("HEAD", "/" + S15_DEL)
+check("s15 webdav HEAD after DELETE -> 404 too", head_code == 404,
+      f"status={head_code}")
+rng_code, rng_body = wd("GET", "/" + S15_DEL, hdrs=["Range: bytes=0-99"])
+check("s15 webdav Range GET after DELETE -> 404, no span leaked",
+      rng_code == 404 and b"s15-del-v" not in rng_body,
+      f"status={rng_code} body={rng_body[:120]!r}")
+# The version history is intact and the marker is the latest entry.
+del_st, del_ents = s3_versions_for(S15_DEL)
+check("s15 ?versions shows a DELETE MARKER for the deleted key",
+      del_st == 200 and any(e["marker"] for e in del_ents),
+      f"status={del_st} entries={del_ents}")
+# Recency is carried by IsLatest, NOT by document position: the renderer
+# appends the key's Versions and DeleteMarkers as two separate arrays
+# (versions_listing.go), so the marker can be emitted after the versions
+# even when it is the newer entry.
+check("s15 the delete marker is the LATEST entry (exactly one IsLatest, "
+      "and it is the marker)",
+      len(del_ents) >= 2
+      and sum(1 for e in del_ents if e["latest"]) == 1
+      and [e for e in del_ents if e["latest"]][0]["marker"] is True,
+      str(del_ents[:4])[:300])
+# s3 parity: the same key 404s over s3 with the marker header.
+rs, rh, _rb = sign_on(PORT_S3, "GET", f"/{BUCKET}/{S15_DEL}")
+check("s15 s3 plain GET on the same deleted key -> 404 + delete-marker header",
+      rs == 404 and rh.get("x-amz-delete-marker") == "true",
+      f"status={rs} header={rh.get('x-amz-delete-marker')!r}")
+# The pre-delete bytes survive and are readable by version id.
+prior = [e for e in del_ents if not e["marker"] and not e["latest"]]
+if prior:
+    rs2, _h2, rb2 = sign_on(PORT_S3, "GET", f"/{BUCKET}/{S15_DEL}",
+                            query=f"versionId={prior[-1]['vid']}")
+    check("s15 the pre-delete v1 version is still readable by id after the "
+          "marker",
+          rs2 == 200 and rb2 == b"s15-del-v1",
+          f"status={rs2} len={len(rb2)} {rb2[:40]!r}")
+
+# ======================================================================
+# 15c. batch copy preserves metadata + tags (7a8ad1b M1)
+# ======================================================================
+S15_SRC = "s15-batch-src.txt"
+S15_DST = "s15-batch-dst.txt"
+purge(S15_SRC); purge(S15_DST)
+tag_xml = (b"<Tagging><TagSet><Tag><Key>proj</Key><Value>zval15</Value></Tag>"
+           b"</TagSet></Tagging>")
+s, _sh2, b = sign_on(PORT_S3, "PUT", f"/{BUCKET}/{S15_SRC}",
+                     payload=b"s15-batch-payload", content_type="text/plain",
+                     amz_meta={"x-amz-meta-owner": "s15-team",
+                               "x-amz-meta-stage": "live"})
+check("s15 seed source object with user metadata -> 200", s == 200, f"{s} {b[:120]}")
+s, _sh3, b = sign_on(PORT_S3, "PUT", f"/{BUCKET}/{S15_SRC}", query="tagging",
+                     payload=tag_xml, content_type="application/xml")
+check("s15 tag the source object -> 204", s == 204, f"{s} {b[:120]}")
+
+manifest = json.dumps({"operations": [{"op": "copy", "from": S15_SRC, "to": S15_DST}]})
+bs, bbody, braw = probe_once([
+    "-mode", "fetch", "-url", H3_URL, "-path", "/%s?batch" % BUCKET,
+    "-cert", CERT, "-key", KEY, "-method", "POST", "-body", manifest])
+check("s15 POST ?batch copy over h3 -> 200", bs == 200, f"status={bs} {braw[:250]}")
+try:
+    bres = json.loads(bbody).get("results", [])
+    ok = len(bres) == 1 and bres[0].get("status") == "ok"
+except Exception:
+    bres, ok = [], False
+check("s15 over-h3 batch copy item reports status ok", ok, str(bres)[:250])
+
+gs, gh, gb = sign_on(PORT_S3, "GET", f"/{BUCKET}/{S15_DST}")
+check("s15 batch copy destination readable over s3 -> 200", gs == 200,
+      f"{gs} {gb[:80]!r}")
+check("s15 batch copy carried the source BYTES", gb == b"s15-batch-payload",
+      f"len={len(gb)} {gb[:80]!r}")
+check("s15 batch copy preserved user metadata x-amz-meta-owner",
+      gh.get("x-amz-meta-owner") == "s15-team", str(sorted(gh.keys()))[:300])
+check("s15 batch copy preserved user metadata x-amz-meta-stage",
+      gh.get("x-amz-meta-stage") == "live", str(sorted(gh.keys()))[:300])
+ts, _th, tb = sign_on(PORT_S3, "GET", f"/{BUCKET}/{S15_DST}", query="tagging")
+check("s15 batch copy preserved the source TAG SET (proj=zval15)",
+      ts == 200 and b"<Value>zval15</Value>" in tb, f"status={ts} {tb[:200]!r}")
+# The same copy over the S3 ?batch mount, for a two-surface comparison.
+S15_DST2 = "s15-batch-dst-s3.txt"
+purge(S15_DST2)
+s3man = json.dumps({"operations": [{"op": "copy", "from": S15_SRC, "to": S15_DST2}]})
+ms, _mh, mb = sign_on(PORT_S3, "POST", f"/{BUCKET}", query="batch",
+                      payload=s3man.encode(), content_type="application/json")
+mres = []
+try:
+    mres = json.loads(mb).get("results", [])
+except Exception:
+    pass
+check("s15 POST ?batch copy over the s3 mount -> 200 with one ok item",
+      ms == 200 and len(mres) == 1 and mres[0].get("status") == "ok",
+      f"status={ms} {mb[:200]!r}")
+g2, h2, b2 = sign_on(PORT_S3, "GET", f"/{BUCKET}/{S15_DST2}")
+check("s15 s3-mount batch copy preserved metadata AND tags too",
+      g2 == 200 and h2.get("x-amz-meta-owner") == "s15-team"
+      and b2 == b"s15-batch-payload", f"status={g2} owner={h2.get('x-amz-meta-owner')!r}")
+
+# Principal breadcrumbs: the s3 mount publishes its identity into the
+# request context, so a batch item there must stamp the requester. The
+# webdav/h3 mount publishes under the SAME shared key (internal/auth
+# WithIdentity/IdentityFromContext — one definition every frontend uses), so
+# the shared batch executor resolves the principal on every mount too.
+def owner_of(key):
+    py = ("import os,sys;p=sys.argv[1];"
+          "print(os.getxattr(p,'user.zeta.owner').decode() "
+          "if os.path.exists(p) else 'MISSING')")
+    return sh("python3 -c %s %s" % (shlex.quote(py), shlex.quote(BUCKET_ROOT + "/" + key)))
+
+check("s15 s3-mount batch copy stamped the principal breadcrumb user.zeta.owner",
+      owner_of(S15_DST2) == "valuser", f"owner={owner_of(S15_DST2)!r}")
+h3_owner = owner_of(S15_DST)
+check("s15 h3-mount batch copy principal breadcrumb",
+      h3_owner == "valuser",
+      f"owner={h3_owner!r} — the webdav/h3 mount must publish the identity "
+      f"under the shared internal/auth context key so the batch executor "
+      f"stamps the requester")
+
+# ======================================================================
+# 15d. ifMatch batch items do NOT leak descriptors (7a8ad1b H4)
+# ======================================================================
+# N ifMatch copy items through the real wire; compare the SERVER PROCESS's
+# open-fd count from /proc/<pid>/fd before and after. The leak was ONE
+# descriptor PER ITEM, so the honest bound is far below N.
+S15_N = 200
+S15_IFM = "s15-ifmatch-src.bin"
+purge(S15_IFM)
+sh("printf 's15-ifmatch-seed' > $HOME/zeta-validate/s15-ifmatch-src.bin")
+seed_code = sh(
+    f"curl -sS -k -o /dev/null -w '%{{http_code}}' -u valuser:valpass "
+    f"--data-binary @$HOME/zeta-validate/s15-ifmatch-src.bin -X PUT "
+    f"https://127.0.0.1:{WD_PORT}/{S15_IFM}")
+check("s15 ifMatch seed object PUT over webdav -> 201/204",
+      seed_code.strip() in ("200", "201", "204"), seed_code[:120])
+es, _eh, _eb = sign_on(PORT_S3, "HEAD", f"/{BUCKET}/{S15_IFM}")
+etag = _eh.get("etag", "").strip('"')
+check("s15 ifMatch source ETag read from the s3 HEAD surface", bool(etag),
+      f"etag={etag!r}")
+
+def server_pid():
+    return sh("pgrep -af 'zeta-serve[r]' | awk '{print $1}' | head -1")
+
+def fd_count(pid):
+    out = sh("ls /proc/%s/fd 2>/dev/null | wc -l" % pid)
+    try:
+        return int(out.strip().splitlines()[-1])
+    except Exception:
+        return -1
+
+pid = server_pid()
+check("s15 server pid resolved for the fd probe", bool(pid) and pid.isdigit(),
+      f"pid={pid!r}")
+
+ops = [{"op": "copy", "from": S15_IFM,
+        "to": "s15-ifmatch-dst-%03d.bin" % i, "ifMatch": etag}
+       for i in range(S15_N)]
+
+fd_before = fd_count(pid) if pid else -1
+chunk = 50
+fd_samples = []
+chunk_ok = True
+for start in range(0, len(ops), chunk):
+    man = json.dumps({"operations": ops[start:start + chunk]})
+    st, body, raw = probe_once([
+        "-mode", "fetch", "-url", H3_URL, "-path", "/%s?batch" % BUCKET,
+        "-cert", CERT, "-key", KEY, "-method", "POST", "-body", man],
+        timeout=240)
+    if st != 200:
+        chunk_ok = False
+        check("s15 ifMatch batch chunk %d -> 200" % (start // chunk), False,
+              f"status={st} {raw[:200]}")
+        break
+    try:
+        rs = json.loads(body).get("results", [])
+    except Exception:
+        rs = []
+    oks = sum(1 for r in rs if r.get("status") == "ok")
+    if start == 0:
+        check("s15 every ifMatch copy item in the first chunk reported ok",
+              oks == len(rs) == chunk, f"ok={oks} of {len(rs)}")
+    time.sleep(0.3)
+    fd_samples.append(fd_count(pid))
+fd_after = fd_count(pid) if pid else -1
+
+check(f"s15 all {S15_N} ifMatch batch chunks returned 200", chunk_ok,
+      f"fd_samples={fd_samples}")
+on_disk = sh("ls %s | grep -c 's15-ifmatch-dst-'" % BUCKET_ROOT).strip()
+check("s15 the ifMatch batch manifest actually copied the objects to disk",
+      on_disk == str(S15_N), f"destinations on the dataset: {on_disk!r}")
+check("s15 server fd count read before the batch", fd_before > 0,
+      f"fd_before={fd_before}")
+check("s15 server fd count read after the batch", fd_after > 0,
+      f"fd_after={fd_after}")
+# One leaked descriptor PER ITEM would be a +N delta; assert the honest
+# bound: no linear growth (a couple of fds of transport churn is allowed).
+delta = fd_after - fd_before if (fd_before > 0 and fd_after > 0) else 999
+bound = max(4, S15_N // 10)
+check(f"s15 NO descriptor leak across {S15_N} ifMatch batch items "
+      f"(fd delta {delta}, bound <={bound})",
+      delta <= bound,
+      f"fd_before={fd_before} fd_after={fd_after} delta={delta} samples={fd_samples}")
+
+# ======================================================================
+# 15e. 87dd8fc: COPY records no version; nested collection ?events honest
+# ======================================================================
+S15_CP_SRC = "s15-cp-src.txt"
+S15_CP_DST = "s15-cp-dst.txt"
+purge(S15_CP_SRC); purge(S15_CP_DST)
+wd("PUT", "/" + S15_CP_SRC, data=b"s15-cp-v1")
+wd("PUT", "/" + S15_CP_SRC, data=b"s15-cp-v2")   # one recorded version
+c_code, _ = wd("COPY", "/" + S15_CP_SRC,
+               hdrs=["Destination: /" + S15_CP_DST])
+check("s15 webdav COPY -> 201/204", c_code in (201, 204), f"status={c_code}")
+_st, dst_ents = s3_versions_for(S15_CP_DST)
+check("s15 webdav COPY recorded NO version at the destination (87dd8fc L3)",
+      len(dst_ents) == 0, f"destination entries={len(dst_ents)} {dst_ents[:4]}")
+_cs, src_ents = s3_versions_for(S15_CP_SRC)
+check("s15 the COPY SOURCE kept its own single version (copy is not a write "
+      "on the source)",
+      len(src_ents) >= 1, f"source entries={src_ents}")
+
+# A nested webdav collection's ?events must be an honest EMPTY surface: the
+# old partial-row matcher could answer with an UNRELATED object's events
+# (a bare-named object whose last segment matches the collection's).
+sh("mkdir -p %s/s15-coll/nested" % BUCKET_ROOT)
+wd("PUT", "/s15-coll/report.txt", data=b"s15-other-object")
+wd("PUT", "/report", data=b"s15-bare-report")
+force_collect(1.5)
+coll_code, coll_body = wd("GET", "/s15-coll/nested/?events")
+check("s15 ?events on a nested webdav collection -> 200", coll_code == 200,
+      f"status={coll_code} {coll_body[:200]!r}")
+try:
+    coll_ev = json.loads(coll_body.decode("utf-8", "replace"))
+    coll_events = coll_ev.get("events", [])
+except Exception:
+    coll_events = []
+check("s15 nested-collection ?events is an honest EMPTY surface "
+      "(no foreign object's keys)",
+      coll_events == [], f"{len(coll_events)} events: {coll_events[:4]}")
+
+# ---- cleanup: the section's own objects, so the dataset stays tidy ----
+for k in [S15_KEY, S15_CP_SRC, S15_CP_DST, "report", "s15-coll/report.txt",
+          S15_DEL, S15_SRC, S15_DST, S15_DST2, S15_IFM]:
+    purge(k)
+sh("rm -rf %s/s15-ifmatch-dst-*.bin 2>/dev/null; true" % BUCKET_ROOT)
+
+failed = [(n, d) for n, ok, d in results if not ok]
+for n, ok, d in results:
+    print(f"{'PASS' if ok else 'FAIL'} | {n}" + (f" | {d}" if not ok else ""))
+print(f"FIX_TOTAL: {len(results) - len(failed)}/{len(results)}")
+sys.exit(1 if failed else 0)
+PYEOF
+
+FIX_RC=0
+run_fix_section || FIX_RC=$?
+
 # ------------------------------------------------------------- cleanup -----
-# Sections 12's, 13's and 14's results participate in the run's exit status.
+# Sections 12's, 13's, 14's and 15's results participate in the run's exit
+# status.
 if [[ $ZBD_RC -ne 0 ]]; then RC=$ZBD_RC; fi
 if [[ $MGMT_RC -ne 0 ]]; then RC=$MGMT_RC; fi
 if [[ $H3_RC -ne 0 ]]; then RC=$H3_RC; fi
+if [[ $FIX_RC -ne 0 ]]; then RC=$FIX_RC; fi
 if [[ $RC -ne 0 || $KEEP_SERVER -eq 0 ]]; then
   log "Cleanup: stopping server + zmetad, destroying $DATASET"
   # A ROOT-owned phase-2 server cannot die by unprivileged pkill (its
