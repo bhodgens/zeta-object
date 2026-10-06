@@ -156,7 +156,10 @@ func List(ctx context.Context) ([]BucketInfo, error) {
 }
 
 func (e Env) create(ctx context.Context, name string) error {
-	if e.BucketPath == nil || e.Locks == nil {
+	// Custom is part of the not-installed contract, not just BucketPath/Locks:
+	// Env.validateName (the very next statement) calls e.Custom(name), so a nil
+	// Custom would be a nil dereference, not a refusal.
+	if e.BucketPath == nil || e.Locks == nil || e.Custom == nil {
 		return errNotInstalled()
 	}
 	// Bucket-name rule FIRST: an invalid name must be refused before any path
@@ -208,12 +211,13 @@ func (e Env) createCustom(name, customPath string) error {
 // neither nil nor IsNotExist is a 500; an existing file is 409
 // BucketAlreadyExists; an existing directory is 409 BucketAlreadyOwnedByYou.
 //
-// Reached only through Env.create, which has ALREADY run Env.validateName on
-// name, so bucketPath is one path segment under the resolved data root. (This
-// comment previously claimed a validateBucketName check that no caller of this
-// function ever performed — see bughunt H3.)
+// Reached only through Env.create, which runs Env.validateName on name BEFORE
+// resolving bucketPath and before this function, so bucketPath is one path
+// segment under the resolved data root. (This comment previously claimed a
+// validateBucketName check that no caller of this function ever performed —
+// see bughunt H3.)
 func (e Env) ensureCreatable(bucketPath, name string) error {
-	info, err := os.Stat(bucketPath) //nolint:gosec // G703: G703 is excluded repo-wide (.golangci.yml); name validated by Env.validateName in Env.create
+	info, err := os.Stat(bucketPath) //nolint:gosec // G703: name validated by Env.validateName, which runs first in Env.create
 	if err != nil && !os.IsNotExist(err) {
 		log.Printf("Error statting bucket path %s: %v", bucketPath, err) //nolint:gosec // G703
 		return objectmodel.NewError(objectmodel.CodeInternalError, "Internal Server Error", 500)
@@ -241,8 +245,7 @@ func (e Env) createDataset(ctx context.Context, name, bucketPath, metadataPath s
 		return objectmodel.NewError(objectmodel.CodeInternalError, "Error creating bucket.", 500)
 	}
 
-	//nolint:gosec // G703: G703 is excluded repo-wide (.golangci.yml); metadataPath is under the bucketPath validated in Env.create
-	if err := os.Mkdir(metadataPath, 0755); err != nil {
+	if err := os.Mkdir(metadataPath, 0755); err != nil { //nolint:gosec // G703: metadataPath is under the bucketPath whose name Env.validateName validated first, in Env.create
 		log.Printf("Error creating metadata directory %s for bucket %s: %v — rolling back dataset %s", metadataPath, name, err, dataset)
 		if rollbackErr := e.Provisioner.Destroy(ctx, dataset); rollbackErr != nil {
 			log.Printf("CRITICAL: rollback destroy of dataset %s failed after metadata mkdir failure for bucket %s: %v — the empty dataset is left in place; remove it manually (zfs destroy %s), snapshots are never auto-destroyed", dataset, strconv.Quote(name), rollbackErr, dataset)
@@ -269,11 +272,22 @@ func (e Env) createPlain(name, bucketPath, metadataPath string) error {
 	return nil
 }
 
+// exists is the Exists implementation: the bucket-name rule, then the stat.
+// The name rule runs FIRST and before e.BucketPath is consulted, exactly as in
+// Env.create and Env.delete, because the resolved path of a traversal name (or
+// of "" / ".", which resolve to the data root itself) is a real path — this
+// entry point answers GET /buckets/{name} on the management surface, so an
+// unvalidated name was a filesystem-existence oracle over the data root's
+// parent (bughunt H3 follow-up: Create and Delete were guarded, Exists was
+// not).
 func (e Env) exists(_ context.Context, name string) (bool, error) {
-	if e.BucketPath == nil {
+	if e.BucketPath == nil || e.Custom == nil {
 		return false, errNotInstalled()
 	}
-	info, err := os.Stat(e.BucketPath(name)) //nolint:gosec // G703
+	if err := e.validateName(name); err != nil {
+		return false, err
+	}
+	info, err := os.Stat(e.BucketPath(name)) //nolint:gosec // G703: name validated by Env.validateName above, in Env.exists
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil

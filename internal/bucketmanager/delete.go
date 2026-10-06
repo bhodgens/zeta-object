@@ -20,7 +20,10 @@ import (
 // (bughunt H3: without it, a ".." name resolved outside the data root and
 // RemoveAll deleted it).
 func (e Env) delete(ctx context.Context, name string, opts DeleteOptions) error {
-	if e.BucketPath == nil || e.Locks == nil {
+	// Custom is part of the not-installed contract: Env.validateName and the
+	// custom-bucket 403 guard below both call e.Custom(name), so a nil Custom
+	// would be a nil dereference, not a refusal.
+	if e.BucketPath == nil || e.Locks == nil || e.Custom == nil {
 		return errNotInstalled()
 	}
 
