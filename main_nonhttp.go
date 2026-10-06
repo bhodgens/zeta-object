@@ -8,12 +8,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/bhodgens/zeta-object/internal/frontend"
 	h3 "github.com/bhodgens/zeta-object/internal/frontend/h3"
@@ -133,17 +135,46 @@ func drainNonHTTPFrontends(servers []nonHTTPServer, wg *sync.WaitGroup) {
 	}
 }
 
-// drainQUICFrontends closes every HTTP/3 server in the same
-// graceful-shutdown fan: stop accepting (GOAWAY to connected clients), then
-// close the QUIC listener and the UDP socket (quic-h3-2026-10 leaf 02: the
-// harness must not leak UDP fds).
+// drainQUICFrontends stops every HTTP/3 server in the same
+// graceful-shutdown fan using its OWN bounded drain budget. Callers that
+// already hold the process-wide shutdown budget (runServer) call
+// drainQUICFrontendsWithContext instead, so every listener in the fan shares
+// one budget; this form exists for callers without one (tests, cleanups).
+//
+// Within the budget each server sends GOAWAY, lets in-flight responses
+// finish, and only then releases the QUIC listener and UDP socket
+// (quic-h3-2026-10 leaf 02: the harness must not leak UDP fds).
 func drainQUICFrontends(servers []quicServer, wg *sync.WaitGroup) {
+	ctx, cancel := context.WithTimeout(context.Background(), quicDrainTimeout)
+	defer cancel()
+	drainQUICFrontendsWithContext(ctx, servers, wg)
+}
+
+// quicDrainTimeout bounds drainQUICFrontends when no caller budget is
+// supplied. It matches the process-wide serverShutdownTimeout default so a
+// no-budget drain can never out-wait systemd's TimeoutStopSec.
+const quicDrainTimeout = 30 * time.Second
+
+// drainQUICFrontendsWithContext stops every HTTP/3 server in the same
+// graceful-shutdown fan within the caller's SHARED drain budget (main's
+// drainCtx): GOAWAY to connected clients, in-flight responses finish, then
+// the QUIC listener and UDP socket are released.
+//
+// The caller's budget is used on purpose: a per-server
+// context.Background() (the pre-fix shape) let a single client keep its
+// connection alive indefinitely, so wg.Wait() in runServer never returned and
+// systemd SIGKILLed the process mid-write — after in-flight s3 writes had
+// already drained cleanly. One shared budget also keeps this fan consistent
+// with the TCP listeners, which all receive the same drainCtx.
+func drainQUICFrontendsWithContext(ctx context.Context, servers []quicServer, wg *sync.WaitGroup) {
 	for _, s := range servers {
 		wg.Add(1)
 		go func(s quicServer) {
 			defer wg.Done()
-			if err := s.srv.Close(); err != nil {
-				log.Printf("HTTP/3 frontend %s shutdown failed: %v", s.frontend.Name(), err)
+			if err := s.srv.Shutdown(ctx); err != nil {
+				// A spent drain budget is expected on a slow drain, not a
+				// crash: log it and keep tearing the rest down.
+				log.Printf("HTTP/3 frontend %s shutdown: %v", s.frontend.Name(), err)
 			}
 		}(s)
 	}

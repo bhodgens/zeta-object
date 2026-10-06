@@ -65,6 +65,20 @@ type altSvcWriter struct {
 	wroteHdr bool
 }
 
+// Unwrap returns the wrapped http.ResponseWriter so http.ResponseController
+// can walk down to the real response and reach its optional capabilities
+// (Flush, Hijack, SetReadDeadline, SetWriteDeadline).
+//
+// The embedded field is an INTERFACE, so nothing is promoted through it: an
+// embedded concrete *http.response's Flush would promote onto this struct,
+// but an embedded http.ResponseWriter's method set is exactly the interface's
+// six methods. Without this explicit Unwrap, the controller's rwUnwrapper
+// walk stops here and EVERY capability degrades to ErrNotSupported for every
+// wrapped frontend — which is how the s3 multi-range 206's
+// `_ = rc.Flush()` (internal/frontend/s3/rangemulti.go) silently stopped
+// flushing whenever an h3 frontend was mounted.
+func (a *altSvcWriter) Unwrap() http.ResponseWriter { return a.ResponseWriter }
+
 func (a *altSvcWriter) WriteHeader(code int) {
 	if a.wroteHdr {
 		return

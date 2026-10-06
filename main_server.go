@@ -102,10 +102,14 @@ func runServer(srv *http.Server, extraServers []*http.Server, nonHTTPServers []n
 		// Non-HTTP frontends drain through their own Stop (graceful:
 		// stop accepting, close sessions) in the same concurrent fan.
 		drainNonHTTPFrontends(nonHTTPServers, &wg)
-		// HTTP/3 (QUIC) frontends drain through the same fan: stop
-		// accepting (GOAWAY), close the QUIC listener and UDP socket
-		// (quic-h3-2026-10 leaf 02: no leaked UDP fds).
-		drainQUICFrontends(quicServers, &wg)
+		// HTTP/3 (QUIC) frontends drain through the same fan with the
+		// SAME drain budget: GOAWAY stops accepting, in-flight responses
+		// finish, and only then are the QUIC listener and UDP socket
+		// released (quic-h3-2026-10 leaf 02: no leaked UDP fds). Sharing
+		// drainCtx bounds the whole fan by serverShutdownTimeout, so one
+		// slow h3 client can never hold wg.Wait() past systemd's
+		// TimeoutStopSec.
+		drainQUICFrontendsWithContext(drainCtx, quicServers, &wg)
 		wg.Wait()
 		for i, err := range errs {
 			if err != nil {

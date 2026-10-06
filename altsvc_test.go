@@ -3,10 +3,13 @@ package main
 import (
 	"crypto/tls"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/frontend"
@@ -113,6 +116,81 @@ func TestAltSvcMiddleware(t *testing.T) {
 				t.Fatalf("Alt-Svc = %q, want %q", got, tt.wantHeader)
 			}
 		})
+	}
+}
+
+// TestAltSvc_ResponseControllerCapabilitiesSurviveWrapper pins that the
+// advertisement wrapper is TRANSPARENT to http.ResponseController. The
+// wrapper embeds the http.ResponseWriter INTERFACE, so nothing promotes
+// through it: without an explicit Unwrap() the controller cannot walk down
+// to the real *http.response and every capability (Flush, SetWriteDeadline,
+// Hijack) degrades to ErrNotSupported for EVERY wrapped frontend whenever an
+// h3 frontend is mounted. The concrete victim is
+// internal/frontend/s3/rangemulti.go, whose `_ = rc.Flush()` on a
+// multi-range 206 silently stops flushing.
+//
+// Asserted against a REAL httptest server, not a recorder, because the point
+// is that the walk reaches the live connection's *http.response.
+func TestAltSvc_ResponseControllerCapabilitiesSurviveWrapper(t *testing.T) {
+	const adv = `h3=":9443"; persist=1`
+	// The handler asks the controller for the capabilities a ResponseWriter
+	// hides behind the wrapper. The results travel over a side channel, not
+	// headers: rc.Flush() COMMITS the header block, so anything set after
+	// the call is (correctly) dropped by net/http.
+	var mu sync.Mutex
+	var flushErr, deadlineErr error
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		fErr := rc.Flush()
+		dErr := rc.SetWriteDeadline(time.Time{})
+		mu.Lock()
+		flushErr, deadlineErr = fErr, dErr
+		mu.Unlock()
+		_, _ = w.Write([]byte("body after flush"))
+	})
+	srv := httptest.NewServer(wrapWithAltSvc(inner, adv))
+	defer srv.Close()
+
+	resp, err := srv.Client().Get(srv.URL + "/multi-range")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if got := resp.Header.Get("Alt-Svc"); got != adv {
+		t.Fatalf("Alt-Svc = %q, want %q (the wrapper must still advertise)", got, adv)
+	}
+	if string(body) != "body after flush" {
+		t.Fatalf("body = %q, want %q", body, "body after flush")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	// The controller must have reached the underlying response writer: a
+	// real connection's *http.response supports both.
+	if flushErr != nil {
+		t.Fatalf("ResponseController.Flush through the Alt-Svc wrapper = %v, want nil: the wrapper must expose Unwrap()", flushErr)
+	}
+	if deadlineErr != nil {
+		t.Fatalf("ResponseController.SetWriteDeadline through the Alt-Svc wrapper = %v, want nil", deadlineErr)
+	}
+}
+
+// TestAltSvc_WrapperUnwrapsToUnderlyingWriter pins the wrapper's own
+// unwrap contract directly: Unwrap must return the writer it was handed, so
+// the ResponseController's rwUnwrapper walk terminates on a writer that
+// actually implements the capabilities.
+func TestAltSvc_WrapperUnwrapsToUnderlyingWriter(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w := &altSvcWriter{ResponseWriter: rec, value: `h3=":9443"; persist=1`}
+	u, ok := any(w).(interface{ Unwrap() http.ResponseWriter })
+	if !ok {
+		t.Fatal("altSvcWriter must implement Unwrap() http.ResponseWriter (ResponseController capabilities are otherwise lost)")
+	}
+	if got := u.Unwrap(); got != http.ResponseWriter(rec) {
+		t.Fatalf("Unwrap = %#v, want the wrapped ResponseWriter", got)
 	}
 }
 

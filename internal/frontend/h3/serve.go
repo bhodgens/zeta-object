@@ -9,7 +9,9 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log"
 	"net"
+	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -71,25 +73,67 @@ func (s *Server) Addr() net.Addr { return s.ln.Addr() }
 // TLSConfig returns the listener's TLS configuration as built.
 func (f *Frontend) ListenerTLSConfig() *tls.Config { cfg, _ := f.TLSConfig(); return cfg }
 
-// Close gracefully stops the server: stop accepting, close the QUIC
-// listener and the UDP socket (the harness must not leak UDP fds). Wired
-// into the same graceful-stop fan the TCP listeners use by main.
+// Close gracefully stops the server within a bounded default drain budget:
+// Shutdown first (GOAWAY, in-flight responses finish, socket still open),
+// then the QUIC listener and UDP socket are torn down underneath it. A caller
+// with its own drain budget (main's graceful-stop fan) uses Shutdown directly
+// with that context instead.
 func (s *Server) Close() error {
-	// Graceful-stop shape: http3.Server.Shutdown sends GOAWAY and waits
-	// within the caller's drain budget; the listener and UDP conn close
-	// underneath it so Accept unblocks immediately.
-	shutdownDone := make(chan error, 1)
-	go func() { shutdownDone <- s.srv.Shutdown(context.Background()) }()
-	lnErr := s.ln.Close()
-	udpErr := s.udpConn.Close()
-	srvErr := <-shutdownDone
-	switch {
-	case srvErr != nil && !errors.Is(srvErr, context.DeadlineExceeded):
-		return srvErr
-	case lnErr != nil:
-		return lnErr
-	default:
-		return udpErr
+	ctx, cancel := context.WithTimeout(context.Background(), defaultDrainTimeout)
+	defer cancel()
+	return s.Shutdown(ctx)
+}
+
+// defaultDrainTimeout bounds Shutdown when no caller budget is supplied (the
+// no-arg Close path: test cleanup, and the fan's own timeout once it passes a
+// context). It matches the process-wide serverShutdownTimeout default so a
+// Close can never out-wait systemd's TimeoutStopSec.
+const defaultDrainTimeout = 30 * time.Second
+
+// Shutdown gracefully stops the server within the caller's drain budget:
+// stop accepting (GOAWAY), let every in-flight request finish, and only then
+// release the QUIC listener and the UDP socket.
+//
+// Two properties this pins, both of which the previous socket-first shape
+// broke:
+//
+//   - The socket and listener stay OPEN across the drain. Closing them first
+//     destroys the QUIC transport underneath a live stream, so a large
+//     in-flight GET/PUT is cut mid-body instead of draining.
+//   - The budget is the CALLER's context, not context.Background(). The
+//     previous unbounded wait let a client that keeps advancing its
+//     last-packet timer keep the whole listener-drain fan alive; now a spent
+//     budget returns the context error promptly and main's wg.Wait() can
+//     never hang past TimeoutStopSec.
+//
+// The socket/listener teardown is deferred, so it runs on every path — a
+// graceful drain, a budget overrun, or an error.
+func (s *Server) Shutdown(ctx context.Context) error {
+	// Deferred so no return path can leak the UDP fd: the graceful-stop fan
+	// and a test cleanup may both tear the server down.
+	defer func() { s.closeTransport() }()
+	// http3.Server.Shutdown returns nil after a clean drain and the
+	// context's own error once the budget is spent (it force-closes the
+	// connections on that path), so the error passes straight through —
+	// matching net/http's Shutdown contract. main's fan logs it and keeps
+	// tearing the rest down.
+	return s.srv.Shutdown(ctx)
+}
+
+// closeTransport releases the QUIC listener and the UDP socket. Both closes
+// are best-effort and only their errors are joined: this runs after the
+// graceful drain, so a "use of closed network connection" here is expected
+// on the double-close paths (drain fan + test cleanup).
+func (s *Server) closeTransport() {
+	var errs []error
+	if err := s.ln.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	if err := s.udpConn.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	if len(errs) > 0 {
+		log.Printf("h3: closing QUIC transport: %v", errors.Join(errs...))
 	}
 }
 

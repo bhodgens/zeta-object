@@ -18,11 +18,13 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/backend"
 	"github.com/bhodgens/zeta-object/internal/frontend"
 	"github.com/bhodgens/zeta-object/internal/frontend/webdav"
+	"github.com/quic-go/quic-go/http3"
 )
 
 // Compile-time: the h3 frontend is a QUICListenerFrontend (and therefore a
@@ -64,7 +66,8 @@ type Frontend struct {
 	listenAddr string
 	certFile   string
 	keyFile    string
-	caPool     *x509.CertPool
+	caPath     string
+	caPool     atomic.Pointer[x509.CertPool]
 	wrapped    *webdav.Frontend
 }
 
@@ -84,6 +87,14 @@ func New(be backend.Backend, cfg Config, reg auth.IdentityRegistry, lockRoot fun
 	if err != nil {
 		return nil, err
 	}
+	f := &Frontend{
+		listenAddr: cfg.ListenAddr,
+		certFile:   cfg.CertFile,
+		keyFile:    cfg.KeyFile,
+		caPath:     cfg.ClientCAFile,
+		wrapped:    nil, // set below, once the webdav wrapper exists
+	}
+	f.caPool.Store(caPool)
 	if reg == nil {
 		return nil, fmt.Errorf("h3 frontend requires an identity registry (auth configuration failed earlier?)")
 	}
@@ -97,13 +108,8 @@ func New(be backend.Backend, cfg Config, reg auth.IdentityRegistry, lockRoot fun
 	if err != nil {
 		return nil, fmt.Errorf("h3 frontend: building wrapped webdav: %w", err)
 	}
-	return &Frontend{
-		listenAddr: cfg.ListenAddr,
-		certFile:   cfg.CertFile,
-		keyFile:    cfg.KeyFile,
-		caPool:     caPool,
-		wrapped:    wd,
-	}, nil
+	f.wrapped = wd
+	return f, nil
 }
 
 // loadClientCAs reads the REQUIRED client CA bundle (fail-loud, naming the
@@ -150,11 +156,44 @@ func (f *Frontend) Addr() string { return f.listenAddr }
 // true here and only here.
 func (f *Frontend) IsQUICListener() bool { return true }
 
+// currentPool returns the currently-trusted client CA pool. It is an atomic
+// load so the handshake path observes a reload without a lock.
+func (f *Frontend) currentPool() *x509.CertPool { return f.caPool.Load() }
+
+// ReloadClientCA re-reads the configured clientCAFile and swaps the trusted
+// pool. A replaced CA file therefore revokes client certificates signed by
+// the OLD CA without a restart — the h3 counterpart of the admin frontend's
+// ReloadClientCA (internal/frontend/admin/mtls.go), so one
+// POST /auth/reload can revoke a device certificate on BOTH listeners instead
+// of leaving the QUIC path trusting the stale bundle for the process
+// lifetime. A missing/unreadable/invalid bundle returns an error and leaves
+// the previous pool in place (fail-closed: the running listener keeps
+// trusting the old CA rather than trusting nothing or everything).
+//
+// It satisfies admin.ClientCAReloader by shape, so package main's factory can
+// register it through the same seam the admin frontend uses.
+func (f *Frontend) ReloadClientCA() error {
+	pool, err := loadClientCAs(f.caPath)
+	if err != nil {
+		return err
+	}
+	f.caPool.Store(pool)
+	return nil
+}
+
 // TLSConfig builds the QUIC listener's TLS configuration: the process cert
 // pair as the listener's own certificate, TLS 1.3 minimum (HTTP/3
 // requires it), client certificates REQUIRED and verified against the
 // configured CA bundle. The caller (package main / serve.go) uses it
 // as-is; the server's serving path adds the h3 ALPN via quic-go.
+//
+// A tls.Config must not be mutated after first use, so a refreshed CA pool is
+// surfaced through GetConfigForClient rather than by writing ClientCAs on the
+// live config: the base config is built ONCE with the initial pool, and
+// every handshake asks for a fresh per-connection config pinned to the CURRENT
+// cached pool (f.currentPool). Replacing the CA file and calling
+// ReloadClientCA therefore takes effect on the next handshake with no data
+// race on the served config.
 func (f *Frontend) TLSConfig() (*tls.Config, error) {
 	cert, err := tls.LoadX509KeyPair(f.certFile, f.keyFile)
 	if err != nil {
@@ -164,7 +203,28 @@ func (f *Frontend) TLSConfig() (*tls.Config, error) {
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{cert},
 		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    f.caPool,
-		NextProtos:   []string{"h3"},
+		ClientCAs:    f.currentPool(),
+		NextProtos:   []string{http3.NextProtoH3},
+		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+			return f.connectionTLSConfig(cert), nil
+		},
 	}, nil
+}
+
+// connectionTLSConfig builds the per-connection configuration the handshake
+// uses, pinned to the CURRENT cached CA pool. It carries the same
+// certificate and client-auth posture as the base config.
+//
+// NextProtos must carry h3 HERE too: crypto/tls negotiates ALPN against the
+// config this hook returns, and on the ServeListener path quic-go does not
+// re-pin it (it only does so for the configs it builds itself), so an empty
+// list fails every handshake with "server did not select an ALPN protocol".
+func (f *Frontend) connectionTLSConfig(cert tls.Certificate) *tls.Config {
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS13,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    f.currentPool(),
+		Certificates: []tls.Certificate{cert},
+		NextProtos:   []string{http3.NextProtoH3},
+	}
 }
