@@ -294,4 +294,12 @@ else
 	assert_eq '35f no destructive purge occurred' none none
 fi
 
+# Restore the region 35c hot-applied: this case runs on the SHARED suite
+# server, and every later SigV4 case signs us-east-1 (lib.sh's s3req scope).
+# A leaked region turned every later shared-server request into
+# SignatureDoesNotMatch (surfaced when case 39 landed).
+mreq "$E2E_ADMIN_CLIENT_CERT" "$E2E_ADMIN_CLIENT_KEY" PUT /config \
+	-H 'Content-Type: application/json' --data '{"region":"us-east-1"}'
+assert_eq '35z restore the shared server region -> 200' 200 "$M_STATUS"
+
 printf '\n'

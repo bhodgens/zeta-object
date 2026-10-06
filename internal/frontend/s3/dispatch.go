@@ -372,6 +372,22 @@ func (f *Frontend) bucketLevelDispatch(w http.ResponseWriter, r *http.Request, b
 // objectLevelDispatch routes object-level requests, including the multipart
 // sub-resources (?uploads, ?partNumber, ?uploadId).
 func (f *Frontend) objectLevelDispatch(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
+	// Bucket-name gate, FIRST, before every sub-resource and the method
+	// switch below (bughunt 2026-10-05 C1). objectKey validation rejects a
+	// traversal KEY, but the BUCKET name reached getBucketPath untouched and
+	// filepath.Join(dataDir, "..") CLEANS to the data root's PARENT - so a
+	// request like PUT /%2e%2e/x read and wrote outside the data root. One
+	// gate here closes the whole object surface (multipart, ?tagging,
+	// ?versionId, ?events, PUT/GET/DELETE/HEAD) and no future handler added
+	// to this switch can skip it.
+	//
+	// 404 (not 400) matches the sibling bucket-level gates and S3's own
+	// behaviour for a bucket that does not exist.
+	if !validBucket(bucketName) || !bucketExists(bucketName) {
+		log.Printf("Invalid or missing bucket %s for object-level request", strconv.Quote(bucketName))
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
+		return
+	}
 	// Check for multipart upload query parameters
 	if _, ok := r.URL.Query()["uploads"]; ok && r.Method == "POST" {
 		initiateMultipartUploadHandler(w, r, bucketName, objectName)

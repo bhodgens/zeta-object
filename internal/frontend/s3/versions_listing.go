@@ -57,6 +57,14 @@ const nullVersionID = "null"
 // listObjectVersionsHandler serves GET /bucket?versions, choosing the
 // versioned or legacy renderer by the bucket's ever-versioned marker.
 func listObjectVersionsHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
+	// Bucket-name gate FIRST (bughunt 2026-10-05 C1): getBucketPath below
+	// is filepath.Join(dataDir, name), which CLEANS "..", so a traversal
+	// name resolved the version listing against the data root's PARENT.
+	if !validBucket(bucketName) {
+		log.Printf("Invalid bucket name %s for ListObjectVersions", strconv.Quote(bucketName))
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
+		return
+	}
 	bucketPath := getBucketPath(bucketName)
 	if bucketEverVersioned(bucketPath) {
 		listBucketVersionsVersioned(w, r, bucketName, bucketPath)

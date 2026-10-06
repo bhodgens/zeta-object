@@ -879,8 +879,11 @@ func s3URLEncode(key string) string {
 
 // listObjectsV2Handler implementation
 func listObjectsV2Handler(w http.ResponseWriter, r *http.Request, bucketName string) {
-	// Check if bucket exists
-	if !bucketExists(bucketName) {
+	// Bucket-name gate FIRST (bughunt 2026-10-05 C1): bucketExists alone
+	// lets a traversal name through, and getBucketPath's
+	// filepath.Join(dataDir, "..") then resolves to the data root's PARENT,
+	// so the listing enumerates keys outside the data root.
+	if !validBucket(bucketName) || !bucketExists(bucketName) {
 		log.Printf("Bucket %s does not exist for ListObjectsV2", strconv.Quote(bucketName))
 		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return
@@ -1755,7 +1758,12 @@ func rawSourceSidecarMeta(bucketPath, key string) map[string]string {
 // preserved per key: a missing key still reports Deleted; per-key
 // failures do not stop later keys.
 func deleteObjectsHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
-	if !bucketExists(bucketName) {
+	// Bucket-name gate FIRST (bughunt 2026-10-05 C1): without it a
+	// traversal name like ".." reaches getBucketPath, whose
+	// filepath.Join(dataDir, "..") CLEANS to the data root's PARENT, and
+	// the manifest then deletes files outside the data root. Same gate
+	// shape as handleBucketBatch (batch_endpoint.go:54).
+	if !validBucket(bucketName) || !bucketExists(bucketName) {
 		log.Printf("Bucket %s does not exist for DeleteObjects", strconv.Quote(bucketName))
 		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return

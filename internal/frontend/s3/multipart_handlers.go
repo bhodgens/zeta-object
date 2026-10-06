@@ -770,8 +770,17 @@ func s3Timestamp(t time.Time) string {
 // upload sessions in the bucket, sorted lexicographically by Key then
 // UploadId, honoring prefix / key-marker / max-uploads.
 func listMultipartUploadsHandler(w http.ResponseWriter, r *http.Request, bucketName string) {
+	// Bucket-name gate FIRST (bughunt 2026-10-05 C1): the os.Stat below
+	// runs on filepath.Join(dataDir, name), which CLEANS "..", so without
+	// this a traversal name statted and enumerated the data root's PARENT.
+	// This also retires the G703 nolint claim: the name IS validated here.
+	if !validBucket(bucketName) {
+		log.Printf("Invalid bucket name %s for ListMultipartUploads", strconv.Quote(bucketName))
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
+		return
+	}
 	bucketPath := getBucketPath(bucketName)
-	if _, err := os.Stat(bucketPath); os.IsNotExist(err) { //nolint:gosec // G703: bucketPath derived from validateBucketName-checked name
+	if _, err := os.Stat(bucketPath); os.IsNotExist(err) { //nolint:gosec // G703: name validated by validBucket immediately above
 		log.Printf("Bucket %s does not exist for ListMultipartUploads", strconv.Quote(bucketName))
 		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return
