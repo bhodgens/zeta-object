@@ -14,3 +14,7 @@ vendor/mc
 vendor/mc-
 vendor/s3-tests/
 vendor/s3-tests-venv/
+
+# local agent scratch + python cache
+.claude/
+__pycache__/
