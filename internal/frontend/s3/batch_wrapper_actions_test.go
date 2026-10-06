@@ -219,9 +219,18 @@ func TestBatchCopy_OverSizedSourceIsRefusedWithoutBuffering(t *testing.T) {
 	env.setupBucket(t, "bound-bkt")
 	batchPutObject(t, "bound-bkt", "src/big.bin", "small on disk", "", nil)
 
-	// The ceiling is 5 GiB; the reader streams limit+2 lazily, so an
-	// unbounded read would allocate 5 GiB+ and this test would die. A
-	// bounded read stops one byte past the ceiling.
+	// Shrink the ceiling to a test-sized budget via the live var (the seam
+	// exists for exactly this), so the metered reader streams 1 MiB+2 under
+	// -race in milliseconds instead of 5 GiB+2 in a minute - the CI runner
+	// killed this test's 5-GiB stream deterministically (3/3 runner
+	// shutdowns, all landing inside this one test's window). The pin's
+	// claims are unchanged: the read stops one byte past the WHATEVER
+	// ceiling, and the refusal carries the same InvalidArgument.
+	const testCeiling int64 = 1 << 20
+	prevCeiling := batchCopyMaxBytes
+	batchCopyMaxBytes = testCeiling
+	t.Cleanup(func() { batchCopyMaxBytes = prevCeiling })
+
 	var read int64
 	prev := installedBackendLookup()
 	installBackendLookup(func(bucket string) (backend.Backend, error) {
@@ -229,7 +238,7 @@ func TestBatchCopy_OverSizedSourceIsRefusedWithoutBuffering(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		return &oversizedSourceBackend{Backend: b, limit: batchCopyMaxBytes, reads: &read}, nil
+		return &oversizedSourceBackend{Backend: b, limit: testCeiling, reads: &read}, nil
 	})
 	t.Cleanup(func() { installBackendLookup(prev) })
 
