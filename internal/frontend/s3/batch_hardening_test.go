@@ -31,10 +31,11 @@ import (
 	"sync"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/backend"
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
-	"golang.org/x/sys/unix"
 )
 
 // ---- shared helpers ----

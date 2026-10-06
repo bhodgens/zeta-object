@@ -20,11 +20,12 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/quic-go/quic-go/http3"
+
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/backend"
 	"github.com/bhodgens/zeta-object/internal/frontend"
 	"github.com/bhodgens/zeta-object/internal/frontend/webdav"
-	"github.com/quic-go/quic-go/http3"
 )
 
 // Compile-time: the h3 frontend is a QUICListenerFrontend (and therefore a

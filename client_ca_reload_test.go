@@ -22,12 +22,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
+
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/backend/fsbackend"
 	admin "github.com/bhodgens/zeta-object/internal/frontend/admin"
 	h3 "github.com/bhodgens/zeta-object/internal/frontend/h3"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
 )
 
 // client_ca_reload_test.go — the MULTI-registrant client-CA reload registry

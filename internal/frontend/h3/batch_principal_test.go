@@ -28,9 +28,10 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/bhodgens/zeta-object/internal/frontend/s3"
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
-	"golang.org/x/sys/unix"
 )
 
 // h3Xattr reads one xattr by name (the test-side raw read, so the

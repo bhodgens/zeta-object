@@ -14,10 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bhodgens/zeta-object/internal/auth"
-	"github.com/bhodgens/zeta-object/internal/objectmodel"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+
+	"github.com/bhodgens/zeta-object/internal/auth"
+	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
 
 // serve_test.go — the REAL loopback integration (leaf 02 Task 4): start the

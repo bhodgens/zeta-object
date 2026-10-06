@@ -32,11 +32,12 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/batchops"
 	s3 "github.com/bhodgens/zeta-object/internal/frontend/s3"
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
-	"golang.org/x/sys/unix"
 )
 
 // davXattr reads one xattr by name from a path (the test-side raw read,
