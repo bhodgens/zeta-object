@@ -273,9 +273,25 @@ func eventsOwnerLookup(bucketName string) func(key string) (string, bool) {
 // exists check) and unknown buckets keep the standard 404 (404
 // precedence over provider resolution). Returns false when it has
 // written the error.
+//
+// This is THE ONE implementation: the s3 capability handlers and all
+// three webdav bridge entry points (zfssurface_bridge.go) call it, so the
+// bucket check cannot drift between the two protocols (bughunt L4 — the
+// bridge used to re-inline the block at each entry point, byte-equivalent
+// today and silently stale the day this function changes).
 func resolveEventsContext(w http.ResponseWriter, bucketName string) bool {
+	return validEventsSurfaceBucket(w, bucketName, "?events")
+}
+
+// validEventsSurfaceBucket is the shared body behind resolveEventsContext,
+// with the query param named in the log line so an operator reading the
+// server log can tell which enrichment surface rejected the bucket. The
+// validation itself is byte-for-byte the pre-L4 behavior: 404 NoSuchBucket
+// for a name that fails validBucket OR does not exist, 404 precedence over
+// provider resolution.
+func validEventsSurfaceBucket(w http.ResponseWriter, bucketName, param string) bool {
 	if !validBucket(bucketName) || !bucketExists(bucketName) {
-		log.Printf("Bucket %s does not exist for ?events", strconv.Quote(bucketName))
+		log.Printf("Bucket %s does not exist for %s", strconv.Quote(bucketName), param)
 		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
 		return false
 	}

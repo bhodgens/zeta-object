@@ -23,23 +23,6 @@ type CapturedObjectVersion = capturedObjectVersion
 // capture, never a failure.
 var ErrNoPriorVersion = errNoPriorVersion
 
-// ErrDeleteMarkersUnsupported is returned by PutDeleteMarker on stores
-// without delete-marker semantics (the ZFS snapshot store): the
-// snapshots-mode DELETE surface (webdav maps it to 409, mirroring the
-// s3 wire's Conflict mapping).
-var ErrDeleteMarkersUnsupportedExported = errDeleteMarkersUnsupportedAlias
-
-// ErrSnapshotsReadOnly is returned by PutVersion on the ZFS snapshot
-// store (snapshots are host policy; per-write records cannot exist).
-var ErrSnapshotsReadOnlyExported = errSnapshotsReadOnlyAlias
-
-// Aliases keep the exported vars pointed at the package sentinels in
-// one place (var-initialization order safety).
-var (
-	errDeleteMarkersUnsupportedAlias = ErrDeleteMarkersUnsupported
-	errSnapshotsReadOnlyAlias        = ErrSnapshotsReadOnly
-)
-
 // VersionStoreStateForBucket reads the bucket-level versioning state
 // through the request-resolved store (the same resolution the s3
 // handlers use: installed mode + shared zmetad handle).

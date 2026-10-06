@@ -61,11 +61,11 @@ type ObjectVersionExtJSON struct {
 // bucket-path resolver — production wires the SAME getBucketPath value
 // the s3 frontend uses; no second config view exists).
 func HandleBucketEventsForBucket(w http.ResponseWriter, r *http.Request, bucketName, bucketPath string) {
-	// resolveEventsContext's validation, against the caller-resolved
-	// provider root (same precedence: 404 over provider resolution).
-	if !validBucket(bucketName) || !bucketExists(bucketName) {
-		log.Printf("Bucket %s does not exist for ?events", strconv.Quote(bucketName))
-		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
+	// The SHARED validation (the one implementation the s3 capability
+	// handlers call; bughunt L4 — this file used to re-inline the block
+	// here and in the two entry points below, which is byte-equivalent
+	// today and drifts the moment the shared one changes).
+	if !resolveEventsContext(w, bucketName) {
 		return
 	}
 	p := metadataProviderFor(bucketPath)
@@ -96,13 +96,63 @@ func HandleBucketEventsForBucket(w http.ResponseWriter, r *http.Request, bucketN
 	})
 }
 
+// HandleCollectionEventsForBucket is the webdav entry for GET
+// <collection>?events — a path that names no object.
+//
+// A WebDAV collection is a namespace shape with no object behind it, so
+// it has no event history of its own. Answering the BUCKET's whole stream
+// here would present every event in the bucket as if it belonged to this
+// collection, and answering the collection's key-as-an-object is the
+// bughunt L2 defect: parseResource gives a nested collection a non-empty
+// key, and the provider's PARTIAL-row match (bare-name equality, or the
+// queried key ending in "/"+bare) can then return a row belonging to an
+// UNRELATED object whose recorded bare name happens to equal this
+// collection's last segment.
+//
+// So this surface answers the honest EMPTY history: 200 with the same
+// envelope shape the object surface writes (events: [] — never null, never
+// another object's rows). Validation (404 NoSuchBucket) and provider
+// resolution (the contracted 503, with 404 precedence) run through the
+// SHARED resolveEventsContext, so this surface cannot drift from the s3
+// endpoints. The one bucket-scoped History call below exists so the
+// provider's own HistoryDetail (dataset + the loss counters) is fresh and
+// identical to what GET /{bucket}?events reports — the envelope stays
+// honest instead of zero-filled.
+//
+// The combined ?events&versions on a collection is NOT routed here: the
+// derived version listing is a bucket-scoped document (it names the
+// bucket, and ?prefix= filters it), so it keeps answering through
+// HandleBucketEventsForBucket exactly as the s3 endpoint does.
+func HandleCollectionEventsForBucket(w http.ResponseWriter, r *http.Request, bucketName, bucketPath string) {
+	if !resolveEventsContext(w, bucketName) {
+		return
+	}
+	p := metadataProviderFor(bucketPath)
+	if p == nil {
+		writeNoProviderError(w)
+		return
+	}
+	q := metadata.HistoryQuery{MaxEvents: maxEventsFromQuery(r)}
+	if _, err := p.History(r.Context(), bucketPath, "", q); err != nil {
+		// NO provider/exec detail reaches the client — server log only.
+		log.Printf("metadata: events for collection %s: %v", strconv.Quote(bucketName), err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
+		writeS3Error(w, "InternalError", "unable to read event history", http.StatusInternalServerError)
+		return
+	}
+	detail := historyDetailFor(p)
+	writeEventsJSON(w, ObjectEventHistory{
+		Dataset:     detail.Dataset,
+		RecordsLost: detail.RecordsLost,
+		RingSwaps:   detail.RingSwaps,
+		Events:      []objectEventJSON{},
+	})
+}
+
 // HandleObjectEventsForBucket is the webdav entry for GET
 // <file>?events: the key-scoped JSON ObjectEventHistory, byte-identical
 // to the s3 GET /{bucket}/{key}?events response for the same key.
 func HandleObjectEventsForBucket(w http.ResponseWriter, r *http.Request, bucketName, objectName, bucketPath string) {
-	if !validBucket(bucketName) || !bucketExists(bucketName) {
-		log.Printf("Bucket %s does not exist for ?events", strconv.Quote(bucketName))
-		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
+	if !resolveEventsContext(w, bucketName) {
 		return
 	}
 	p := metadataProviderFor(bucketPath)
@@ -135,9 +185,10 @@ func HandleObjectEventsForBucket(w http.ResponseWriter, r *http.Request, bucketN
 // the events surface: the contracted 503 NotImplemented when none is
 // attached, 404 for an unknown bucket.
 func HandleObjectVersionsForBucket(w http.ResponseWriter, r *http.Request, bucketName, objectName, bucketPath string) {
-	if !validBucket(bucketName) || !bucketExists(bucketName) {
-		log.Printf("Bucket %s does not exist for ?versions", strconv.Quote(bucketName))
-		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
+	// SHARED validation (bughunt L4) — the ?versions surface runs the
+	// same bucket check as ?events; the log line names the param the
+	// client actually asked for.
+	if !validEventsSurfaceBucket(w, bucketName, "?versions") {
 		return
 	}
 	p := metadataProviderFor(bucketPath)

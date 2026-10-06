@@ -62,10 +62,17 @@ func PutObjectHandlerForTest(w http.ResponseWriter, r *http.Request, bucketName,
 	putObjectHandler(w, r, bucketName, objectName)
 }
 
-// DeleteObjectHandlerForTest drives the REAL DeleteObject handler from
-// a cross-package test.
+// DeleteObjectHandlerForTest drives the REAL DeleteObject handler from a
+// cross-package test.
 func DeleteObjectHandlerForTest(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
 	deleteObjectHandler(w, r, bucketName, objectName)
+}
+
+// CopyObjectHandlerForTest drives the REAL CopyObject handler from a
+// cross-package test (the webdav COPY parity pin's s3 counterpart — the
+// same double the in-package copy tests drive).
+func CopyObjectHandlerForTest(w http.ResponseWriter, r *http.Request, bucketName, objectName string) {
+	copyObjectHandler(w, r, bucketName, objectName)
 }
 
 // SidecarStoreForBucket returns the plain sidecar store for bucketPath

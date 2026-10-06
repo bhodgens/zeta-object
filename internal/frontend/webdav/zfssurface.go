@@ -58,10 +58,40 @@ func (f *Frontend) zfsSurfaceDispatch(w http.ResponseWriter, r *http.Request, re
 	// ?events on ANY GET (collection or file). The combined
 	// ?events&versions resolves INSIDE the bridge to the events
 	// extension, matching the s3 dispatch precedence.
+	//
+	// BUGHUNT L2: a NESTED COLLECTION also carries a non-empty key
+	// ("photos/report/" parses to key "photos/report", isCollection
+	// true), so `res.key == ""` is NOT the collection test — it only
+	// selects the bucket-level (root / bucket-root) form. Routing a
+	// nested collection into the key-scoped surface asked the provider
+	// for the events of the key "photos/report", and the zmetad row
+	// matcher's PARTIAL-row rule (bare-name equality, or the queried key
+	// ending in "/"+bare) can then answer with a COMPLETELY UNRELATED
+	// object's events — a row recorded under the bare name "report"
+	// matched this collection's last segment. S3 has no collection
+	// concept, so its surface cannot produce that answer at all.
+	//
+	// The fix classifies the resource FIRST: a collection gets its own
+	// honest surface (empty history — a collection names no object, and
+	// asking the provider for it could match an unrelated object's rows),
+	// and only a real FILE reaches the key-scoped surface. A collection is
+	// only ever reached through the trailing-slash form (parseResource
+	// sets isCollection only for a slash-terminated path), so no FILE
+	// answer changes.
 	if _, ok := query["events"]; ok {
-		if res.key == "" {
+		switch {
+		case res.key == "":
 			s3.HandleBucketEventsForBucket(w, r, res.bucket, bucketPath)
-		} else {
+		case res.isCollection:
+			// A nested collection: never the key-scoped surface (bughunt
+			// L2). ?events&versions stays bucket-scoped — the derived
+			// version listing is a bucket document.
+			if _, versions := query["versions"]; versions {
+				s3.HandleBucketEventsForBucket(w, r, res.bucket, bucketPath)
+			} else {
+				s3.HandleCollectionEventsForBucket(w, r, res.bucket, bucketPath)
+			}
+		default:
 			s3.HandleObjectEventsForBucket(w, r, res.bucket, res.key, bucketPath)
 		}
 		return true
