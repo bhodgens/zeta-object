@@ -37,11 +37,27 @@ func newTestTracker() *InactivityTracker {
 }
 
 // setGlobalTracker swaps the global inactivityTracker for the test duration.
+// The cleanup STOPS every timer the test armed before restoring the slot: a
+// 1s window routinely outlives the test, and an un-stopped fire lands in
+// whichever test swapped its own runner capture in next — with the OLD test's
+// workDir (the -shuffle failure this closes).
 func setGlobalTracker(t *testing.T, tr *InactivityTracker) {
 	t.Helper()
 	orig := inactivityTracker
 	inactivityTracker = tr
-	t.Cleanup(func() { inactivityTracker = orig })
+	t.Cleanup(func() {
+		tr.mu.Lock()
+		for _, timer := range tr.timers {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}
+		tr.mu.Unlock()
+		inactivityTracker = orig
+	})
 }
 
 // TestInactivityTimerFiresAfterWindow pins: activity recorded against a

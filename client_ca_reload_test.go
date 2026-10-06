@@ -200,6 +200,18 @@ func installCAPKITestWiring(t *testing.T) *caTestPKI {
 // cannot pass against an isolated instance the production shape never uses.
 func buildH3FrontendThroughFactory(t *testing.T, pki *caTestPKI) *h3.Frontend {
 	t.Helper()
+	// Isolation lives HERE, on the construction helper every caller inherits:
+	// the factory registers this instance's clientCAFile (a path inside this
+	// test's t.TempDir()) into the PROCESS-GLOBAL reloader registry, and a
+	// registrant that outlives the test is a closure over a deleted path.
+	//
+	// SNAPSHOT-AND-RESTORE, not reset: a caller may have registered its own
+	// live registrants BEFORE calling this helper (the both-listeners fan
+	// test registers admin first), and a blind reset would silently drop
+	// them. Restore the pre-call registry on cleanup so only THIS
+	// construction's registrant is removed.
+	prev := snapshotClientCAReloaderFuncs()
+	t.Cleanup(func() { restoreClientCAReloaderFuncs(prev) })
 	be, err := fsbackend.New(strings.TrimSuffix(serverConfig.DataDir, "/"))
 	if err != nil {
 		t.Fatalf("fsbackend: %v", err)

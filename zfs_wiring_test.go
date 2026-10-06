@@ -22,6 +22,11 @@ func TestInstallS3SeamsZfsBucketDatasetsOn(t *testing.T) {
 
 	origCfg := serverConfig
 	t.Cleanup(func() { serverConfig = origCfg })
+	// Save/restore the startup-resolved parent: it is a process global, and
+	// leaving "pool/data" behind makes any LATER test's "no parent
+	// configured" premise false (the shuffle-order failure this fix closes).
+	origParent := zfsBucketsParentDataset
+	t.Cleanup(func() { zfsBucketsParentDataset = origParent })
 	serverConfig = ServerConfig{
 		DataDir:           t.TempDir() + "/",
 		ZfsBucketDatasets: true,
@@ -50,6 +55,8 @@ func TestInstallS3SeamsZfsBucketDatasetsOff(t *testing.T) {
 
 	origCfg := serverConfig
 	t.Cleanup(func() { serverConfig = origCfg })
+	origParent := zfsBucketsParentDataset
+	t.Cleanup(func() { zfsBucketsParentDataset = origParent })
 	serverConfig = ServerConfig{
 		DataDir:           t.TempDir() + "/",
 		ZfsBucketDatasets: false,

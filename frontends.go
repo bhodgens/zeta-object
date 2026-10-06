@@ -154,6 +154,14 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 		// The registry holds MANY registrants: this one must not displace the
 		// h3 frontend's own entry, or the QUIC listener would keep trusting its
 		// startup CA for the process lifetime.
+		//
+		// INVARIANT (see the h3 entry below and admin_wiring.go's
+		// registerClientCAReloader): ONE registrant per NAMED consumer. The
+		// key is the frontend's registry Name(), and re-registering that name
+		// REPLACES the entry in place instead of appending — so registering
+		// unconditionally on the construction path is safe: constructing the
+		// same frontend twice leaves the registry length unchanged, with the
+		// live instance as the one reloads reach.
 		if ca, ok := f.(admin.ClientCAReloader); ok {
 			registerClientCAReloader(f.Name(), ca.ReloadClientCA)
 		}
@@ -186,6 +194,14 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 		// device certificate is a silent no-op over HTTP/3 (h3.Frontend
 		// satisfies admin.ClientCAReloader by shape - the reload path stays off
 		// the frozen frontend seams).
+		//
+		// INVARIANT: ONE registrant per NAMED consumer ("h3"), re-registration
+		// REPLACES (admin_wiring.go's registerClientCAReloader keys the slice
+		// by Name() and overwrites a matching entry). Registering on EVERY
+		// construction is therefore idempotent, not a leak: building this
+		// frontend twice leaves the registry at length 1, holding the second
+		// (live) instance. Pinned by
+		// TestFactory_H3ReconstructionReplacesTheSameNameRegistrant.
 		var fe frontend.Frontend = f
 		if ca, ok := fe.(admin.ClientCAReloader); ok {
 			registerClientCAReloader(fe.Name(), ca.ReloadClientCA)

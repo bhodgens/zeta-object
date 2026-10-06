@@ -513,6 +513,23 @@ func resetClientCAReloaders() {
 	clientCAReloaders = nil
 }
 
+// snapshotClientCAReloaderFuncs copies the registry so a test can restore it
+// exactly (save/restore, not reset): a construction helper that only ADDS a
+// registrant must not drop the registrants its caller registered first.
+func snapshotClientCAReloaderFuncs() []clientCAReloader {
+	clientCAMu.Lock()
+	defer clientCAMu.Unlock()
+	return append([]clientCAReloader(nil), clientCAReloaders...)
+}
+
+// restoreClientCAReloaderFuncs reinstates a snapshotClientCAReloaderFuncs
+// snapshot (the save/restore half of construction-helper isolation).
+func restoreClientCAReloaderFuncs(prev []clientCAReloader) {
+	clientCAMu.Lock()
+	defer clientCAMu.Unlock()
+	clientCAReloaders = append(clientCAReloaders[:0], prev...)
+}
+
 // registeredClientCAReloaders snapshots the registrants (test visibility into
 // what one reload will fan out to).
 func registeredClientCAReloaders() []string {

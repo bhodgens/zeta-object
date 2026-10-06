@@ -103,6 +103,13 @@ func installH3ProcessWiring(t *testing.T, pki *mainH3PKI) func() {
 // buildH3FrontendForTest constructs a real h3 frontend through the factory.
 func buildH3FrontendForTest(t *testing.T, pki *mainH3PKI) *h3.Frontend {
 	t.Helper()
+	// Construction-helper isolation (see buildH3FrontendThroughFactory in
+	// client_ca_reload_test.go): the factory registers this instance's
+	// clientCAFile into the process-global reloader registry; save/restore
+	// the registry so the registrant dies with this test and no caller's
+	// earlier registrants are dropped.
+	prev := snapshotClientCAReloaderFuncs()
+	t.Cleanup(func() { restoreClientCAReloaderFuncs(prev) })
 	f, err := frontendFactories["h3"](
 		FrontendConfig{Type: "h3", ListenAddr: "127.0.0.1:0", Bucket: "photos", Options: map[string]string{"clientCAFile": pki.caPath}},
 		nilBackend{}, stubCreds{})

@@ -325,14 +325,17 @@ func TestAdminWiringCreateDeletePlainBucket(t *testing.T) {
 // reports isDataset but never an object count.
 func TestAdminWiringBucketDetailNoObjectCount(t *testing.T) {
 	dataDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dataDir, "b"), 0o755); err != nil {
+	// A name the shared bucket-name rule accepts: BucketDetail validates the
+	// name through bucketmanager's Env.exists guard, and a 1-char name is
+	// rejected by the S3 naming rule (3-63 chars) before any stat.
+	if err := os.Mkdir(filepath.Join(dataDir, "bkt"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	installTestConfigStore(t, defaultServerConfig())
 	installBucketTestEnv(t, dataDir, nil, nil)
 	w := buildAdminWiring(nil)
 
-	raw, err := w.services.BucketDetail(context.Background(), "b")
+	raw, err := w.services.BucketDetail(context.Background(), "bkt")
 	if err != nil {
 		t.Fatalf("BucketDetail: %v", err)
 	}
@@ -343,7 +346,7 @@ func TestAdminWiringBucketDetailNoObjectCount(t *testing.T) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatal(err)
 	}
-	if m["name"] != "b" {
+	if m["name"] != "bkt" {
 		t.Fatalf("detail = %s", raw)
 	}
 	// Unknown bucket → 404.

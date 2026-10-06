@@ -45,6 +45,14 @@ func TestConfigStoreRejectedPatchLeavesLiveRegionUnchanged(t *testing.T) {
 		s3.UninstallZfsDatasetProvisioner()
 	})
 
+	// This test's premise is "no dataset parent is configured", so the
+	// rejection fires on the unresolvable parent. Pin the process global
+	// (save/restore) instead of inheriting whatever a shuffled earlier test
+	// left behind.
+	origParent := zfsBucketsParentDataset
+	t.Cleanup(func() { zfsBucketsParentDataset = origParent })
+	zfsBucketsParentDataset = ""
+
 	cfg := defaultServerConfig()
 	cfg.DataDir = t.TempDir() + "/"
 	cfg.Region = "us-east-1"
@@ -115,14 +123,6 @@ func signedRequest(t *testing.T, region string) *http.Request {
 func TestConfigStoreRejectedPatchRollsBackHotSeams(t *testing.T) {
 	t.Cleanup(func() { SetRegionForTest("") })
 
-	cfg := defaultServerConfig()
-	cfg.DataDir = t.TempDir() + "/"
-	cfg.Region = "us-east-1"
-	store := NewConfigStore(&cfg)
-	if err := applyHotSeams(&cfg); err != nil {
-		t.Fatalf("applyHotSeams: %v", err)
-	}
-
 	// An otherwise-valid patch whose hot apply cannot succeed: the dataset
 	// provisioner rejects a parent dataset name that is unsafe but not
 	// EMPTY (the empty case is caught by pre-validation, so this exercises
@@ -130,6 +130,14 @@ func TestConfigStoreRejectedPatchRollsBackHotSeams(t *testing.T) {
 	origParent := zfsBucketsParentDataset
 	t.Cleanup(func() { zfsBucketsParentDataset = origParent })
 	zfsBucketsParentDataset = "pool/data@bad"
+
+	cfg := defaultServerConfig()
+	cfg.DataDir = t.TempDir() + "/"
+	cfg.Region = "us-east-1"
+	store := NewConfigStore(&cfg)
+	if err := applyHotSeams(&cfg); err != nil {
+		t.Fatalf("applyHotSeams: %v", err)
+	}
 
 	if _, _, err := store.Apply(ConfigPatch{JSON: []byte(
 		`{"region":"eu-central-1","zfs_bucket_datasets":true}`)}); err == nil {
