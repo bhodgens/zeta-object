@@ -27,7 +27,7 @@ Two acceptance criteria close here:
 
 1. **Migration path** (issue criterion): an existing deployment with only
    `ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY` (or nothing set →
-   minioadmin) keeps working with zero config change and zero behavioral
+   zetaadmin) keeps working with zero config change and zero behavioral
    drift. Proven at unit level (leaf 01 tests) AND end-to-end here: launch
    the real binary with env-only credentials and run a representative
    request set that must succeed exactly as before, plus unknown-key

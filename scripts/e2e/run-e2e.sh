@@ -172,9 +172,9 @@ BASE_URL="$ENDPOINT"
 # The host shell may carry AWS_PROFILE / AWS_REGION (e.g. a production
 # profile); those override the exported credentials in the aws CLI
 # (profile credentials win over AWS_ACCESS_KEY_ID). The suite must talk
-# ONLY to the local server with the minioadmin pair.
+# ONLY to the local server with the zetaadmin pair.
 unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_REGION
-export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin
+export AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin
 export AWS_DEFAULT_REGION=us-east-1 AWS_EC2_METADATA_DISABLED=true
 
 if ! wait_for_port 127.0.0.1 "$FREE_PORT" 15; then
@@ -254,7 +254,7 @@ for case_file in "$E2E_ROOT"/cases/*.sh; do
 	if bash -c "
 		set -u
 		unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_REGION
-		export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin
+		export AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin
 		export AWS_DEFAULT_REGION=us-east-1 AWS_EC2_METADATA_DISABLED=true
 		source '$E2E_ROOT/lib.sh'
 		ENDPOINT='$ENDPOINT'

@@ -132,7 +132,7 @@ cat > "$E31_ROOT/config.json" <<EOF
 }
 EOF
 
-ZETAOBJECT_ACCESS_KEY=minioadmin ZETAOBJECT_SECRET_KEY=minioadmin \
+ZETAOBJECT_ACCESS_KEY=zetaadmin ZETAOBJECT_SECRET_KEY=zetaadmin \
 	ZETAOBJECT_CONFIG="$E31_ROOT/config.json" ./zeta-object-server >"$E31_ROOT/server.log" 2>&1 &
 E31_PID=$!
 ENDPOINT="https://127.0.0.1:$E31_PORT"
@@ -150,7 +150,7 @@ if ! wait_for_port 127.0.0.1 "$E31_PORT_B" 15 || ! wait_for_port 127.0.0.1 "$E31
 fi
 
 # Seed the bucket through the S3 side (cross-frontend consistency).
-AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin \
 	aws s3api create-bucket --bucket "$E31_BKT" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 
 # --- part 31a: LOCK create ---------------------------------------------------
@@ -178,7 +178,7 @@ assert_contains 'LOCK body lockroot is the resource path' "$E31_BODY" "/$E31_BKT
 # The owner href round-trips (lockdiscovery <D:owner><D:href>).
 assert_contains 'LOCK body carries the owner href' "$E31_BODY" '<D:href>e2e31-owner</D:href>'
 # LOCK must NOT have materialized an empty object (S3-side check).
-E31_HEAD=$(AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+E31_HEAD=$(AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin \
 	aws s3api head-object --bucket "$E31_BKT" --key 'locked.txt' \
 	--endpoint-url "$ENDPOINT" --no-verify-ssl 2>&1)
 case "$E31_HEAD" in

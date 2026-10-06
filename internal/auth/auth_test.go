@@ -45,7 +45,7 @@ const (
 	envAccessKey = "ZETAOBJECT_ACCESS_KEY"
 	envSecretKey = "ZETAOBJECT_SECRET_KEY"
 	// defaultAccessKey mirrors package main's config.go defaultAccessKey.
-	defaultAccessKey = "minioadmin"
+	defaultAccessKey = "zetaadmin"
 )
 
 // envCreds MIRRORS the process wiring's credential resolution (package main
@@ -174,9 +174,9 @@ func TestGrant_Fields(t *testing.T) {
 // --- CredentialSource: single-pair static (v1 shape) --------------------------
 
 func TestCredentialSource_StaticSinglePair(t *testing.T) {
-	cs := staticCreds{accessKey: "minioadmin", secret: "s3cr3t-value"}
+	cs := staticCreds{accessKey: "zetaadmin", secret: "s3cr3t-value"}
 	t.Run("matching key returns exact secret", func(t *testing.T) {
-		got, ok := cs.SecretKey("minioadmin")
+		got, ok := cs.SecretKey("zetaadmin")
 		if !ok {
 			t.Fatal("SecretKey: want ok=true for matching key")
 		}
@@ -242,7 +242,7 @@ func TestCredentialSource_EnvResolution(t *testing.T) {
 			wantOK:  true,
 		},
 		{
-			name:    "both unset default to minioadmin",
+			name:    "both unset default to zetaadmin",
 			akid:    "",
 			secret:  "",
 			wantKey: defaultAccessKey,

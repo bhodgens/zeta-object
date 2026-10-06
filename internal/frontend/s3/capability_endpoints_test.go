@@ -119,7 +119,7 @@ func newEventsTestServer(t *testing.T) (*httptest.Server, string) {
 		return filepath.Join(root, bucket)
 	})
 	s3.InstallBackendLookup(func(bucket string) (backend.Backend, error) { return f, nil })
-	front := s3.New(f, s3.WithCredentialSource(staticCreds{"minioadmin": "minioadmin"}))
+	front := s3.New(f, s3.WithCredentialSource(staticCreds{"zetaadmin": "zetaadmin"}))
 	srv := httptest.NewServer(front.Handler())
 	t.Cleanup(srv.Close)
 	return srv, root

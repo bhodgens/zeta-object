@@ -13,8 +13,8 @@ set -euo pipefail
 # ---- Configuration ----
 PORT="${PORT:-8443}"
 ENDPOINT="https://localhost:${PORT}"
-AWS_ACCESS_KEY_ID="${ZETAOBJECT_ACCESS_KEY:-minioadmin}"
-AWS_SECRET_ACCESS_KEY="${ZETAOBJECT_SECRET_KEY:-minioadmin}"
+AWS_ACCESS_KEY_ID="${ZETAOBJECT_ACCESS_KEY:-zetaadmin}"
+AWS_SECRET_ACCESS_KEY="${ZETAOBJECT_SECRET_KEY:-zetaadmin}"
 REGION="us-east-1"
 BUCKET="test-bucket-$(date +%s)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

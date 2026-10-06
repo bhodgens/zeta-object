@@ -300,4 +300,4 @@ assert_eq '18f server exits non-zero on duplicate accessKey' 1 "$(( FAILSTART_RC
 assert_contains '18f startup log names the duplicate access key identity' "$(cat "$A18_FAILOG")" 'configured more than once'
 
 # Restore the suite credentials so later cases keep using the harness pair.
-export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin
+export AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin

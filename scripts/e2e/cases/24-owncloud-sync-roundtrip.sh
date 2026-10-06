@@ -92,7 +92,7 @@ cat > "$OC24_WORK/config.json" <<EOF
 }
 EOF
 
-ZETAOBJECT_ACCESS_KEY=minioadmin ZETAOBJECT_SECRET_KEY=minioadmin \
+ZETAOBJECT_ACCESS_KEY=zetaadmin ZETAOBJECT_SECRET_KEY=zetaadmin \
 	ZETAOBJECT_CONFIG="$OC24_WORK/config.json" ./zeta-object-server >"$OC24_WORK/server.log" 2>&1 &
 OC24_PID=$!
 ENDPOINT="https://127.0.0.1:$OC24_S3_PORT"

@@ -176,8 +176,8 @@
 }
 
 // Credentials are NOT set in this file. They come from the environment:
-//   ZETAOBJECT_ACCESS_KEY  (default: "minioadmin")
-//   ZETAOBJECT_SECRET_KEY  (default: "minioadmin")
+//   ZETAOBJECT_ACCESS_KEY  (default: "zetaadmin")
+//   ZETAOBJECT_SECRET_KEY  (default: "zetaadmin")
 // NOTE: setting either variable to an EMPTY string logs a warning and falls
 // back to the default — it does not disable the default credentials.
 //   ZETAOBJECT_CONFIG      - path to this config file (default: "config.json")

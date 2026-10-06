@@ -4,7 +4,7 @@ Design and implement pluggable authentication that works across ALL frontend pro
 
 ## Current state (reviewed 2026-09)
 
-- ONE shared credential pair for the whole server: `config.go:109` (struct `serverCredentials`), loaded from env `ZETAOBJECT_ACCESS_KEY` / `ZETAOBJECT_SECRET_KEY`, default `minioadmin`/`minioadmin`
+- ONE shared credential pair for the whole server: `config.go:109` (struct `serverCredentials`), loaded from env `ZETAOBJECT_ACCESS_KEY` / `ZETAOBJECT_SECRET_KEY`, default `zetaadmin`/`zetaadmin`
 - Verification is SigV4-only: `sigv4.go:438` `authenticateRequest` (Authorization header) plus presigned URL verification (~`sigv4.go:666`), 15-minute clock skew window
 - No multi-identity, no per-bucket ACL, no token/session concept, no OAuth anywhere
 - There is no per-user anything: every request is the same principal

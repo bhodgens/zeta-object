@@ -16,7 +16,7 @@ type nilBackend struct{ backend.Backend } // embeds interface; methods unused in
 type stubCreds struct{}
 
 func (stubCreds) SecretKey(accessKeyID string) (string, bool) {
-	return "minioadmin", accessKeyID == "minioadmin"
+	return "zetaadmin", accessKeyID == "zetaadmin"
 }
 
 // stubFrontend is a minimal Frontend used to exercise the dedicated-listener

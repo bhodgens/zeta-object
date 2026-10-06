@@ -54,7 +54,7 @@ Key facts to understand before implementing:
   imports those types in tests/comments if needed; it does not modify them.
 - **Auth today** is a single shared credential pair (config.go:109
   `serverCredentials`; env `ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY`, default
-  `minioadmin`). The `auth.Authenticator` contract below is deliberately a
+  `zetaadmin`). The `auth.Authenticator` contract below is deliberately a
   placeholder — the auth GH issue replaces it. Do not grow `Identity`.
 - Repo conventions: Go stdlib only, table-driven tests with stdlib `testing`,
   errors as values, gofmt.

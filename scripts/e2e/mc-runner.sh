@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mc-runner.sh — client shim for the leaf 5.2 interop matrix (MinIO client).
+# mc-runner.sh — client shim for the leaf 5.2 interop matrix (external mc binary).
 #
 # Dispatch: mc-runner.sh <scenario> [args...]
 #

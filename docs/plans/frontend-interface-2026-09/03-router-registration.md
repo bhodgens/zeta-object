@@ -45,7 +45,7 @@ zeta-object's startup today (main.go:70-120 area): load `ServerConfig`
 s3 frontend's Handler sits there), start `http.Server` with TLS via
 `newServer(...)`, and on SIGINT/SIGTERM drain for up to 30 seconds
 (`serverShutdownTimeout`). One credential pair from env
-(`ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY`, default minioadmin) feeds SigV4.
+(`ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY`, default zetaadmin) feeds SigV4.
 
 After leaf 02, package main constructs `s3.New(backend,
 s3.WithCredentialSource(...))` and mounts it at `/`. This leaf replaces that
@@ -268,7 +268,7 @@ type nilBackend struct{ backend.Backend } // embeds interface; methods unused in
 type stubCreds struct{}
 
 func (stubCreds) SecretKey(accessKeyID string) (string, bool) {
-    return "minioadmin", accessKeyID == "minioadmin"
+    return "zetaadmin", accessKeyID == "zetaadmin"
 }
 
 func TestBuildFrontends(t *testing.T) {

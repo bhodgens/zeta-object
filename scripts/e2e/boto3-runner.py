@@ -51,8 +51,8 @@ def client():
         "s3",
         endpoint_url=ENDPOINT,
         region_name=REGION,
-        aws_access_key_id="minioadmin",
-        aws_secret_access_key="minioadmin",
+        aws_access_key_id="zetaadmin",
+        aws_secret_access_key="zetaadmin",
         verify=False,
         # signature_version s3v4: botocore otherwise presigns with the
         # legacy SigV2 query format (AWSAccessKeyId/Signature/Expires),

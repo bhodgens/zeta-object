@@ -144,7 +144,7 @@ func newZFSSurfaceEnv(t *testing.T, bucket string) *zfsSurfaceEnv {
 	if err != nil {
 		t.Fatalf("webdav.New (mode A): %v", err)
 	}
-	sf := s3.New(be, s3.WithCredentialSource(zfsCreds{"minioadmin": "minioadmin"}))
+	sf := s3.New(be, s3.WithCredentialSource(zfsCreds{"zetaadmin": "zetaadmin"}))
 
 	// One real object for the plain-GET golden asserts (written through
 	// the backend so the sidecar exists; the version listing itself
@@ -180,10 +180,10 @@ func signZFSGet(t *testing.T, target string) *http.Request {
 		fmt.Sprintf("%s/us-east-1/s3/aws4_request", dateStamp),
 		s3.HashSHA256([]byte(canonicalRequest)),
 	}, "\n")
-	key := s3.GetSigningKey("minioadmin", dateStamp, "us-east-1", "s3")
+	key := s3.GetSigningKey("zetaadmin", dateStamp, "us-east-1", "s3")
 	signature := hex.EncodeToString(s3.HmacSHA256(key, stringToSign))
 	req.Header.Set("Authorization", fmt.Sprintf(
-		"AWS4-HMAC-SHA256 Credential=minioadmin/%s/us-east-1/s3/aws4_request, SignedHeaders=%s, Signature=%s",
+		"AWS4-HMAC-SHA256 Credential=zetaadmin/%s/us-east-1/s3/aws4_request, SignedHeaders=%s, Signature=%s",
 		dateStamp, signedHeaders, signature))
 	return req
 }

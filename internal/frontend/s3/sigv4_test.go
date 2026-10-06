@@ -32,15 +32,15 @@ func TestSigV4_HeaderAndPresigned(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := s3.New(nil, s3.WithCredentialSource(staticCreds{"minioadmin": "minioadmin"}))
+			f := s3.New(nil, s3.WithCredentialSource(staticCreds{"zetaadmin": "zetaadmin"}))
 			a := f.Authenticator()
 
 			var req *http.Request
 			switch tt.kind {
 			case "presigned":
-				req = buildPresignedRequestHelper(t, "minioadmin", "minioadmin", tt.expired)
+				req = buildPresignedRequestHelper(t, "zetaadmin", "zetaadmin", tt.expired)
 			default:
-				req = buildSignedRequestHelper(t, "minioadmin", "minioadmin", tt.opts)
+				req = buildSignedRequestHelper(t, "zetaadmin", "zetaadmin", tt.opts)
 			}
 
 			_, err := a.Authenticate(req)

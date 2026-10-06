@@ -58,7 +58,7 @@ package `main`, ~30 root .go files). Request flow today:
    in xml.go.
 
 Credentials are a single shared pair (config.go:109 `serverCredentials`; env
-`ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY`, default `minioadmin`). TLS on
+`ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY`, default `zetaadmin`). TLS on
 `:8443` via config `listenAddr`/`certFile`/`keyFile`. Tests are stdlib
 `testing`; the repo has an integration harness that must stay green.
 
@@ -198,7 +198,7 @@ func TestS3Frontend_Authenticator(t *testing.T) {
     }{
         {
             name:    "unknown access key rejected",
-            creds:   staticCreds{"minioadmin": "minioadmin"},
+            creds:   staticCreds{"zetaadmin": "zetaadmin"},
             request: mustSignRequest(t, "nobody", "nobody"), // helper below
             wantErr: true,
         },
@@ -330,7 +330,7 @@ func TestSigV4_HeaderAndPresigned(t *testing.T) {
     }
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
-            f := s3.New(nil, s3.WithCredentialSource(staticCreds{"minioadmin": "minioadmin"}))
+            f := s3.New(nil, s3.WithCredentialSource(staticCreds{"zetaadmin": "zetaadmin"}))
             req := buildSignedRequest(t, tt.mode, tt.wantErr) // migrated helper
             _, err := f.Authenticator().Authenticate(req)
             if (err != nil) != tt.wantErr {
@@ -409,7 +409,7 @@ func TestS3Frontend_ImplementsFrontend(t *testing.T) {
         name string
         f    frontend.Frontend
     }{
-        {"s3 frontend", s3.New(&stubBackend{}, s3.WithCredentialSource(staticCreds{"minioadmin": "minioadmin"}))},
+        {"s3 frontend", s3.New(&stubBackend{}, s3.WithCredentialSource(staticCreds{"zetaadmin": "zetaadmin"}))},
     }
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
@@ -445,7 +445,7 @@ func TestS3Frontend_DispatchRouting(t *testing.T) {
     }
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
-            f := s3.New(&stubBackend{}, s3.WithCredentialSource(staticCreds{"minioadmin": "minioadmin"}))
+            f := s3.New(&stubBackend{}, s3.WithCredentialSource(staticCreds{"zetaadmin": "zetaadmin"}))
             srv := httptest.NewServer(f.Handler())
             defer srv.Close()
             req, _ := http.NewRequest(tt.method, srv.URL+tt.path+"?"+tt.query, nil)
@@ -496,7 +496,7 @@ Mechanics (a move, not a rewrite):
    (`s3.New(backendInstance, s3.WithCredentialSource(credSourceFromConfig))`)
    and mount `f.Handler()` at `/` exactly where rootHandler was registered.
    Credentials still come from config.go/env (`ZETAOBJECT_ACCESS_KEY`/
-   `ZETAOBJECT_SECRET_KEY`, default minioadmin) — wrap them in a
+   `ZETAOBJECT_SECRET_KEY`, default zetaadmin) — wrap them in a
    `auth.CredentialSource` in package main.
 6. Storage helpers that remain Backend-owned (storage.go) stay in package
    main for the Backend implementation to use; anything only the s3 frontend
@@ -538,7 +538,7 @@ import (
 )
 
 func TestS3Frontend_Conformance(t *testing.T) {
-    f := s3.New(&stubBackend{}, s3.WithCredentialSource(staticCreds{"minioadmin": "minioadmin"}))
+    f := s3.New(&stubBackend{}, s3.WithCredentialSource(staticCreds{"zetaadmin": "zetaadmin"}))
     frontend.RunConformanceSuite(t, f, frontend.ConformanceOptions{})
 }
 

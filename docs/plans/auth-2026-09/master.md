@@ -36,8 +36,8 @@ frontend maps its wire credentials onto the SAME registry lookup + grant check.
 
 Today the server has exactly one credential pair for every client
 (`config.go:277` `serverCredentials`, loaded from `ZETAOBJECT_ACCESS_KEY` /
-`ZETAOBJECT_SECRET_KEY` with `MINIS3_*` fallback, default `minioadmin`/
-`minioadmin`). `internal/frontend/s3/auth_adapter.go` resolves the signing
+`ZETAOBJECT_SECRET_KEY` with `MINIS3_*` fallback, default `zetaadmin`/
+`zetaadmin`). `internal/frontend/s3/auth_adapter.go` resolves the signing
 secret through `auth.CredentialSource` (`internal/auth/credentials.go`) and
 returns `Identity{AccessKeyID}` with **nil** grants; nothing enforces
 `Grant.Read/Write`. There is no way to distinguish clients, no per-identity
@@ -169,7 +169,7 @@ func (id Identity) CanWrite(bucket string) bool  // wildcard "*"
 
 Merge rule (the migration contract): the env pair
 (`ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY`, `MINIS3_*` fallback, default
-`minioadmin`) is **always** present in the registry as identity name `"env"` with
+`zetaadmin`) is **always** present in the registry as identity name `"env"` with
 wildcard readwrite grants — identical to today's effective behavior. Configured
 `identities` are added alongside. Duplicate access keys (config-vs-config or
 config-vs-env) abort startup fail-loud. Validation errors abort startup — never
@@ -279,7 +279,7 @@ existing e2e harness.
 6. **Integration review** (orchestrator, in-session):
    - `make check` (build + vet + fmt + lint + test + cover floor) green
    - `make e2e` green including the new `18-auth-identities.sh`
-   - Backward compat: run with only env vars set (or unset → minioadmin
+   - Backward compat: run with only env vars set (or unset → zetaadmin
      default) and confirm behavior/logs match pre-tree
    - grep check: no credential table or grant logic outside `internal/auth`
      (`grep -rn "BucketGrants" --include='*.go' | grep -v internal/auth |

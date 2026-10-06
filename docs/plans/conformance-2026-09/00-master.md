@@ -18,7 +18,7 @@ from the post-campaign test audit. Two leaves, then integration.
   enforcement, storage classes, CORS, website, s3select, logging, IAM/STS.
   These are deselected via pytest markers, not code changes.
 - **Interop matrix**: drive the SAME scripted scenarios through 3 clients —
-  aws-cli v2 (already the e2e driver), python boto3, and MinIO client `mc` —
+  aws-cli v2 (already the e2e driver), python boto3, and the mc client —
   and assert identical observable outcomes. New e2e cases under
   scripts/e2e/cases/ (12-interop-boto3.sh, 13-interop-mc.sh). Shared
   scenario table in scripts/e2e/interop-lib.sh so all clients run the same

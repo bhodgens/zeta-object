@@ -81,7 +81,7 @@ cat > "$E20_WORK/config.json" <<EOF
 }
 EOF
 
-ZETAOBJECT_ACCESS_KEY=minioadmin ZETAOBJECT_SECRET_KEY=minioadmin \
+ZETAOBJECT_ACCESS_KEY=zetaadmin ZETAOBJECT_SECRET_KEY=zetaadmin \
 	ZETAOBJECT_CONFIG="$E20_WORK/config.json" ./zeta-object-server >"$E20_WORK/server.log" 2>&1 &
 E20_PID=$!
 ENDPOINT="https://127.0.0.1:$E20_S3_PORT"
@@ -98,11 +98,11 @@ fi
 # rejects PutObject into a nonexistent bucket (NoSuchBucket), while the
 # FTP flat namespace would accept the STOR — the bucket must exist so both
 # frontends address the same object.
-AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin \
 	aws s3api create-bucket --bucket "$E20_BKT" \
 	--endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 printf 'ftp-e2e-seed-body' > "$E20_WORK/seed.txt"
-AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin \
 	aws s3api put-object --bucket "$E20_BKT" --key 'seed.txt' \
 	--body "$E20_WORK/seed.txt" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 
@@ -284,7 +284,7 @@ esac
 
 # The S3 view: seed.txt must hold the PREVIOUS (good) bytes — no overwrite by
 # the partial/empty body.
-E20_AFTER=$(AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+E20_AFTER=$(AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin \
 	aws s3api get-object --bucket "$E20_BKT" --key 'seed.txt' \
 	"$E20_WORK/after.txt" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1 \
 	&& cat "$E20_WORK/after.txt")
@@ -337,7 +337,7 @@ ABORTED:426)
 *)
 	assert_eq 'aborted new-file STOR reports transfer failure' "$E20_ABORT2_OUT" denied ;;
 esac
-E20_NEWKEY=$(AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+E20_NEWKEY=$(AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin \
 	aws s3api head-object --bucket "$E20_BKT" --key 'never-created.txt' \
 	--endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1; echo $?)
 assert_eq 'aborted upload of new key creates no object (S3 view)' 254 "$E20_NEWKEY"

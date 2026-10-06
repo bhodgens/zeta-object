@@ -14,7 +14,7 @@
 - **Scope:** `auth.mode: "none"` — an explicit, opt-in, LOUDLY-logged bypass
   of authentication, satisfying issue requirement (d): zero-auth dev mode
   stays available but must be loudly logged. Today's behavior (default
-  `minioadmin` pair) is NOT zero-auth — it stays the default and is untouched.
+  `zetaadmin` pair) is NOT zero-auth — it stays the default and is untouched.
 - **Dependencies:** leaf 01 (owns the `auth.mode` config key + validation;
   this leaf owns the behavior).
 - **Estimated Context:** 50K
@@ -23,7 +23,7 @@
 ## Goal
 
 Operators running zeta-object locally for a quick trial want to skip
-credential setup entirely — including the default `minioadmin` pair, which is
+credential setup entirely — including the default `zetaadmin` pair, which is
 still an auth check clients must sign with. This leaf adds `auth.mode:
 "none"`: every request authenticates as a loud, fixed anonymous identity with
 wildcard readwrite grants. "Loud" is contractual:
@@ -63,10 +63,10 @@ Key facts:
   impossible to miss; per-request line at WARN text (`log.Printf("WARNING:
   ...")` — stdlib log has no levels; the word WARNING in caps is the house
   pattern from existing `log.Printf("Warning: ...")` calls).
-- Existing default (`minioadmin`/`minioadmin` when env unset) must NOT change:
+- Existing default (`zetaadmin`/`zetaadmin` when env unset) must NOT change:
   dev mode is opt-in via config, not the env-unset default. Document that
   distinction — the issue says "zero-auth dev mode stays available"; today's
-  availability = signed requests against minioadmin. `auth.mode: "none"` is
+  availability = signed requests against zetaadmin. `auth.mode: "none"` is
   the NEW, louder escape hatch. README wording is leaf 07's job.
 
 Key files:

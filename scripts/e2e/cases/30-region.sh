@@ -69,7 +69,7 @@ r30_expect_code() {
 	assert_contains "$1" "$R30_BODY" "<Code>$2</Code>"
 }
 
-export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin
+export AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin
 export AWS_DEFAULT_REGION=us-east-1 AWS_EC2_METADATA_DISABLED=true
 
 # --- 30a/30b: server pinned to eu-west-1 (strict) -----------------------------

@@ -73,7 +73,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	s3.InstallFSRootResolver(func(bucket string) string {
 		return filepath.Join(b.root, bucket)
 	})
-	f := s3.New(b, s3.WithCredentialSource(staticCreds{"minioadmin": "minioadmin"}))
+	f := s3.New(b, s3.WithCredentialSource(staticCreds{"zetaadmin": "zetaadmin"}))
 	s3.InstallBackendLookup(func(bucket string) (backend.Backend, error) { return b, nil })
 	srv := httptest.NewServer(f.Handler())
 	t.Cleanup(srv.Close)
@@ -114,7 +114,7 @@ func signedRequestFor(t *testing.T, method, host, target, body, accessKey, secre
 // doSigned performs a signed request against srv and returns the response.
 func doSigned(t *testing.T, srv *httptest.Server, method, target, body string) *http.Response {
 	t.Helper()
-	return doSignedAs(t, srv, method, target, body, "minioadmin", "minioadmin")
+	return doSignedAs(t, srv, method, target, body, "zetaadmin", "zetaadmin")
 }
 
 // TestS3Frontend_DispatchRouting drives the dispatch through Handler()
@@ -138,7 +138,7 @@ func TestS3Frontend_DispatchRouting(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := newTestServer(t)
-			creds := []string{"minioadmin", "minioadmin"}
+			creds := []string{"zetaadmin", "zetaadmin"}
 			if tt.name == "unknown access key" {
 				creds = []string{"nobody", "nobody"}
 			}

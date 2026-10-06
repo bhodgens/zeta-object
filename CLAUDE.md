@@ -156,7 +156,7 @@ The server loads configuration from `config.json` (or the path specified by the
 ### Credentials
 
 One global credential pair, set via environment variables or defaulting to
-`minioadmin`/`minioadmin`:
+`zetaadmin`/`zetaadmin`:
 - `ZETAOBJECT_ACCESS_KEY` - Access Key ID
 - `ZETAOBJECT_SECRET_KEY` - Secret Access Key
 - `ZETAOBJECT_CONFIG` - Path to config file (default: `config.json`)
@@ -175,7 +175,7 @@ back to the default; it does not disable default credentials.
 aws s3 ls --profile zetaobject --endpoint-url https://localhost:8443 --no-verify-ssl
 ```
 
-Configure profile with credentials `minioadmin`/`minioadmin` and region `us-east-1`.
+Configure profile with credentials `zetaadmin`/`zetaadmin` and region `us-east-1`.
 
 ## Known Issues / Documented Divergences
 

@@ -31,14 +31,14 @@ func TestS3Frontend_Authenticator(t *testing.T) {
 	}{
 		{
 			name:    "unknown access key rejected",
-			creds:   staticCreds{"minioadmin": "minioadmin"},
+			creds:   staticCreds{"zetaadmin": "zetaadmin"},
 			request: mustSignRequest(t, "nobody", "nobody"),
 			wantErr: true,
 		},
 		{
 			name:    "known access key accepted",
-			creds:   staticCreds{"minioadmin": "minioadmin"},
-			request: buildSignedRequestHelper(t, "minioadmin", "minioadmin", nil),
+			creds:   staticCreds{"zetaadmin": "zetaadmin"},
+			request: buildSignedRequestHelper(t, "zetaadmin", "zetaadmin", nil),
 			wantErr: false,
 		},
 	}

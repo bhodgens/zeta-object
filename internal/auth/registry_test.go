@@ -218,11 +218,11 @@ func TestMultiRegistrySatisfiesCredentialSource(t *testing.T) {
 }
 
 func TestEnvPairShape(t *testing.T) {
-	pair := auth.EnvPair("minioadmin", "minioadmin")
+	pair := auth.EnvPair("zetaadmin", "zetaadmin")
 	if pair.Name != "env" {
 		t.Errorf("Name = %q, want env", pair.Name)
 	}
-	if pair.AccessKey != "minioadmin" || pair.SecretKey != "minioadmin" {
+	if pair.AccessKey != "zetaadmin" || pair.SecretKey != "zetaadmin" {
 		t.Errorf("pair = %+v", pair)
 	}
 	if string(pair.Grants["*"]) != `"readwrite"` {
@@ -232,7 +232,7 @@ func TestEnvPairShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("env-only registry: %v", err)
 	}
-	id, ok := reg.LookupByAccessKey("minioadmin")
+	id, ok := reg.LookupByAccessKey("zetaadmin")
 	if !ok || !id.CanRead("b") || !id.CanWrite("b") {
 		t.Fatalf("env identity = %+v ok=%v", id, ok)
 	}

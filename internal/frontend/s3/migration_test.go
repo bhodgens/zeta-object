@@ -72,7 +72,7 @@ func TestMigrationBadSignatureErrorBytes(t *testing.T) {
 // invisible on the failure path too.
 func TestMigrationEnvOnlyUnknownKeyMatchesLegacyCredentialSource(t *testing.T) {
 	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
-		{Name: "env", AccessKey: "minioadmin", SecretKey: "minioadmin"},
+		{Name: "env", AccessKey: "zetaadmin", SecretKey: "zetaadmin"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +87,7 @@ func TestMigrationEnvOnlyUnknownKeyMatchesLegacyCredentialSource(t *testing.T) {
 
 	// Legacy path (no registry).
 	s3.InstallIdentityRegistry(nil)
-	fl := s3.New(nil, s3.WithCredentialSource(staticCreds{"minioadmin": "minioadmin"}))
+	fl := s3.New(nil, s3.WithCredentialSource(staticCreds{"zetaadmin": "zetaadmin"}))
 	wl := httptest.NewRecorder()
 	fl.Handler().ServeHTTP(wl, signPath(t, "GET", "/no-such-bkt/obj.txt", "ghost", "ghost", ""))
 	legacy := wl.Body.String()

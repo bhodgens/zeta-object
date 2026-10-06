@@ -173,7 +173,7 @@ Three cases, in order of preference:
 2. **Proxy-stream (default fallback, always works).** A computes the route,
    streams from B, relays to the client. B->A is 1x and A->client is 1x
    (only A's NIC carries both; no disk on A, memory-light). How Ceph RGW
-   and MinIO handle misrouted requests. Node-to-node replication and
+   and other S3 servers handle misrouted requests. Node-to-node replication and
    repair traffic always flows directly between the replica pair - A is
    never a relay for replication, only for misrouted client requests.
 3. **307 redirect (opt-in optimization only, NOT default).** A replies

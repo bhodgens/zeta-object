@@ -1,5 +1,5 @@
 # 13-interop-mc.sh — leaf 5.2: the shared interop scenario table through the
-# MinIO client `mc`. Same frozen expectations as case 12. Scenarios mc cannot
+# the mc client. Same frozen expectations as case 12. Scenarios mc cannot
 # express (raw Range headers, manual 3-phase multipart, object-GET NoSuchKey
 # surfaced as its own outcome) assert the CLOSEST observable, reason commented
 # inline — per the leaf's tolerance clause. Client-side parse failures are
@@ -49,7 +49,7 @@ INTEROP_MC_SHIM="$E2E_ROOT/mc-runner.sh"
 INTEROP_EXPECT_DATA=''
 
 TMPD=$(mktemp -d)
-MC_DEBUG=1 "$MC_BIN" alias set "$ALIAS" "$ENDPOINT" minioadmin minioadmin --insecure \
+MC_DEBUG=1 "$MC_BIN" alias set "$ALIAS" "$ENDPOINT" zetaadmin zetaadmin --insecure \
 	>"$TMPD/mcout.txt" 2>"$TMPD/mcerr.txt"
 ALIAS_RC=$?
 if [ "$ALIAS_RC" -ne 0 ]; then

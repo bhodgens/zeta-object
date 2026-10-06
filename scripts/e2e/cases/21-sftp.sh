@@ -80,7 +80,7 @@ cat > "$E21_WORK/config.json" <<EOF
 }
 EOF
 
-ZETAOBJECT_ACCESS_KEY=minioadmin ZETAOBJECT_SECRET_KEY=minioadmin \
+ZETAOBJECT_ACCESS_KEY=zetaadmin ZETAOBJECT_SECRET_KEY=zetaadmin \
 	ZETAOBJECT_CONFIG="$E21_WORK/config.json" ./zeta-object-server >"$E21_WORK/server.log" 2>&1 &
 E21_PID=$!
 ENDPOINT="https://127.0.0.1:$E21_S3_PORT"
@@ -97,11 +97,11 @@ fi
 # nonexistent bucket (NoSuchBucket), while the SFTP flat namespace would
 # accept the put — same rule case 20 documents for ftp. --body reads a
 # file: current awscli rejects /dev/stdin blobs (same fix as case 20).
-AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin \
 	aws s3api create-bucket --bucket "$E21_BKT" \
 	--endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 printf 'sftp-e2e-seed-body' > "$E21_WORK/seed-body.txt"
-AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin \
 	aws s3api put-object --bucket "$E21_BKT" --key 'seed.txt' \
 	--body "$E21_WORK/seed-body.txt" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 

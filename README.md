@@ -88,7 +88,7 @@ make run          # start the server (HTTPS on :8443)
 Then, from another terminal:
 
 ```bash
-export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin
+export AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin
 aws s3 ls --endpoint-url https://localhost:8443 --no-verify-ssl --region us-east-1
 ```
 
@@ -110,8 +110,8 @@ The server has a **multi-identity registry**: the environment credential pair al
 
 | Environment Variable | Default Value | Description |
 |---------------------|---------------|-------------|
-| `ZETAOBJECT_ACCESS_KEY` | `minioadmin`  | Access Key ID |
-| `ZETAOBJECT_SECRET_KEY` | `minioadmin`  | Secret Access Key |
+| `ZETAOBJECT_ACCESS_KEY` | `zetaadmin`  | Access Key ID |
+| `ZETAOBJECT_SECRET_KEY` | `zetaadmin`  | Secret Access Key |
 
 Setting either variable to an empty string logs a warning and falls back to the default - it does not disable default credentials.
 
@@ -145,7 +145,7 @@ Deployments that need more than one client key declare additional identities in 
 
 Semantics:
 
-- The env pair (`ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY`, default `minioadmin`) is **always** present as identity `env` with full read/write access to every bucket — configs without an `identities` key behave exactly as before this feature existed.
+- The env pair (`ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY`, default `zetaadmin`) is **always** present as identity `env` with full read/write access to every bucket — configs without an `identities` key behave exactly as before this feature existed.
 - A `readonly` grant permits GET/HEAD/list operations; a `readwrite` grant (or the wildcard) permits writes too. Denied operations return the standard S3 `AccessDenied` (403) error.
 - An access key that is not in the registry is rejected with `InvalidAccessKeyId`, unchanged.
 - Validation is fail-loud: a duplicate access key (between identities, or against the env pair) or any invalid identity aborts startup — never a silent fallback.
@@ -200,7 +200,7 @@ Limitations: SIGHUP is a POSIX signal (on Windows, rotate by restart). The env p
 aws configure --profile zetaobject
 ```
 
-Enter `minioadmin`/`minioadmin` (or your custom pair). The signature region must match the server's configured `region` (default `us-east-1`): with the default, other well-formed regions are accepted permissively with a log notice; when `region` is set explicitly, a mismatching scope fails with `SignatureDoesNotMatch` naming the expected region.
+Enter `zetaadmin`/`zetaadmin` (or your custom pair). The signature region must match the server's configured `region` (default `us-east-1`): with the default, other well-formed regions are accepted permissively with a log notice; when `region` is set explicitly, a mismatching scope fails with `SignatureDoesNotMatch` naming the expected region.
 
 ```bash
 aws s3 ls --profile zetaobject --endpoint-url https://localhost:8443 --no-verify-ssl
@@ -450,8 +450,8 @@ Credentials are **not** set in the config file - environment variables only.
 |----------|-------------|---------|
 | `ZETAOBJECT_CONFIG` | Path to configuration file | `config.json` |
 | `ZETAOBJECT_LISTEN_ADDR` | Overrides `listenAddr` for the default frontend (env beats config file) | - |
-| `ZETAOBJECT_ACCESS_KEY` | Access Key ID for authentication | `minioadmin` |
-| `ZETAOBJECT_SECRET_KEY` | Secret Access Key for authentication | `minioadmin` |
+| `ZETAOBJECT_ACCESS_KEY` | Access Key ID for authentication | `zetaadmin` |
+| `ZETAOBJECT_SECRET_KEY` | Secret Access Key for authentication | `zetaadmin` |
 
 ### Bucket discovery and custom buckets
 
@@ -492,7 +492,7 @@ Data files are plain bytes. The `.metadata/` sidecars carry content type, ETag, 
 ## Using with S3 Clients
 
 *   **Endpoint URL**: `https://localhost:8443` (or your `listenAddr`).
-*   **Credentials**: `minioadmin`/`minioadmin` (default) or your custom pair.
+*   **Credentials**: `zetaadmin`/`zetaadmin` (default) or your custom pair.
 *   **Region**: default `us-east-1` - set `region` in config.json to pin another region (strict scope compare); with the default, other well-formed regions are accepted permissively with a log notice.
 *   **SSL**: the bundled self-signed cert covers `localhost`/`127.0.0.1`; otherwise `--no-verify-ssl`.
 

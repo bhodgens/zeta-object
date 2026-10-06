@@ -1,6 +1,6 @@
 // env.go — the legacy env-pair bridge (pluggable-authentication tree leaf
 // 01). The migration contract: the env pair (ZETAOBJECT_ACCESS_KEY /
-// ZETAOBJECT_SECRET_KEY, MINIS3_* fallback, default minioadmin) is ALWAYS
+// ZETAOBJECT_SECRET_KEY, MINIS3_* fallback, default zetaadmin) is ALWAYS
 // present in the registry as identity name "env" with wildcard readwrite
 // grants — byte-identical to the pre-tree single-pair behavior.
 //

@@ -254,10 +254,10 @@ func buildSurfacePresigned(t *testing.T, accessKey, secret string, expired bool)
 func TestSurface_AuthenticatePresigned(t *testing.T) {
 	// AuthenticatePresignedFn binds a throwaway Frontend with nil creds —
 	// install the process credential source it falls back to.
-	InstallDefaultCredentialSource(staticSurfaceCreds{"minioadmin": "minioadmin"})
+	InstallDefaultCredentialSource(staticSurfaceCreds{"zetaadmin": "zetaadmin"})
 	t.Run("valid presigned accepted", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		req := buildSurfacePresigned(t, "minioadmin", "minioadmin", false)
+		req := buildSurfacePresigned(t, "zetaadmin", "zetaadmin", false)
 		if !AuthenticatePresignedFn(w, req) {
 			t.Fatalf("valid presigned rejected: %s", w.Body.String())
 		}
@@ -268,7 +268,7 @@ func TestSurface_AuthenticatePresigned(t *testing.T) {
 
 	t.Run("expired presigned rejected AccessDenied", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		req := buildSurfacePresigned(t, "minioadmin", "minioadmin", true)
+		req := buildSurfacePresigned(t, "zetaadmin", "zetaadmin", true)
 		if AuthenticatePresignedFn(w, req) {
 			t.Fatal("expired presigned accepted")
 		}
@@ -296,7 +296,7 @@ func TestSurface_AuthenticatePresigned(t *testing.T) {
 
 	t.Run("missing required param rejected 400", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		req := buildSurfacePresigned(t, "minioadmin", "minioadmin", false)
+		req := buildSurfacePresigned(t, "zetaadmin", "zetaadmin", false)
 		q := req.URL.Query()
 		q.Del("X-Amz-Expires")
 		req.URL.RawQuery = q.Encode()
@@ -313,7 +313,7 @@ func TestSurface_AuthenticatePresigned(t *testing.T) {
 
 	t.Run("tampered signature rejected SignatureDoesNotMatch", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		req := buildSurfacePresigned(t, "minioadmin", "minioadmin", false)
+		req := buildSurfacePresigned(t, "zetaadmin", "zetaadmin", false)
 		q := req.URL.Query()
 		q.Set("X-Amz-Signature", strings.Repeat("0", 64))
 		req.URL.RawQuery = q.Encode()
@@ -332,11 +332,11 @@ func TestSurface_AuthenticatePresigned(t *testing.T) {
 // TestSurface_AuthenticateRequestFnHeader covers the header-auth wrapper
 // including the writeAuthFailure rendering.
 func TestSurface_AuthenticateRequestFnHeader(t *testing.T) {
-	InstallDefaultCredentialSource(staticSurfaceCreds{"minioadmin": "minioadmin"})
+	InstallDefaultCredentialSource(staticSurfaceCreds{"zetaadmin": "zetaadmin"})
 	t.Run("valid header accepted", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		req := signedHeaderReq(t, "http://localhost:8443/bkt/obj", "x")
-		signHeaderAuth(t, req, "minioadmin", "minioadmin", time.Now().UTC())
+		signHeaderAuth(t, req, "zetaadmin", "zetaadmin", time.Now().UTC())
 		if !AuthenticateRequestFn(w, req) {
 			t.Fatalf("valid header auth rejected: %s", w.Body.String())
 		}
@@ -345,9 +345,9 @@ func TestSurface_AuthenticateRequestFnHeader(t *testing.T) {
 	t.Run("bogus signature rejected SignatureDoesNotMatch", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		req := signedHeaderReq(t, "http://localhost:8443/bkt/obj", "x")
-		signHeaderAuth(t, req, "minioadmin", "minioadmin", time.Now().UTC())
+		signHeaderAuth(t, req, "zetaadmin", "zetaadmin", time.Now().UTC())
 		req.Header.Set("Authorization",
-			fmt.Sprintf("AWS4-HMAC-SHA256 Credential=minioadmin/%s/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=%s",
+			fmt.Sprintf("AWS4-HMAC-SHA256 Credential=zetaadmin/%s/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=%s",
 				time.Now().UTC().Format(shortDateFormat), strings.Repeat("0", 64)))
 		if AuthenticateRequestFn(w, req) {
 			t.Fatal("bogus signature accepted")
@@ -363,7 +363,7 @@ func TestSurface_AuthenticateRequestFnHeader(t *testing.T) {
 	t.Run("skewed date rejected RequestTimeTooSkewed", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		req := signedHeaderReq(t, "http://localhost:8443/bkt/obj", "x")
-		signHeaderAuth(t, req, "minioadmin", "minioadmin", time.Now().UTC().Add(-2*time.Hour))
+		signHeaderAuth(t, req, "zetaadmin", "zetaadmin", time.Now().UTC().Add(-2*time.Hour))
 		if AuthenticateRequestFn(w, req) {
 			t.Fatal("skewed request accepted")
 		}

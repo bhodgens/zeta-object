@@ -25,7 +25,7 @@ Fixes NOT applied — awaiting go-ahead.
 - V-6 actions.go:485-503 + 587 — `substituteVariables` interpolates attacker-controlled
   object keys into `sh -c` verbatim; command injection for any client who can PUT.
   Fix: arg-vector exec or shell-quote at substitution time.
-- V-7 main.go:238 — hardcoded `:8443` on all interfaces (default creds minioadmin),
+- V-7 main.go:238 — hardcoded `:8443` on all interfaces (default creds zetaadmin),
   no Read/Write/Idle timeouts (slowloris), no graceful shutdown. Conflicts with
   scripts/test-s3-full.sh PORT env (script waits on $PORT, server ignores it).
 - V-8 main.go:838-926,1002-1053 — no Range support at all (no 206/416/Content-Range);
@@ -86,7 +86,7 @@ Fixes NOT applied — awaiting go-ahead.
 - main.go:61-63 — invalid config JSON partially mutates global; config.json gets no
   JSON5 stripping while .bucket-actions does.
 - main.go:100-107 — credentials read at package init; `MINIS3_ACCESS_KEY=""` silently
-  reverts to minioadmin default.
+  reverts to zetaadmin default.
 - Makefile:34 — self-signed cert has CN only, no SAN → cert verification fails even
   intentionally on modern clients. No tls.Config (TLS 1.0/1.1 accepted).
 - scripts/test-s3-operations.sh — bare `set -e` (first AWS error aborts, no summary);

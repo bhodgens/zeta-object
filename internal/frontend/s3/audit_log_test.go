@@ -40,7 +40,7 @@ func newAuditTestServer(t *testing.T) (*httptest.Server, string, string) {
 	s3.InstallIdentityRegistry(nil)
 	s3.InstallAuditWriter(w)
 	t.Cleanup(func() { s3.InstallAuditWriter(nil); w.Close() })
-	front := s3.New(f, s3.WithCredentialSource(staticCreds{"minioadmin": "minioadmin"}))
+	front := s3.New(f, s3.WithCredentialSource(staticCreds{"zetaadmin": "zetaadmin"}))
 	srv := httptest.NewServer(front.Handler())
 	t.Cleanup(srv.Close)
 	return srv, auditPath, root
@@ -76,7 +76,7 @@ func readAuditLines(t *testing.T, path string) []map[string]any {
 func TestAuditLogLineShapeAndDenied(t *testing.T) {
 	srv, auditPath, root := newAuditTestServer(t)
 
-	// Bucket create (minioadmin wildcard), then PUT as minioadmin: granted.
+	// Bucket create (zetaadmin wildcard), then PUT as zetaadmin: granted.
 	if resp := doSigned(t, srv, "PUT", "/abkt", ""); resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
 		t.Fatalf("create bucket: %d", resp.StatusCode)
@@ -109,7 +109,7 @@ func TestAuditLogLineShapeAndDenied(t *testing.T) {
 	}
 	put := recs[len(recs)-1]
 	if put["denied"] != false || put["method"] != "PUT" || put["op"] != "write" ||
-		put["principal"] != "minioadmin" || put["status"] != float64(200) {
+		put["principal"] != "zetaadmin" || put["status"] != float64(200) {
 		t.Fatalf("granted PUT record wrong: %v", put)
 	}
 	if ts, _ := put["ts"].(string); !strings.Contains(ts, "T") || !strings.Contains(ts, "Z") {
@@ -128,7 +128,7 @@ func TestAuditLogDeniedAuthorization(t *testing.T) {
 		resp.Body.Close()
 	}
 	// ro-only identity → PUT denied by AuthorizeOp.
-	if resp := doSignedAs(t, srv, "PUT", "/no-grant-bkt/obj.txt", "x", "minioadmin", "minioadmin"); resp.StatusCode != http.StatusOK {
+	if resp := doSignedAs(t, srv, "PUT", "/no-grant-bkt/obj.txt", "x", "zetaadmin", "zetaadmin"); resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
 		t.Fatalf("put: %d", resp.StatusCode)
 	} else {
@@ -197,7 +197,7 @@ func TestAuditLogDisabledByDefault(t *testing.T) {
 	s3.InstallBackendLookup(func(bucket string) (backend.Backend, error) { return f, nil })
 	s3.InstallAuditWriter(nil) // disabled
 	t.Cleanup(func() { s3.InstallAuditWriter(nil) })
-	front := s3.New(f, s3.WithCredentialSource(staticCreds{"minioadmin": "minioadmin"}))
+	front := s3.New(f, s3.WithCredentialSource(staticCreds{"zetaadmin": "zetaadmin"}))
 	srv := httptest.NewServer(front.Handler())
 	t.Cleanup(srv.Close)
 

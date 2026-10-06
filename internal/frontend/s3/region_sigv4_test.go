@@ -104,7 +104,7 @@ func regionMatrix(t *testing.T, makeReq func(t *testing.T, clientRegion string) 
 			s3.SetRegion(c.serverRegion)
 			defer s3.SetRegion("")
 
-			f := s3.New(nil, s3.WithCredentialSource(staticCreds{"minioadmin": "minioadmin"}))
+			f := s3.New(nil, s3.WithCredentialSource(staticCreds{"zetaadmin": "zetaadmin"}))
 			a := f.Authenticator()
 
 			buf, restoreLog := captureLog(t)
@@ -115,8 +115,8 @@ func regionMatrix(t *testing.T, makeReq func(t *testing.T, clientRegion string) 
 				if err != nil {
 					t.Fatalf("Authenticate() err = %v, want OK (server region %q, client region %q)", err, c.serverRegion, c.clientRegion)
 				}
-				if id.AccessKeyID != "" && id.AccessKeyID != "minioadmin" {
-					t.Errorf("identity AccessKeyID = %q, want minioadmin", id.AccessKeyID)
+				if id.AccessKeyID != "" && id.AccessKeyID != "zetaadmin" {
+					t.Errorf("identity AccessKeyID = %q, want zetaadmin", id.AccessKeyID)
 				}
 			} else {
 				if err == nil {
@@ -145,7 +145,7 @@ func regionMatrix(t *testing.T, makeReq func(t *testing.T, clientRegion string) 
 // header) SigV4 path.
 func TestRegionMatrix_Header(t *testing.T) {
 	regionMatrix(t, func(t *testing.T, clientRegion string) *http.Request {
-		return buildSignedRequestHelper(t, "minioadmin", "minioadmin", map[string]string{"region": clientRegion})
+		return buildSignedRequestHelper(t, "zetaadmin", "zetaadmin", map[string]string{"region": clientRegion})
 	})
 }
 
@@ -153,7 +153,7 @@ func TestRegionMatrix_Header(t *testing.T) {
 // SigV4 path (authenticatePresignedRequest).
 func TestRegionMatrix_Presigned(t *testing.T) {
 	regionMatrix(t, func(t *testing.T, clientRegion string) *http.Request {
-		return buildPresignedRequestRegionHelper(t, "minioadmin", "minioadmin", clientRegion)
+		return buildPresignedRequestRegionHelper(t, "zetaadmin", "zetaadmin", clientRegion)
 	})
 }
 
@@ -164,10 +164,10 @@ func TestRegionMatrix_StrictMismatchCode(t *testing.T) {
 	s3.SetRegion("eu-west-1")
 	defer s3.SetRegion("")
 
-	f := s3.New(nil, s3.WithCredentialSource(staticCreds{"minioadmin": "minioadmin"}))
+	f := s3.New(nil, s3.WithCredentialSource(staticCreds{"zetaadmin": "zetaadmin"}))
 	a := f.Authenticator()
 
-	_, err := a.Authenticate(buildSignedRequestHelper(t, "minioadmin", "minioadmin", map[string]string{"region": "us-east-1"}))
+	_, err := a.Authenticate(buildSignedRequestHelper(t, "zetaadmin", "zetaadmin", map[string]string{"region": "us-east-1"}))
 	if err == nil {
 		t.Fatal("Authenticate() = OK, want SignatureDoesNotMatch")
 	}

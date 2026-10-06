@@ -108,7 +108,7 @@ fi
 
 # --- skip guard: dataset proof on the wire (34a's create IS the probe) ---------
 export AWS_DEFAULT_REGION=us-east-1 AWS_EC2_METADATA_DISABLED=true
-export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin
+export AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin
 
 # Resolve <parent> at RUNTIME from the live dataDir — never hardcode it
 # (the shared testpool is churned by sibling sessions).

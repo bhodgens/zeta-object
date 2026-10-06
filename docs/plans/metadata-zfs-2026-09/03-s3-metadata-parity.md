@@ -223,7 +223,7 @@ Expected: FAIL - sigV4* helpers undefined
 
 Write the sigV4* helpers by REUSING the existing signing test utilities in
 the repo (sigv4_presigned_test.go / main_test.go already sign requests with
-the default minioadmin credentials — copy that pattern). Request bodies and
+the default zetaadmin credentials — copy that pattern). Request bodies and
 metadata must be IDENTICAL across the two variants so any diff is a real
 parity break. `diffParityResponses` fails with a precise report: label,
 which header/body differed, both values.

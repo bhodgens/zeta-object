@@ -341,11 +341,11 @@ func TestAuthNegAuthorizationInjectionRejected(t *testing.T) {
 		name string
 		auth string
 	}{
-		{"crlf_in_signature", "AWS4-HMAC-SHA256 Credential=minioadmin/20260928/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=ab12\r\nX-Injected: header"},
-		{"lone_cr_in_signature", "AWS4-HMAC-SHA256 Credential=minioadmin/20260928/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=ab12\rX-Injected: header"},
-		{"space_in_signature", "AWS4-HMAC-SHA256 Credential=minioadmin/20260928/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=ab12 cd34"},
-		{"tab_in_signature", "AWS4-HMAC-SHA256 Credential=minioadmin/20260928/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=\tab12"},
-		{"tab_separator_chaos", "AWS4-HMAC-SHA256\tCredential=minioadmin/20260928/us-east-1/s3/aws4_request,\tSignedHeaders=host;x-amz-date,\tSignature=" + strings.Repeat("a", 64)},
+		{"crlf_in_signature", "AWS4-HMAC-SHA256 Credential=zetaadmin/20260928/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=ab12\r\nX-Injected: header"},
+		{"lone_cr_in_signature", "AWS4-HMAC-SHA256 Credential=zetaadmin/20260928/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=ab12\rX-Injected: header"},
+		{"space_in_signature", "AWS4-HMAC-SHA256 Credential=zetaadmin/20260928/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=ab12 cd34"},
+		{"tab_in_signature", "AWS4-HMAC-SHA256 Credential=zetaadmin/20260928/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=\tab12"},
+		{"tab_separator_chaos", "AWS4-HMAC-SHA256\tCredential=zetaadmin/20260928/us-east-1/s3/aws4_request,\tSignedHeaders=host;x-amz-date,\tSignature=" + strings.Repeat("a", 64)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

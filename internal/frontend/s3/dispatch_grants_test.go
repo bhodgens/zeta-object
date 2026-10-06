@@ -265,11 +265,11 @@ func TestDispatchWildcardByteParity(t *testing.T) {
 	s3.InstallBackendLookup(func(bucket string) (backend.Backend, error) { return b, nil })
 	s3.InstallIdentityRegistry(nil)
 	t.Cleanup(func() { s3.InstallIdentityRegistry(nil) })
-	f := s3.New(nil, s3.WithCredentialSource(staticCreds{"minioadmin": "minioadmin"}))
+	f := s3.New(nil, s3.WithCredentialSource(staticCreds{"zetaadmin": "zetaadmin"}))
 
 	// Create the bucket first (wildcard identity — allowed everywhere).
 	w := httptest.NewRecorder()
-	f.Handler().ServeHTTP(w, signPath(t, "PUT", "/bucket-par", "minioadmin", "minioadmin", ""))
+	f.Handler().ServeHTTP(w, signPath(t, "PUT", "/bucket-par", "zetaadmin", "zetaadmin", ""))
 	if w.Code >= 400 {
 		t.Fatalf("create bucket: %d %s", w.Code, w.Body.String())
 	}
@@ -287,7 +287,7 @@ func TestDispatchWildcardByteParity(t *testing.T) {
 		if tc.method == "PUT" {
 			body = "body"
 		}
-		req := signPath(t, tc.method, tc.path, "minioadmin", "minioadmin", body)
+		req := signPath(t, tc.method, tc.path, "zetaadmin", "zetaadmin", body)
 		w := httptest.NewRecorder()
 		f.Handler().ServeHTTP(w, req)
 		if w.Code != tc.want {

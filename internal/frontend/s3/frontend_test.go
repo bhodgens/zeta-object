@@ -9,7 +9,7 @@ import (
 
 // TestS3Frontend_ImplementsFrontend pins the frontend contract surface.
 func TestS3Frontend_ImplementsFrontend(t *testing.T) {
-	f := s3.New(nil, s3.WithCredentialSource(staticCreds{"minioadmin": "minioadmin"}))
+	f := s3.New(nil, s3.WithCredentialSource(staticCreds{"zetaadmin": "zetaadmin"}))
 	var asFrontend frontend.Frontend = f
 
 	if asFrontend.Name() != "s3" {
@@ -33,6 +33,6 @@ func TestS3Frontend_ImplementsFrontend(t *testing.T) {
 // TestS3Frontend_Conformance runs the reusable conformance suite against
 // the s3 frontend (leaf-02 Task 4).
 func TestS3Frontend_Conformance(t *testing.T) {
-	f := s3.New(nil, s3.WithCredentialSource(staticCreds{"minioadmin": "minioadmin"}))
+	f := s3.New(nil, s3.WithCredentialSource(staticCreds{"zetaadmin": "zetaadmin"}))
 	frontend.RunConformanceSuite(t, f, frontend.ConformanceOptions{})
 }

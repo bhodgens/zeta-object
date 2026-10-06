@@ -368,4 +368,4 @@ fi
 e27_stop_server
 
 # Restore the suite credentials so later cases keep using the harness pair.
-export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin
+export AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin

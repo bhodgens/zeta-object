@@ -53,7 +53,7 @@ Key facts to understand before implementing:
 - **Env pair today:** config.go:277 `serverCredentials`, loaded by
   `loadCredentials()` from `ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY`
   (legacy `MINIS3_*` fallback — deprecated, keep working until two minor
-  releases; use `credentialFromEnv` as-is), default `minioadmin`/`minioadmin`,
+  releases; use `credentialFromEnv` as-is), default `zetaadmin`/`zetaadmin`,
   set-but-empty warns and defaults. Do not change this behavior; wrap it.
 - **Config parsing:** `ServerConfig` (config.go:24) unmarshals
   dataDir/buckets/listenAddr/certFile/keyFile + `frontends`/`backends`

@@ -88,7 +88,7 @@ cat > "$OC25_WORK/config.json" <<EOF
 }
 EOF
 
-ZETAOBJECT_ACCESS_KEY=minioadmin ZETAOBJECT_SECRET_KEY=minioadmin \
+ZETAOBJECT_ACCESS_KEY=zetaadmin ZETAOBJECT_SECRET_KEY=zetaadmin \
 	ZETAOBJECT_CONFIG="$OC25_WORK/config.json" ./zeta-object-server >"$OC25_WORK/server.log" 2>&1 &
 OC25_PID=$!
 ENDPOINT="https://127.0.0.1:$OC25_PORT"

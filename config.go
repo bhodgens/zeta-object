@@ -19,7 +19,7 @@ const (
 	defaultListenAddr = ":8443"
 	defaultCertFile   = "certs/cert.pem"
 	defaultKeyFile    = "certs/key.pem"
-	defaultAccessKey  = "minioadmin"
+	defaultAccessKey  = "zetaadmin"
 
 	// zmetad defaults (zmetad-provider-2026-09 leaf 04, Contract 4).
 	// Config load owns these - the provider receives concrete values.
@@ -610,7 +610,7 @@ var serverCredentials = struct {
 
 // loadCredentials reads ZETAOBJECT_ACCESS_KEY / ZETAOBJECT_SECRET_KEY. An env var
 // that is SET but EMPTY is warned about and falls back to the default
-// (minioadmin) instead of silently behaving like an unset variable.
+// (zetaadmin) instead of silently behaving like an unset variable.
 //
 // Deprecated prefix: MINIS3_* remains a fallback until two minor releases
 // after the zeta-object rename. ZETAOBJECT_* always wins when both are set.

@@ -104,14 +104,14 @@ func TestSigV4LegacyCredentialSourceFallback(t *testing.T) {
 	// No registry installed (the default zero state): the legacy
 	// WithCredentialSource path still authenticates and synthesizes the
 	// wildcard identity — pre-tree behavior byte-for-byte.
-	f := s3.New(nil, s3.WithCredentialSource(staticCreds{"minioadmin": "minioadmin"}))
+	f := s3.New(nil, s3.WithCredentialSource(staticCreds{"zetaadmin": "zetaadmin"}))
 	a := f.Authenticator()
-	req := buildSignedRequestHelper(t, "minioadmin", "minioadmin", nil)
+	req := buildSignedRequestHelper(t, "zetaadmin", "zetaadmin", nil)
 	id, err := a.Authenticate(req)
 	if err != nil {
 		t.Fatalf("legacy fallback broke: %v", err)
 	}
-	if id.AccessKeyID != "minioadmin" {
+	if id.AccessKeyID != "zetaadmin" {
 		t.Fatalf("AccessKeyID = %q", id.AccessKeyID)
 	}
 	if !id.CanRead("anything") || !id.CanWrite("anything") {

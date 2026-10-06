@@ -118,7 +118,7 @@ cat > "$W19_WORK/config.json" <<EOF
 }
 EOF
 
-ZETAOBJECT_ACCESS_KEY=minioadmin ZETAOBJECT_SECRET_KEY=minioadmin \
+ZETAOBJECT_ACCESS_KEY=zetaadmin ZETAOBJECT_SECRET_KEY=zetaadmin \
 	ZETAOBJECT_CONFIG="$W19_WORK/config.json" ./zeta-object-server >"$W19_WORK/server.log" 2>&1 &
 W19_PID=$!
 ENDPOINT="https://127.0.0.1:$W19_PORT"
@@ -137,10 +137,10 @@ fi
 
 # Seed state through the S3 side (cross-frontend consistency IS the
 # neutral-model proof).
-AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin \
 	aws s3api create-bucket --bucket "$W19_BKT" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 printf 'webdav-e2e-seed-body' > "$W19_WORK/seed-body.txt"
-AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin \
 	aws s3api put-object --bucket "$W19_BKT" --key 'seed.txt' \
 	--body "$W19_WORK/seed-body.txt" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 

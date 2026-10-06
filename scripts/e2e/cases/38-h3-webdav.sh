@@ -103,7 +103,7 @@ cat > "$E38_ROOT/config.json" <<EOF
 EOF
 
 # --- launch + readiness --------------------------------------------------------
-ZETAOBJECT_ACCESS_KEY=minioadmin ZETAOBJECT_SECRET_KEY=minioadmin \
+ZETAOBJECT_ACCESS_KEY=zetaadmin ZETAOBJECT_SECRET_KEY=zetaadmin \
 	ZETAOBJECT_CONFIG="$E38_ROOT/config.json" ./zeta-object-server >"$E38_ROOT/server.log" 2>&1 &
 E38_PID=$!
 if ! wait_for_port 127.0.0.1 "$E38_PORT_WD" 15; then

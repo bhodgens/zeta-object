@@ -136,7 +136,7 @@ S3TEST_FILES=(
 
 # --- run ----------------------------------------------------------------------------
 echo '== running pytest subset =='
-S3TEST_CONF="$WORK/s3tests.conf" AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+S3TEST_CONF="$WORK/s3tests.conf" AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin \
 	"$VENV_DIR/bin/pytest" "${S3TEST_FILES[@]}" \
 	-m "$MARKER_DESELECT" \
 	-k "$K_DESELECT" \
