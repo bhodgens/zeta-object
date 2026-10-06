@@ -74,11 +74,30 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 	// itself (the same read-modify-write-after constraint the tagging
 	// integration documents). OFF/Suspended buckets skip both steps
 	// (byte-identical plain path; the state read on a never-versioned
-	// bucket is one missing-file stat). In snapshots mode the record is
-	// a no-op (ErrSnapshotsReadOnly → nil — snapshots are host policy).
+	// bucket is one missing-file stat, which answers Off with a nil
+	// error). In snapshots mode the record is a no-op
+	// (ErrSnapshotsReadOnly → nil — snapshots are host policy).
+	//
+	// A state READ FAILURE FAILS CLOSED (bughunt M6): the bucket cannot say
+	// whether it is versioned, and treating that as "not versioned" turned
+	// a transient EIO or a torn .versioning marker into a silent unversioned
+	// overwrite — the one fail-open hole in an otherwise fail-closed
+	// design. The gate's own sibling half already fails closed
+	// (deleteObjectVersionedMarker returns the state error, so DELETE
+	// answers 500 before deleting anything); swallowing it here made PUT
+	// and DELETE disagree about the SAME state. The webdav frontend's
+	// identical gate (internal/frontend/webdav captureBeforePut) rejects
+	// the same way, so both frontends produce the SAME decision for the
+	// SAME state — the cross-frontend parity this gate exists to keep.
 	bucketPathForVersioning := getBucketPath(bucketName)
 	var capturedOld *capturedObjectVersion
-	if state, stErr := versionStoreForBucket(bucketPathForVersioning).State(bucketName); stErr == nil && state == versioningEnabled {
+	state, stErr := versionStoreForBucket(bucketPathForVersioning).State(bucketName)
+	if stErr != nil {
+		log.Printf("Error reading versioning state for %s: %v", strconv.Quote(bucketName), stErr)
+		writeS3Error(w, "InternalError", "Error reading bucket versioning state.", http.StatusInternalServerError)
+		return
+	}
+	if state == versioningEnabled {
 		captured, capErr := captureCurrentObjectVersion(bucketPathForVersioning, objectName)
 		if capErr != nil && !errors.Is(capErr, errNoPriorVersion) {
 			log.Printf("Error capturing prior version for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), capErr)

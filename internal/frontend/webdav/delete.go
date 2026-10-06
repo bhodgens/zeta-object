@@ -43,8 +43,13 @@ func (f *Frontend) handleDELETE(w http.ResponseWriter, r *http.Request, res reso
 		// answered 409 Conflict — the same wire mapping the s3 error
 		// table gives that error class (never a 500, never a fake
 		// plain-delete success while the bucket claims versioning).
-		if f.bucketPathFn != nil {
-			bucketPath := f.bucketPath(res.bucket)
+		// Gate on the RESOLVED path, not the resolver field (bughunt H1) —
+		// production wires only WithLockStoreRoot, so the old
+		// `f.bucketPathFn != nil` test made this branch dead: a DELETE on a
+		// versioning-Enabled bucket took the plain path, destroying the
+		// bytes and recording no recoverable delete marker.
+		bucketPath := f.bucketPath(res.bucket)
+		if bucketPath != "" {
 			suppress, markerErr := deleteMarkerOrPlain(bucketPath, res.bucket, res.key)
 			if markerErr != nil {
 				log.Printf("webdav DELETE %s/%s: versioned marker: %v", strconv.Quote(res.bucket), strconv.Quote(res.key), markerErr)

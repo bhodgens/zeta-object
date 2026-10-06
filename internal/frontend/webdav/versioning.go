@@ -67,14 +67,26 @@ const versioningEnabled = s3.VersioningEnabled
 // error and the caller must reject the write BEFORE the backend Put
 // (fail-closed, s3 parity).
 func captureBeforePut(bucketPath, bucket, key string) (captured *versioningCapture, ok bool, err error) {
+	// Fail CLOSED on the state read (bughunt M6, s3 parity). The bucket
+	// cannot say whether it is versioned, and the only safe answer to
+	// "unknown" on a versioning gate is Enabled: the DELETE half of this
+	// same file ALREADY fails closed (deleteObjectVersionedMarker returns
+	// the state error, and handleDELETE answers 500 before any delete), so
+	// swallowing it here made PUT and DELETE disagree about the SAME bucket
+	// state. Treating the error as "not versioned" turned a transient EIO
+	// or a torn .versioning marker into a silent unversioned overwrite -
+	// the one fail-open hole in an otherwise fail-closed design (capture
+	// failures already fail closed below). s3's identical gate
+	// (object_handlers.go) rejects the same way, so both frontends produce
+	// the SAME decision for the SAME state.
+	//
+	// A bucket that is genuinely never versioned is NOT affected: the
+	// store answers Off with a nil error (one missing-file stat), which
+	// takes the plain path exactly as before.
 	state, err := s3.VersionStoreStateForBucket(bucketPath, bucket)
 	if err != nil {
-		// The state read on a never-versioned bucket is one missing-file
-		// stat; any other error is a real I/O failure — s3's gate treats
-		// a state error as "not versioned" (stErr == nil check) and
-		// proceeds plainly. Mirror that: log and skip capture.
-		log.Printf("webdav versioning: reading state for %s: %v (skipping capture)", bucket, err)
-		return nil, false, nil
+		log.Printf("webdav versioning: reading state for %s: %v (rejecting the write)", bucket, err)
+		return nil, false, err
 	}
 	if state != versioningEnabled {
 		return nil, false, nil
@@ -130,8 +142,14 @@ func webdavVersioningConflict(err error) bool {
 // was enabled) produces NO sidecar history at all — pinned by
 // TestWebdavMOVE_NoVersionsPinned.
 func (f *Frontend) moveSourceDelete(r *http.Request, src resource) error {
-	if f.bucketPathFn != nil {
-		suppress, markerErr := deleteMarkerOrPlain(f.bucketPath(src.bucket), src.bucket, src.key)
+	// Gate on the RESOLVED path, not the resolver field (bughunt H1):
+	// production wires only WithLockStoreRoot, so the old
+	// `f.bucketPathFn != nil` test made this branch dead and a MOVE's
+	// source delete destroyed the bytes instead of recording the marker
+	// its s3 DeleteObject counterpart records.
+	bucketPath := f.bucketPath(src.bucket)
+	if bucketPath != "" {
+		suppress, markerErr := deleteMarkerOrPlain(bucketPath, src.bucket, src.key)
 		if markerErr != nil {
 			log.Printf("webdav MOVE %s/%s: versioned source marker: %v", strconv.Quote(src.bucket), strconv.Quote(src.key), markerErr)
 			return markerErr

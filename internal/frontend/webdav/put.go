@@ -77,8 +77,20 @@ func (f *Frontend) handlePUT(w http.ResponseWriter, r *http.Request, res resourc
 	// object_handlers.go answers 500 before any write); the reflink
 	// clone's fail-soft contract rides inside the capture (cloneOK=false
 	// → the Put proceeds, no version record).
-	if f.bucketPathFn != nil {
-		bucketPath := f.bucketPath(res.bucket)
+	// The gate is the RESOLVED bucket path, not the field that supplied
+	// it (bughunt H1). This branch used to test `f.bucketPathFn != nil`,
+	// but PRODUCTION wires only WithLockStoreRoot(getBucketPath)
+	// (frontends.go webdav+owncloud, h3/frontend.go) — WithBucketPathResolver
+	// has zero non-test call sites, so the whole write-side versioning
+	// branch was DEAD in production: a PUT overwrite on a
+	// zfs_versioning=Enabled bucket recorded no version, and the sidecar's
+	// prior history was silently lost. Resolving first and branching on
+	// the result puts the read surfaces (zfssurface.go, batch.go — which
+	// already call f.bucketPath() with no field guard) and the write
+	// surfaces on ONE gate. "" means genuinely unwired (no bucketPathFn
+	// AND no lockRoot — the unit-test seam), which keeps the plain path.
+	bucketPath := f.bucketPath(res.bucket)
+	if bucketPath != "" {
 		capturedOld, captured, capErr := captureBeforePut(bucketPath, res.bucket, res.key)
 		if capErr != nil {
 			log.Printf("webdav PUT %s/%s: capturing prior version: %v", strconv.Quote(res.bucket), strconv.Quote(res.key), capErr)

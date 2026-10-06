@@ -110,8 +110,12 @@ func (f *Frontend) handleCopyMove(w http.ResponseWriter, r *http.Request, src re
 	// A capture failure FAILS the whole MOVE (fail-closed, PUT parity):
 	// the destination bytes must not land while the versioning record of
 	// what they overwrite cannot be taken.
-	if f.bucketPathFn != nil {
-		dstBucketPath := f.bucketPath(dstRes.bucket)
+	// Gate on the RESOLVED path, not the resolver field (bughunt H1):
+	// production wires only WithLockStoreRoot, so the old
+	// `f.bucketPathFn != nil` test made this branch dead and a COPY/MOVE
+	// overwrite recorded no version in production.
+	dstBucketPath := f.bucketPath(dstRes.bucket)
+	if dstBucketPath != "" {
 		capturedOld, captured, capErr := captureBeforePut(dstBucketPath, dstRes.bucket, dstRes.key)
 		if capErr != nil {
 			log.Printf("webdav COPY/MOVE %s/%s: capturing prior version: %v", strconv.Quote(dstRes.bucket), strconv.Quote(dstRes.key), capErr)

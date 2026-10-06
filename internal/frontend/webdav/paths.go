@@ -34,6 +34,11 @@ type resource struct {
 // root+bucket join — mode A bucket "." or "..", and in BOTH modes a key
 // that is "." or ".." or contains a ".." segment. Names that merely
 // contain dots ("a..b", "v1.2") stay legal. Callers render 403.
+//
+// Reserved control segments: keySafe also rejects a ".metadata" or ".zfs"
+// key segment (bughunt L1), so a webdav URL can never name the bucket's
+// own sidecar area or the ZFS control directory — the same rule the s3 and
+// fsbackend key validators apply. These take the SAME 403 rejection path.
 func (f *Frontend) parseResource(urlPath string) (resource, bool) {
 	cleaned := urlPath
 	for strings.Contains(cleaned, "//") {
@@ -75,16 +80,35 @@ func (f *Frontend) parseResource(urlPath string) (resource, bool) {
 	return resource{bucket: bucket, key: key, isCollection: isCollection}, true
 }
 
-// keySafe rejects keys that are, or contain a segment equal to, "." or
-// "..". The fs backend joins root+bucket+key with no path cleaning, so a
-// surviving dot-dot segment would read or write outside dataDir. Keys that
-// merely contain dots ("a..b", ".hidden", "v1.2") are untouched.
+// keySafe rejects keys that are, or contain a segment equal to, ".", "..",
+// ".metadata" or ".zfs".
+//
+// The first two are the traversal defense: the fs backend joins
+// root+bucket+key with no path cleaning, so a surviving dot-dot segment
+// would read or write outside dataDir.
+//
+// The last two are the RESERVED control segments, and rejecting them is
+// what makes this validator AGREE with its two twins (bughunt L1):
+// internal/frontend/s3 validateObjectKey and internal/backend/fsbackend
+// validateKey both reject ".metadata" and ".zfs". ".metadata" is the
+// bucket's own sidecar/locks/versions area — a key segment of that name
+// writes into the gateway's control directory. ".zfs" is the ZFS control
+// directory present at every dataset mountpoint, so on a dataset-backed
+// bucket a key segment of that name collides with it (PUT writes into it,
+// DELETE removes it).
+//
+// The disagreement was invisible in the suite because webdav's batch
+// surface (batch.go) deliberately calls the s3 validator for its manifest
+// keys: POST ?batch refused ".metadata/x" while a plain PUT of the same
+// key accepted it. KeySafe is SEGMENT-exact like both twins — names that
+// merely contain dots ("a..b", ".hidden", "v1.2", "x.zfs") stay legal.
 func keySafe(key string) bool {
 	if key == "" {
 		return true
 	}
 	for seg := range strings.SplitSeq(key, "/") {
-		if seg == "." || seg == ".." {
+		switch seg {
+		case ".", "..", ".metadata", ".zfs":
 			return false
 		}
 	}
