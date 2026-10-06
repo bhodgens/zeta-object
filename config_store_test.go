@@ -164,7 +164,11 @@ func TestConfigStoreApplyHotRegion(t *testing.T) {
 }
 
 // TestConfigStoreApplyRestartRequired pins that a restart-required key is
-// recorded, reported in BOTH return values, and never claimed applied.
+// recorded, reported in BOTH return values, and never claimed applied — and
+// never stored as LIVE (bughunt 2026-10-05): the running configuration must
+// keep serving the running value, or GET /config misreports the running
+// config. The operator's desired value is what Persist carries to the next
+// boot.
 func TestConfigStoreApplyRestartRequired(t *testing.T) {
 	cfg := defaultServerConfig()
 	cfg.DataDir = t.TempDir() + "/"
@@ -183,10 +187,13 @@ func TestConfigStoreApplyRestartRequired(t *testing.T) {
 	if !contains(store.RestartRequired(), "dataDir") {
 		t.Errorf("RestartRequired() = %v, want dataDir", store.RestartRequired())
 	}
-	// The runtime store accepts the new value (authoritative in memory), but
-	// it is reported as needing a restart to take effect.
-	if got := store.Snapshot().DataDir; got != "/tmp/zeta-elsewhere/" {
-		t.Errorf("snapshot dataDir = %q, want the recorded value", got)
+	// The RUNNING configuration keeps the value in force until a restart.
+	if got := store.Snapshot().DataDir; got != cfg.DataDir {
+		t.Errorf("snapshot dataDir = %q, want the RUNNING %q (a restart-required key must not be stored as live)", got, cfg.DataDir)
+	}
+	// The desired value is still carried for the next boot.
+	if got := store.desired.DataDir; got != "/tmp/zeta-elsewhere/" {
+		t.Errorf("desired dataDir = %q, want the pending /tmp/zeta-elsewhere/", got)
 	}
 }
 

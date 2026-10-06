@@ -18,7 +18,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"maps"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -31,6 +33,12 @@ import (
 // store hands to a caller. Pinned by test: a client echoing it back
 // unchanged is a NO-OP, never an overwrite of the real secret.
 const maskedSecretValue = "********"
+
+// configFilePerm is the mode Persist writes the config document with:
+// owner-only. The document carries REAL (unmasked) identity secrets — masking
+// is applied on the way OUT only — so it must never be group- or
+// world-readable (bughunt 2026-10-05 L9).
+const configFilePerm os.FileMode = 0o600
 
 // ConfigPatch is a partial configuration update: a JSON object whose present
 // top-level keys replace the corresponding live values (absent keys are left
@@ -68,9 +76,20 @@ var hotApplyKeys = map[string]bool{
 }
 
 // ConfigStore owns the live configuration under an RWMutex.
+//
+// Two configurations live here and must never be confused (bughunt
+// 2026-10-05, the "restart-required keys stored as live" finding):
+//
+//   - live is the RUNNING configuration: exactly what the installed seams
+//     serve. GET /config reports this, so it never claims a value that
+//     needs a restart.
+//   - desired holds a restart-required key's PENDING operator value, which
+//     Persist writes so the next boot picks it up. A pending value is
+//     reported under RestartRequired, never as applied and never as live.
 type ConfigStore struct {
 	mu              sync.RWMutex
 	live            *ServerConfig
+	desired         ServerConfig
 	restartRequired map[string]bool
 }
 
@@ -94,6 +113,7 @@ func NewConfigStore(cfg *ServerConfig) *ConfigStore {
 	cp := deepCopyServerConfig(cfg)
 	return &ConfigStore{
 		live:            &cp,
+		desired:         deepCopyServerConfig(cfg),
 		restartRequired: map[string]bool{},
 	}
 }
@@ -127,6 +147,28 @@ func (s *ConfigStore) RestartRequired() []string {
 // the restart-required key names (recorded, reported, never claimed
 // applied). An invalid patch changes NOTHING and returns the validator's
 // error.
+//
+// NOTHING-CHANGES-NOTHING (bughunt 2026-10-05 M7/M8). A rejected patch must
+// leave every observable surface exactly as it was:
+//
+//  1. VALIDATION IS SIDE-EFFECT FREE. validateCandidate used to build a real
+//     identity registry, and building one WRITES the process-global rich
+//     grant table internal/auth's AuthorizeOp reads - so a rejected patch
+//     could flip a privilege decision. Validation now runs against a
+//     side-effect-free parse (parseIdentityConfig), and the registry is built
+//     only when the patch is about to commit.
+//  2. HOT SEAMS ARE VALIDATED BEFORE ANY MUTATION. validateHotSeams below
+//     performs every fallible installer step up front (the dataset
+//     provisioner install), so a patch that cannot be installed is rejected
+//     before the config view or the region seam moves.
+//  3. A FAILURE AFTER A MUTATION ROLLS BACK. hotSeamsRollback re-installs
+//     the RUNNING configuration, restoring the region and config view a
+//     failed apply had already replaced.
+//
+// A restart-required key never becomes live: it lands in s.desired (what
+// Persist writes for the next boot) and is reported under restartRequired,
+// while s.live — what GET /config reports and what the seams serve — keeps
+// the running value.
 func (s *ConfigStore) Apply(patch ConfigPatch) (applied []string, restartRequired []string, err error) {
 	fields, err := decodePatchFields(patch)
 	if err != nil {
@@ -140,49 +182,125 @@ func (s *ConfigStore) Apply(patch ConfigPatch) (applied []string, restartRequire
 	defer s.mu.Unlock()
 
 	// Build + validate the candidate BEFORE touching any seam or live state.
-	candidate := deepCopyServerConfig(s.live)
-	if err := mergePatchFields(&candidate, s.live, fields); err != nil {
+	// The candidate starts from the DESIRED configuration so restart-required
+	// keys compose across patches (a later patch builds on an earlier
+	// pending value) while the running configuration stays put.
+	candidate := deepCopyServerConfig(&s.desired)
+	if err := mergePatchFields(&candidate, &s.desired, fields); err != nil {
 		return nil, nil, err
 	}
 	if err := validateCandidate(&candidate); err != nil {
 		return nil, nil, err
 	}
 
-	applied, restartRequired = classifyPatchKeys(s.live, &candidate, fields)
+	applied, restartRequired = classifyPatchKeys(&s.desired, &candidate, fields)
 
-	// Hot-apply through the existing installers (s3_wiring.go). Nothing is
-	// mutated until the candidate has validated, so an invalid patch is a
-	// true no-op.
+	// Validate every fallible hot-apply step BEFORE the first mutation
+	// (bughunt M7: the provisioner install used to run AFTER the region and
+	// config view were already installed, so a rejected patch left the live
+	// SigV4 region at the rejected value while GET /config still reported
+	// the old one — clients signing what the API advertised got
+	// SignatureDoesNotMatch from a request reported as a no-op).
+	if len(applied) > 0 {
+		if err := validateHotSeams(&candidate); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	// From here the mutations run. Any failure restores the running
+	// configuration's seams instead of leaving a half-applied install.
 	if len(applied) > 0 {
 		if err := applyHotSeams(&candidate); err != nil {
+			hotSeamsRollback(s.live)
 			return nil, nil, err
 		}
 	}
 	if _, ok := fields["identities"]; ok {
 		if err := rebuildIdentityRegistryFor(&candidate); err != nil {
+			hotSeamsRollback(s.live)
 			return nil, nil, err
 		}
 	}
 
-	s.live = &candidate
+	s.desired = candidate
+	// Only HOT-applied keys move the running configuration; a
+	// restart-required key stays live at its running value.
+	if len(applied) > 0 {
+		newLive := deepCopyServerConfig(s.live)
+		copyAppliedKeys(&newLive, &candidate, applied)
+		s.live = &newLive
+	}
 	for _, k := range restartRequired {
 		s.restartRequired[k] = true
 	}
 	return applied, restartRequired, nil
 }
 
-// Persist writes the LIVE configuration (real secrets — the file is the
+// copyAppliedKeys carries the hot-applied patch keys from candidate into the
+// running configuration. Every key in applied has a runtime path, so the
+// running configuration must match the candidate exactly for those keys;
+// every other key is left at the running value (restart-required keys keep
+// running until the process restarts).
+func copyAppliedKeys(live, candidate *ServerConfig, applied []string) {
+	for _, key := range applied {
+		switch key {
+		case "region":
+			live.Region = candidate.Region
+		case "zfs_versioning":
+			live.ZfsVersioning = candidate.ZfsVersioning
+		case "zfs_versioning_reflink_retention":
+			live.ZfsVersioningReflinkRetention = candidate.ZfsVersioningReflinkRetention
+		case "zfs_bucket_datasets":
+			live.ZfsBucketDatasets = candidate.ZfsBucketDatasets
+		case "zfs_binary":
+			live.ZfsBinary = candidate.ZfsBinary
+		case "identities":
+			live.Identities = candidate.Identities
+		case "buckets", "bucketSettings":
+			// The buckets patch is hot only when it changed per-bucket
+			// tunables; the layout maps are identical in that case.
+			live.Buckets = maps.Clone(candidate.Buckets)
+			live.BucketBackends = maps.Clone(candidate.BucketBackends)
+			live.BucketAuditReads = maps.Clone(candidate.BucketAuditReads)
+			live.BucketReflinkRetention = maps.Clone(candidate.BucketReflinkRetention)
+		default:
+			// A key in hotApplyKeys with no runtime effect of its own.
+			log.Printf("Config store: patch key %q is hot-applied with no live-configuration field to carry", key)
+		}
+	}
+}
+
+// hotSeamsRollback re-installs the RUNNING configuration's hot seams after a
+// failed apply, so a rejected patch leaves no seam holding a value the API
+// reported as rejected. Failures are logged, never returned: the store is
+// already rejecting the patch, and a rollback that itself fails must not mask
+// the validator's error.
+func hotSeamsRollback(live *ServerConfig) {
+	if err := applyHotSeams(live); err != nil {
+		log.Printf("Config store: rolling back the live seams to the running configuration failed: %v", err)
+	}
+}
+
+// Persist writes the DESIRED configuration (real secrets — the file is the
 // operator's own) to path atomically: temp file plus rename, the same
 // technique as internal/backend/fsbackend/atomic.go:18. On any failure the
 // previous file is left intact.
+//
+// It writes the DESIRED configuration, not the running one: a restart-required
+// patch that cannot take effect until the process restarts must still reach
+// the file, or the operator's change is silently lost at the next boot.
+//
+// The mode is owner-only (0600), never group/world-readable: masking is
+// applied on the way OUT only, so this file carries REAL identity secrets
+// (bughunt 2026-10-05 L9).
 func (s *ConfigStore) Persist(path string) error {
 	s.mu.RLock()
-	data, err := marshalConfigDocument(s.live)
+	data, err := marshalConfigDocument(&s.desired)
 	s.mu.RUnlock()
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(path, data, 0o644)
+	return writeFileAtomic(path, data, configFilePerm)
 }
 
 // maskedCopyLocked returns a deep copy of the live configuration with all
@@ -519,9 +637,110 @@ func validateCandidate(cfg *ServerConfig) error {
 	}
 	// Identity validation reuses the registry builder (the single
 	// validator): duplicate/empty access keys, grant vocabulary, ...
-	if _, err := buildRegistryFor(cfg); err != nil {
+	//
+	// Building a registry WRITES the PROCESS-GLOBAL rich-grant table that
+	// internal/auth's AuthorizeOp reads (bughunt 2026-10-05 M8: a rejected
+	// patch could flip a privilege decision false -> true). The build here
+	// exists only to VALIDATE, so the table is captured before it and
+	// restored before this returns — whether the build succeeded or failed.
+	_, err := buildRegistryPreservingGrantTable(cfg, nil)
+	return err
+}
+
+// identityAccessKeys is the set of access keys a registry build over cfg
+// registers: the implicit env pair plus cfg's own identities. These are
+// exactly the keys auth.NewMultiRegistry's WithRichGrants calls touch.
+func identityAccessKeys(cfg *ServerConfig) []string {
+	keys := make([]string, 0, 1+len(cfg.Identities))
+	keys = append(keys, serverCredentials.AccessKeyID)
+	for _, id := range cfg.Identities {
+		keys = append(keys, id.AccessKey)
+	}
+	return keys
+}
+
+// buildRegistryPreservingGrantTable builds the registry for cfg with the
+// PROCESS-GLOBAL rich-grant table restored to its exact pre-call state, and
+// returns it. extra is an additional set of access keys to protect (the
+// store's other configurations' identities) so no key the store knows about
+// can change as a side effect of validation.
+//
+// Auth exposes no non-global-writing registry construction — NewMultiRegistry
+// registers every identity's parsed grants through Identity.WithRichGrants,
+// which writes the process-global table by design (a reload fully replaces
+// it). Validation therefore restores rather than bypasses: the keys the
+// build touches are known (identityAccessKeys), so restoring them is exact
+// and the store never publishes an unvalidated candidate's grants.
+//
+// The returned registry is valid for inspection but its Identity values read
+// the RESTORED global table; only rebuildIdentityRegistryFor (which restores
+// nothing on success) publishes a build's grants.
+func buildRegistryPreservingGrantTable(cfg *ServerConfig, extra []string) (*auth.MultiRegistry, error) {
+	keys := identityAccessKeys(cfg)
+	keys = append(keys, extra...)
+	before := captureGrantTable(keys)
+
+	reg, err := buildRegistryFor(cfg)
+
+	// Unconditional restore: success or failure, the table must match its
+	// pre-call state (absent keys included — WithRichGrants(nil) clears).
+	restoreGrantTable(keys, before)
+	return reg, err
+}
+
+// grantTableSnapshot is one access key's registered rich entries and whether
+// the key had an entry at all ("absent" must be distinguishable from "no
+// entries", because a cleared and an empty key are the same table state but
+// a present key must be re-registered).
+type grantTableSnapshot map[string][]auth.GrantExpr
+
+// captureGrantTable reads the current process-global rich entries for keys.
+func captureGrantTable(keys []string) grantTableSnapshot {
+	before := make(grantTableSnapshot, len(keys))
+	for _, k := range keys {
+		if exprs := (auth.Identity{AccessKeyID: k}).RichGrants(); len(exprs) > 0 {
+			before[k] = exprs
+		}
+	}
+	return before
+}
+
+// restoreGrantTable re-registers exactly the captured entries, clearing any
+// key that had none.
+func restoreGrantTable(keys []string, before grantTableSnapshot) {
+	for _, k := range keys {
+		id := auth.Identity{AccessKeyID: k}
+		if exprs, ok := before[k]; ok {
+			id.WithRichGrants(exprs)
+		} else {
+			id.WithRichGrants(nil)
+		}
+	}
+}
+
+// validateHotSeams performs every FALLIBLE step of the hot apply BEFORE the
+// first mutation (bughunt 2026-10-05 M7). applyHotSeams installs the config
+// view and the SigV4 region first and installs the dataset provisioner last;
+// a provisioner install that fails therefore left the live region at a value
+// the API reported as rejected.
+//
+// The check here mirrors the provisioner installer's own argument validation
+// (s3.InstallZfsDatasetProvisioner rejects an empty or unsafe parent dataset
+// name and an empty zfs binary) so the common rejection happens before any
+// seam moves. It is an OPTIMIZATION, not the guarantee: hotSeamsRollback is
+// what makes the invariant hold for any install failure this pre-check cannot
+// predict, including a step added to the installer later.
+func validateHotSeams(cfg *ServerConfig) error {
+	if !cfg.ZfsBucketDatasets {
+		return nil
+	}
+	if err := s3.InstallZfsDatasetProvisioner(zfsBucketsParentDataset, cfg.ZfsBinary); err != nil {
 		return err
 	}
+	// Undo the probe install immediately: validation must leave the live
+	// seams exactly as it found them, and the real apply follows.
+	s3.UninstallZfsDatasetProvisioner()
+	s3.ClearZfsBucketDatasetParent()
 	return nil
 }
 

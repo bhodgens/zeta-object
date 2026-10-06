@@ -264,7 +264,12 @@ func (b *bucketCfg) UnmarshalJSON(data []byte) error {
 	if err := dec.Decode(&p); err != nil {
 		return err
 	}
-	b.Path, b.Backend, b.AuditReads = p.Path, p.Backend, p.AuditReads
+	// ReflinkRetention must be carried across: dropping it here turned a
+	// per-bucket cap into 0 (= keep ZERO version copies) while the patch
+	// reported "applied", and a later Persist wrote that 0 to disk
+	// (bughunt 2026-10-05 L8). The pointer is copied as-is so "not
+	// configured" stays distinguishable from an explicit 0.
+	b.Path, b.Backend, b.AuditReads, b.ReflinkRetention = p.Path, p.Backend, p.AuditReads, p.ReflinkRetention
 	return nil
 }
 
