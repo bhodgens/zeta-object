@@ -114,7 +114,16 @@ jobs:
             github.com/bhodgens/zeta-object/internal/adminserver)          FLOOR=84 ;; # measured 86.7 (new, 2026-10-04); RAISE as tests land
             github.com/bhodgens/zeta-object/cmd/admin-server)              FLOOR=0  ;; # main-only console binary wiring: not unit-tested
           esac
-          go test -count=1 -race -coverprofile=cover.out "${{ matrix.package }}"
+          if [ "${{ matrix.package }}" = "github.com/bhodgens/zeta-object/internal/frontend/s3" ]; then
+            # s3 special case (3 consecutive runner reclaims at ~107s on race+cover, 2026-10-06):
+            # run the race gate WITHOUT -coverprofile (race+cover is the slowest combo and the
+            # only matrix entry that died), then coverage WITHOUT -race. Same two gates, one
+            # package, two lighter processes.
+            go test -count=1 -race ./internal/frontend/s3
+            go test -count=1 -coverprofile=cover.out ./internal/frontend/s3
+          else
+            go test -count=1 -race -coverprofile=cover.out "${{ matrix.package }}"
+          fi
           go tool cover -func=cover.out | tee /dev/stderr | awk -v floor="$FLOOR" -v pkg="${{ matrix.package }}" '/^total:/ {gsub(/%/,"",$3); if ($3+0 < floor) {print pkg " coverage " $3 "% below floor " floor; exit 1}}'
 
   # Repo-wide checks that cannot be attributed to one package.
