@@ -10,6 +10,19 @@
 
 # zeta-object
 
+Zeta-Object is an object gateway to your files - an unobtrusive server which provides access to your existing filesystem while maintaining common object semantics and capability.
+
+**Feature differentiation:**
+
+- Near-parity compatibility with [AWS S3](docs/protocol-compatibility.md), WebDAV, and ownCloud
+- Native object access to traditional filesystems
+- Metadata using the OpenZFS `events` feature: full auditability, and metadata travels with the files and the dataset
+- No auxiliary databases. Metadata on non-ZFS filesystems resides in a `.metadata` directory
+- Single-server design: no need for additional services
+- Native Linux and macOS "file sync" capabilities similar to Dropbox using the zeta-sync client, allowing for Unix-like context
+
+---
+
 **A single-binary S3 server with filesystem superpowers.**
 
 zeta-object speaks the S3 protocol and stores your data where you can see it: plain files, in your directories, on your filesystems. Where every other object server buries your data in its own opaque store, zeta-object treats your filesystem as the source of truth - and adds capabilities no cloud S3 can offer, because only a filesystem co-located with your data can offer them.
