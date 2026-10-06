@@ -190,11 +190,18 @@ func adminSaveConfigService(_ context.Context) error {
 }
 
 // adminReloadAuthService is POST /auth/reload: re-run the SIGHUP identity
-// reload AND refresh the admin listener's trusted client CA (so a replaced CA
-// file revokes old certificates without a restart).
+// reload AND refresh the trusted client CA of EVERY mTLS listener (the admin
+// frontend AND the h3 QUIC frontend, each through its own registry entry), so
+// a replaced CA file revokes old certificates on every client-certificate
+// listener without a restart.
+//
+// Both steps always run: an identity-reload failure does not skip the CA fan
+// (a rotation an operator just performed must not be silently dropped because
+// an unrelated config edit is invalid), and a CA failure is reported rather
+// than swallowed.
 func adminReloadAuthService(_ context.Context) error {
 	idErr := reloadIdentityRegistry()
-	caErr := reloadAdminClientCA()
+	caErr := reloadRegisteredClientCAs()
 	if idErr != nil {
 		return &admin.ServiceError{Status: 500, Code: "ReloadFailed", Message: idErr.Error()}
 	}
@@ -452,30 +459,91 @@ func buildVersion() string {
 	return "devel"
 }
 
-// admin client-CA reload registration: the admin frontend is constructed
-// inside the frontends factory, so the factory registers its CA-reload entry
-// point here for the /auth/reload service to reach.
+// client-CA reload registration. Every mTLS frontend is constructed inside
+// the frontends factory, so each one registers its CA-reload entry point here
+// for the /auth/reload service to reach.
+//
+// A SLICE, not a single slot: one POST /auth/reload revokes a stale
+// certificate on EVERY client-certificate listener, so registering the h3
+// frontend must not silently un-register the admin frontend (a single
+// func() error field overwrote it, which is how the QUIC listener ended up
+// trusting its startup CA for the process lifetime while the admin listener
+// rotated correctly).
+//
+// Fail-closed like the per-frontend ReloadClientCA: a registrant that fails
+// (unreadable/corrupt bundle) leaves its own previous pool serving, and the
+// fan reports the failure to the operator instead of swallowing it.
 var (
-	adminCAMu     sync.Mutex
-	adminCAReload func() error
+	clientCAMu        sync.Mutex
+	clientCAReloaders []clientCAReloader
 )
 
-// setAdminClientCAReloader records the constructed admin frontend's CA-reload
-// entry point (nil-safe).
-func setAdminClientCAReloader(fn func() error) {
-	adminCAMu.Lock()
-	defer adminCAMu.Unlock()
-	adminCAReload = fn
+// clientCAReloader is one registrant's reload entry point plus the identity
+// its errors are reported under. The name is the frontend's registry name
+// ("admin", "h3"), so an operator sees WHICH listener failed to rotate.
+type clientCAReloader struct {
+	name string
+	fn   func() error
 }
 
-// reloadAdminClientCA refreshes the admin listener's trusted client CA (a
-// no-op when no admin frontend is built).
-func reloadAdminClientCA() error {
-	adminCAMu.Lock()
-	fn := adminCAReload
-	adminCAMu.Unlock()
+// registerClientCAReloader records one constructed frontend's CA-reload entry
+// point (nil-safe: a nil fn registers nothing). Registering the SAME name
+// twice REPLACES that name's entry — a re-registered frontend is the live
+// one, and the superseded instance must not keep receiving reloads.
+func registerClientCAReloader(name string, fn func() error) {
 	if fn == nil {
-		return nil
+		return
 	}
-	return fn()
+	clientCAMu.Lock()
+	defer clientCAMu.Unlock()
+	for i := range clientCAReloaders {
+		if clientCAReloaders[i].name == name {
+			clientCAReloaders[i] = clientCAReloader{name: name, fn: fn}
+			return
+		}
+	}
+	clientCAReloaders = append(clientCAReloaders, clientCAReloader{name: name, fn: fn})
+}
+
+// resetClientCAReloaders drops every registrant (test isolation; production
+// never calls it — the registry is process state for the listener lifetime).
+func resetClientCAReloaders() {
+	clientCAMu.Lock()
+	defer clientCAMu.Unlock()
+	clientCAReloaders = nil
+}
+
+// registeredClientCAReloaders snapshots the registrants (test visibility into
+// what one reload will fan out to).
+func registeredClientCAReloaders() []string {
+	clientCAMu.Lock()
+	defer clientCAMu.Unlock()
+	names := make([]string, 0, len(clientCAReloaders))
+	for _, r := range clientCAReloaders {
+		names = append(names, r.name)
+	}
+	return names
+}
+
+// reloadRegisteredClientCAs refreshes the trusted client CA of EVERY
+// registered listener. Registration ORDER is the order the factory
+// constructed the frontends, and every registrant runs even when an earlier
+// one failed: a broken admin bundle must not leave the QUIC listener
+// trusting its stale CA (that combination is exactly the silent-no-op
+// revocation this fan exists to prevent). Errors are JOINED and returned, so
+// POST /auth/reload reports the whole failure set honestly; with no
+// registrants it is a no-op (a server with no mTLS frontend configured).
+func reloadRegisteredClientCAs() error {
+	clientCAMu.Lock()
+	regs := make([]clientCAReloader, len(clientCAReloaders))
+	copy(regs, clientCAReloaders)
+	clientCAMu.Unlock()
+
+	var errs []error
+	for _, r := range regs {
+		if err := r.fn(); err != nil {
+			errs = append(errs, fmt.Errorf("%s client CA reload: %w", r.name, err))
+		}
+	}
+	return errors.Join(errs...)
 }

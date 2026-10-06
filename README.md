@@ -327,12 +327,14 @@ memory and is lost on restart.
 ### Key and CA rotation
 
 `POST /auth/reload` re-runs the identity reload path (the same code SIGHUP
-runs) AND re-reads the admin listener's client-CA bundle. To rotate the
-administrative credential: replace the CA file on disk, then call
-`POST /auth/reload`. Certificates signed by the new CA are trusted and the
-old ones are rejected on the next handshake, **without a restart**. A
-missing, unreadable, or invalid CA bundle fails closed: the listener keeps
-trusting the previous CA rather than trusting nothing or everything.
+runs) AND re-reads the client-CA bundle of every mTLS listener (this one and
+the `h3` frontend's). To rotate a credential: replace the CA file on disk,
+then call `POST /auth/reload`. Certificates signed by the new CA are trusted
+and the old ones are rejected on the next handshake, **without a restart**.
+A missing, unreadable, or invalid CA bundle fails closed: the listener keeps
+trusting the previous CA rather than trusting nothing or everything. Every
+listener is attempted even when one fails, and the error names the ones that
+did not rotate.
 
 ### Destructive scope
 
@@ -590,7 +592,10 @@ long-latency links. Wire-level proof: e2e case 38
     The listener reuses the process `certFile`/`keyFile` pair and requires
     and verifies a client certificate: a client without one (or with one
     from an unknown CA) fails the TLS handshake - there is no HTTP 401
-    over h3 for certificate failures.
+    over h3 for certificate failures. The bundle is read at startup and
+    re-read by `POST /auth/reload`, so replacing it and calling that route
+    revokes a device certificate here too (one call rotates every
+    client-certificate listener).
 
 ## ownCloud frontend
 

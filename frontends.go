@@ -151,8 +151,11 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 		}
 		// Register the frontend's CA-reload entry point so /auth/reload can
 		// refresh the trusted client CA without a restart (leaf 04 Task 4).
+		// The registry holds MANY registrants: this one must not displace the
+		// h3 frontend's own entry, or the QUIC listener would keep trusting its
+		// startup CA for the process lifetime.
 		if ca, ok := f.(admin.ClientCAReloader); ok {
-			setAdminClientCAReloader(ca.ReloadClientCA)
+			registerClientCAReloader(f.Name(), ca.ReloadClientCA)
 		}
 		return f, nil
 	},
@@ -167,13 +170,27 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 		if err := validateOptions(cfg.Type, cfg.Options, h3.KnownOptionKeys); err != nil {
 			return nil, err
 		}
-		return h3.New(b, h3.Config{
+		f, err := h3.New(b, h3.Config{
 			ListenAddr:   cfg.ListenAddr,
 			Bucket:       cfg.Bucket,
 			ClientCAFile: cfg.Options["clientCAFile"],
 			CertFile:     serverConfig.CertFile,
 			KeyFile:      serverConfig.KeyFile,
 		}, identityRegistry, getBucketPath)
+		if err != nil {
+			return nil, err
+		}
+		// Same registration the admin frontend gets above, through the same
+		// optional interface: POST /auth/reload must swap the QUIC listener's
+		// trusted CA pool too, or replacing clientCAFile to revoke a stolen
+		// device certificate is a silent no-op over HTTP/3 (h3.Frontend
+		// satisfies admin.ClientCAReloader by shape - the reload path stays off
+		// the frozen frontend seams).
+		var fe frontend.Frontend = f
+		if ca, ok := fe.(admin.ClientCAReloader); ok {
+			registerClientCAReloader(fe.Name(), ca.ReloadClientCA)
+		}
+		return fe, nil
 	},
 }
 

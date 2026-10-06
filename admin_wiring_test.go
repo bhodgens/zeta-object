@@ -159,8 +159,8 @@ func TestAdminWiringReloadAuthReloadsIdentitiesAndCA(t *testing.T) {
 	identityRegistry = auth.NewReloadableRegistry(reg)
 
 	caCalled := false
-	setAdminClientCAReloader(func() error { caCalled = true; return nil })
-	t.Cleanup(func() { setAdminClientCAReloader(nil) })
+	registerClientCAReloader("admin", func() error { caCalled = true; return nil })
+	t.Cleanup(resetClientCAReloaders)
 
 	installTestConfigStore(t, defaultServerConfig())
 	if err := adminReloadAuthService(context.Background()); err != nil {
