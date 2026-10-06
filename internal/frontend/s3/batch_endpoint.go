@@ -26,10 +26,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"maps"
 	"net/http"
+	"path/filepath"
 	"strconv"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
@@ -41,6 +43,30 @@ import (
 // bucketBatchMaxBytes bounds the manifest body read (1000 ops × generous
 // per-op size) so a runaway body cannot buffer unboundedly.
 const bucketBatchMaxBytes = 4 << 20
+
+// batchCopyMaxBytesDefault is the DEFAULT ceiling for the source bytes
+// ONE copy item buffers in memory: the Backend seam's Put takes a whole
+// []byte, so a batch copy cannot stream. 5 GiB is S3's own single-PUT
+// object limit — the same bound fsbackend's maxPutBytesDefault caps a Put
+// at (fsbackend.go) — so a copy of a larger object could never have been
+// written by a single PutObject either and nothing S3-reachable is
+// rejected by this gate.
+//
+// It is declared HERE rather than imported from fsbackend because it gates
+// a READ on the pre-seam path, where the backend's own cap does not
+// apply: the manifest body cap (bucketBatchMaxBytes) bounds the request,
+// never the bytes a manifest makes the server copy, and an unbounded read
+// let an ifMatch copy item buffer an arbitrarily large source per item
+// under a manifest the validator accepts.
+const batchCopyMaxBytesDefault int64 = 5 << 30
+
+// batchCopyMaxBytes is the live copy ceiling. A var rather than a const
+// so a test can shrink it to a byte budget and exercise the overflow arm
+// for real — the exact shape fsbackend uses for its own configurable
+// maxPutBytes (fsbackend.go's FS.maxPutBytes, default
+// maxPutBytesDefault). Production never writes it; only a test does, and
+// only for its own duration.
+var batchCopyMaxBytes = batchCopyMaxBytesDefault
 
 // handleBucketBatch implements POST /{bucket}?batch. Mounted in
 // dispatch.go's bucketLevelDispatch beside the ?delete sub-resource.
@@ -97,7 +123,35 @@ func handleBucketBatch(w http.ResponseWriter, r *http.Request, bucketName string
 // same-bucket (Contract 9: one request = one bucket = one auth scope).
 type s3BatchExecutor struct {
 	bucket string
-	ctx    context.Context
+	// bucketPath is the RESOLVED on-disk root every bucket-scoped step of
+	// an item uses (the versioning store, the tag store, the version
+	// capture/record). Empty means "the mounting frontend wired no
+	// resolver" — the s3 ?batch mount's own shape, which is exactly the
+	// unwired-seam case resolveBucketPath falls back to getBucketPath.
+	//
+	// Why it is carried at all: the two ?batch mounts resolve the bucket
+	// through DIFFERENT resolvers (the s3 mount has no resolver argument
+	// and lands on getBucketPath; the webdav/h3 mount hands over its own
+	// f.bucketPath). Threading the mounting frontend's answer onto the
+	// executor is what makes validation and execution non-divergent BY
+	// CONSTRUCTION: the path the mount validated and authorized against is
+	// the path the read and write land under. Before this field existed the
+	// bucketPath argument was dead and both mounts silently executed
+	// through getBucketPath — coincidentally equal in production, by
+	// divergence in any wiring where the two resolvers disagree.
+	bucketPath string
+	ctx        context.Context
+}
+
+// resolveBucketPath returns the on-disk root an item's bucket-scoped steps
+// run against: the caller-resolved path when the mounting frontend supplied
+// one, else getBucketPath (the s3 mount's shape, and the documented unwired
+// seam — a nil resolver has no path of its own to offer).
+func (e s3BatchExecutor) resolveBucketPath() string {
+	if e.bucketPath != "" {
+		return e.bucketPath
+	}
+	return getBucketPath(e.bucket)
 }
 
 // itemCtx resolves the context an item runs under: the context the
@@ -144,7 +198,7 @@ func (e s3BatchExecutor) Copy(ctx context.Context, from, to, ifMatch string) err
 	if err := validateObjectKey(to); err != nil {
 		return objectmodel.ErrInvalidArgument(err.Error())
 	}
-	return batchCopyMove(e.itemCtx(ctx), e.bucket, from, to, ifMatch, false)
+	return batchCopyMove(e.itemCtx(ctx), e.bucket, e.resolveBucketPath(), from, to, ifMatch, false)
 }
 
 // batchMove is the move item: copy then DELETE the source (MOVE
@@ -160,10 +214,10 @@ func (e s3BatchExecutor) Move(ctx context.Context, from, to, ifMatch string) err
 		return objectmodel.ErrInvalidArgument(err.Error())
 	}
 	ctx = e.itemCtx(ctx)
-	if err := batchCopyMove(ctx, e.bucket, from, to, ifMatch, false); err != nil {
+	if err := batchCopyMove(ctx, e.bucket, e.resolveBucketPath(), from, to, ifMatch, false); err != nil {
 		return err
 	}
-	return batchDelete(ctx, e.bucket, from, ifMatch)
+	return batchDelete(ctx, e.bucket, e.resolveBucketPath(), from, ifMatch)
 }
 
 // batchDelete is the delete item: the SAME path deleteObjectCore runs
@@ -173,7 +227,7 @@ func (e s3BatchExecutor) Delete(ctx context.Context, key, ifMatch string) error 
 	if err := validateObjectKey(key); err != nil {
 		return objectmodel.ErrInvalidArgument(err.Error())
 	}
-	return batchDelete(e.itemCtx(ctx), e.bucket, key, ifMatch)
+	return batchDelete(e.itemCtx(ctx), e.bucket, e.resolveBucketPath(), key, ifMatch)
 }
 
 // batchCopyMetadata reads the source object's user metadata verbatim
@@ -215,7 +269,15 @@ func batchCopyTags(bucketPath, key string) (map[string]string, error) {
 // hands the executor): every backend call takes it, so a client
 // disconnect aborts the item mid-flight instead of running on a fresh
 // Background (bughunt M3).
-func batchCopyMove(ctx context.Context, bucket, from, to, ifMatch string, _ bool) error {
+//
+// bucketPath is the executor's RESOLVED bucket root (s3BatchExecutor.
+// resolveBucketPath): the caller's answer when a mounting frontend
+// resolved it, else getBucketPath. It governs every path-rooted step
+// here — the versioning store, the source metadata/tag read, the
+// destination tag write, the capture/record pair, and the action context
+// — so the item's reads and writes land under exactly the path the mount
+// validated and authorized against.
+func batchCopyMove(ctx context.Context, bucket, bucketPath, from, to, ifMatch string, _ bool) error {
 	// ONE source read serves both the If-Match precheck and the data
 	// copy, and the reader is closed on EVERY exit below — the precheck
 	// used to open a second reader and discard it into `_`, leaking one
@@ -226,10 +288,24 @@ func batchCopyMove(ctx context.Context, bucket, from, to, ifMatch string, _ bool
 	if err != nil {
 		return err
 	}
-	data, readErr := io.ReadAll(rc)
+	// The read is BOUNDED. This copy is buffered whole (the Backend seam
+	// Put takes a []byte), and the single-read shape above is what closed
+	// the H4 leak — so the size gate has to live here, on the read, or an
+	// unbounded io.ReadAll lets a manifest of ifMatch copy items buffer
+	// source-after-source into the process heap under a manifest the
+	// validator accepts (bucketBatchMaxBytes caps the MANIFEST, never the
+	// copied bytes). LimitReader at limit+1 means "one byte past the
+	// ceiling" is detectable, so an oversized source is refused with the
+	// SAME InvalidArgument the fs backend's Put size cap reports
+	// (maxPutBytesDefault) instead of being buffered first.
+	data, readErr := io.ReadAll(io.LimitReader(rc, batchCopyMaxBytes+1))
 	rc.Close()
 	if readErr != nil {
 		return readErr
+	}
+	if int64(len(data)) > batchCopyMaxBytes {
+		log.Printf("Batch copy source %s/%s exceeds the maximum object size %d", strconv.Quote(bucket), strconv.Quote(from), batchCopyMaxBytes)
+		return objectmodel.ErrInvalidArgument(fmt.Sprintf("object size exceeds the maximum allowed size %d", batchCopyMaxBytes))
 	}
 
 	// If-Match on the SOURCE copy is enforced against the source
@@ -240,8 +316,6 @@ func batchCopyMove(ctx context.Context, bucket, from, to, ifMatch string, _ bool
 	if ifMatch != "" && !etagMatches(ifMatch, srcObj.ETag) {
 		return objectmodel.ErrPreconditionFailed()
 	}
-
-	bucketPath := getBucketPath(bucket)
 
 	// Versioning capture BEFORE the plain overwrite (leaf-05 order:
 	// capture → put → record; ErrNoPriorVersion = create, no record).
@@ -290,7 +364,6 @@ func batchCopyMove(ctx context.Context, bucket, from, to, ifMatch string, _ bool
 	if putErr != nil {
 		return putErr
 	}
-	_ = obj
 	// Tags land AFTER the destination object exists (sidecar
 	// read-modify-write, exactly like CopyObject and PutObject); an empty
 	// source tag set writes nothing (byte-compat sidecar form).
@@ -304,13 +377,43 @@ func batchCopyMove(ctx context.Context, bucket, from, to, ifMatch string, _ bool
 			return objectmodel.ErrInternalError("error recording object version.")
 		}
 	}
+	// Bucket-action parity with the single-op CopyObject (whose after_upload
+	// fires the same shape off dstDataPath/dstMetaPath, object_handlers.go's
+	// copyObjectHandler tail): a batch write is a mutating write, so a
+	// per-bucket .bucket-actions hook must see it exactly as it sees the
+	// single-op write. Without this the batch surface bypassed
+	// putObjectHandler/copyObjectHandler's trigger entirely and every hook
+	// silently skipped every batch item. Only the successful path reaches
+	// here — a failed item returns above and fires nothing.
+	dstDataPath := objectDataPathFor(bucketPath, to)
+	dstMetaPath := filepath.Join(bucketPath, ".metadata", to+".meta")
+	go triggerActions("after_upload", ActionContext{
+		FilePath:     dstDataPath,
+		MetadataPath: dstMetaPath,
+		BucketName:   bucket,
+		BucketPath:   bucketPath,
+		ObjectKey:    to,
+		ContentType:  srcObj.ContentType,
+		ETag:         obj.ETag,
+		Size:         obj.Size,
+	})
 	return nil
 }
 
 // batchDelete is the shared delete-item tail: If-Match against the
 // current ETag, then the deleteObjectVersioned marker/plain dispatch and
 // the plain delete — the deleteObjectHandler order.
-func batchDelete(ctx context.Context, bucket, key, ifMatch string) error {
+//
+// bucketPath is the executor's RESOLVED bucket root (s3BatchExecutor.
+// resolveBucketPath), threaded for the same reason as batchCopyMove's:
+// the marker/delete pair must run under the path the mounting frontend
+// validated and authorized against.
+//
+// Bucket-action parity needs no trigger HERE: the plain delete runs
+// through deleteObjectCore, which fires after_delete itself
+// (object_handlers.go), and the versioned-marker arm returns before it —
+// both arms byte-identical to deleteObjectHandler's own trigger behavior.
+func batchDelete(ctx context.Context, bucket, bucketPath, key, ifMatch string) error {
 	// The JSON batch reports a missing key as a per-item NoSuchKey error
 	// (Contract 9's response shape) — a deliberate divergence from the
 	// S3 DeleteObjects wire, where a missing key still reports Deleted.
@@ -324,7 +427,6 @@ func batchDelete(ctx context.Context, bucket, key, ifMatch string) error {
 	if ifMatch != "" && !etagMatches(ifMatch, obj.ETag) {
 		return objectmodel.ErrPreconditionFailed()
 	}
-	bucketPath := getBucketPath(bucket)
 	suppress, markerErr := deleteObjectVersionedMarker(bucketPath, bucket, key)
 	if markerErr != nil {
 		return markerErr

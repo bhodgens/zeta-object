@@ -135,6 +135,20 @@ type statusRecorder struct {
 	status int
 }
 
+// Unwrap returns the wrapped http.ResponseWriter so http.ResponseController
+// can walk down to the real response and reach its optional capabilities
+// (Flush, Hijack, SetReadDeadline, SetWriteDeadline).
+//
+// The embedded field is an INTERFACE, so nothing is promoted through it: an
+// embedded concrete *http.response's Flush would promote onto this struct,
+// but an embedded http.ResponseWriter's method set is exactly the interface's
+// six methods. Without this explicit Unwrap, the controller's rwUnwrapper
+// walk stops here and EVERY capability degrades to ErrNotSupported for every
+// authorized s3 request on a server with the audit log configured — the same
+// defect commit bf77bef fixed one layer out on the Alt-Svc wrapper
+// (altsvc.go's altSvcWriter.Unwrap). The mirror comment lives there.
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
 func (s *statusRecorder) WriteHeader(code int) {
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)

@@ -1,8 +1,32 @@
 // export_test_surface.go — EXPORTED ALIASES over the s3 package's
-// unexported moved symbols, for package main's existing test files
-// (referenced via testshim.go). This is test surface only: no production
-// code path depends on these names. A dedicated cleanup leaf migrates the
-// package-main test files into this package and deletes both files.
+// unexported moved symbols, for the *_test.go files of OTHER packages
+// (package main via testshim_test.go, and internal/frontend/webdav's).
+// A dedicated cleanup leaf migrates those test files into this package
+// and deletes this file.
+//
+// The header's old claim — "test surface only: no production code path
+// depends on these names" — was ONCE true and is no longer: ValidateObjectKey
+// was production API (webdav/batch.go passes s3.ValidateObjectKey to
+// HandleBatchForBucket). It now lives in keyvalidate.go, production
+// build, so the one symbol a non-test caller needed no longer depends on
+// this file.
+//
+// THE FILES STILL COMPARE IN THE PRODUCTION BUILD, and a //go:build test
+// constraint on them would break those consumers' test binaries: their
+// aliases need these symbols from a dependency's PRODUCTION build (Go
+// never compiles a dependency's test files into a consumer's test
+// binary). Verified callers, all *_test.go in other packages:
+//   - testshim_test.go: ~60 aliases here (SetRegionForTest, HashSHA256,
+//     RootHandlerFn, ParseInt, MinPartSize, ...), consumed by
+//     main_test.go, main_handler_test.go, config_store*_test.go, ...
+//   - export_versioning_test_surface.go: consumed by
+//     internal/frontend/webdav's and internal/frontend/h3's *_test.go
+//     files (SetupVersioningTestEnv, TestBackend, ListVersionsForTest,
+//     PutObjectHandlerForTest, ...).
+//
+// The pin that would FAIL first is `go test .` (package main) — the
+// alias block in testshim_test.go references symbols that would no longer
+// exist. SetRegionForTest carries the same explanation in place.
 package s3
 
 import (
@@ -111,6 +135,26 @@ func HandleACL(w httpResponseWriter, r *httpRequest, bucketName, objectName stri
 
 // SetRegionForTest exposes the startup-only region setter to test shims
 // (region-config-2026-10 leaf 02). Not production surface.
+//
+// WHY THIS CANNOT LEAVE THE PRODUCTION BUILD YET (a //go:build test
+// constraint on this file would break package main's test binary):
+// every caller is a _test.go file in ANOTHER package — testshim_test.go
+// (`SetRegionForTest = s3.SetRegionForTest`), aliased from
+// config_store_test.go, config_store_state_test.go and main_test.go. A
+// dependency's test files are never compiled into a consumer's test
+// binary, so those files need this symbol in package s3's PRODUCTION
+// build. The same is true of every other alias here, and of all of
+// export_versioning_test_surface.go (internal/frontend/webdav's and
+// internal/frontend/h3's *_test.go files consume it). The migration that
+// unblocks the constraint is the one this file's header already names:
+// move the package-main and webdav test files INTO this package and
+// delete both export files. Until then the aliases are load-bearing, and
+// ValidateObjectKey — the one symbol production code genuinely calls —
+// now lives in keyvalidate.go, outside this file, so nothing here is
+// required to keep the webdav batch mount compiling.
+//
+// The unlocked global this writes is region.go's; whoever makes it atomic
+// must keep SetRegion as the single writer (region-config-2026-10).
 func SetRegionForTest(r string) { SetRegion(r) }
 
 // ---------- Auth adapters (auth_adapter.go) ----------
@@ -137,7 +181,10 @@ func AuthenticatePresignedFn(w httpResponseWriter, r *httpRequest) bool {
 
 func ParseInt(valueStr, paramName string) (int, error) { return parseInt(valueStr, paramName) }
 
-func ValidateObjectKey(key string) error { return validateObjectKey(key) }
+// ValidateObjectKey is NOT here: it is PRODUCTION API (webdav/batch.go
+// passes s3.ValidateObjectKey to HandleBatchForBucket as the mounting
+// frontend's key validator) and lives in keyvalidate.go, so constraining
+// this file to a test-only build can never break the webdav batch mount.
 
 func ValidateBucketName(name string) error { return validateBucketName(name) }
 

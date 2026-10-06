@@ -30,9 +30,21 @@ import (
 
 // BatchExecutorForBucket returns the batchops.Executor wired to bucket's
 // single-op orchestration (exported for the webdav twin, mirroring the
-// versioning/zfssurface bridge exports).
+// versioning/zfssurface bridge exports). With no resolved path the
+// executor resolves each item's bucket root through getBucketPath — the
+// unwired-seam shape; a caller holding its own resolved root uses
+// BatchExecutorForBucketAt.
 func BatchExecutorForBucket(bucket string, ctx context.Context) batchops.Executor {
-	return s3BatchExecutor{bucket: bucket, ctx: ctx}
+	return BatchExecutorForBucketAt(bucket, "", ctx)
+}
+
+// BatchExecutorForBucketAt is BatchExecutorForBucket with the mounting
+// frontend's own resolved bucket root carried onto every item, so the
+// executor's path-rooted steps (versioning store, tag store, capture/
+// record, action context) run under the same root the caller resolved.
+// An empty bucketPath behaves exactly like BatchExecutorForBucket.
+func BatchExecutorForBucketAt(bucket, bucketPath string, ctx context.Context) batchops.Executor {
+	return s3BatchExecutor{bucket: bucket, bucketPath: bucketPath, ctx: ctx}
 }
 
 // HandleBatchForBucket is the webdav entry for POST <bucket>?batch: the
@@ -41,12 +53,22 @@ func BatchExecutorForBucket(bucket string, ctx context.Context) batchops.Executo
 // the JSON envelope with Content-Type application/json). Wire parity
 // with the s3 surface is structural — both frontends run this one code.
 //
-// bucketPath comes from the caller (the webdav frontend's own
-// bucket-path resolver — production wires the SAME getBucketPath value
-// the s3 frontend uses; no second config view exists). validate is the
-// mounting frontend's key validator (the s3 validateObjectKey — the same
-// rules single ops enforce); when nil the batchops core's packaged
-// DefaultKeyValidator (the same pinned rules) applies.
+// bucketPath is the MOUNTING FRONTEND's own resolved on-disk root for
+// bucketName — webdav's f.bucketPath (WithBucketPathResolver or the
+// lockRoot fallback), NOT this package's getBucketPath. It is threaded
+// onto the executor so the path the mount validated and authorized
+// against is the path every item reads and writes under; the two
+// resolvers can disagree (webdav in mode A resolves through its own
+// resolver, production wires them to the same getBucketPath function but
+// nothing enforces that), and a dead parameter would leave that
+// coincidence load-bearing. An EMPTY bucketPath is the documented unwired
+// seam (webdav refuses the surface before reaching here when its resolver
+// is nil) and falls back to getBucketPath — the s3 mount's own shape.
+//
+// validate is the mounting frontend's key validator (the s3
+// validateObjectKey — the same rules single ops enforce); when nil the
+// batchops core's packaged DefaultKeyValidator (the same pinned rules)
+// applies.
 func HandleBatchForBucket(w http.ResponseWriter, r *http.Request, bucketName, bucketPath string, validate func(string) error) {
 	// Bucket validation, same precedence as the events bridge: 404 over
 	// anything else.
@@ -67,7 +89,10 @@ func HandleBatchForBucket(w http.ResponseWriter, r *http.Request, bucketName, bu
 		return
 	}
 
-	runner := &batchops.Runner{Exec: s3BatchExecutor{bucket: bucketName, ctx: r.Context()}, ValidateKey: validate}
+	runner := &batchops.Runner{
+		Exec:        s3BatchExecutor{bucket: bucketName, bucketPath: bucketPath, ctx: r.Context()},
+		ValidateKey: validate,
+	}
 	resp, reqErr := runner.Process(r.Context(), body)
 	if reqErr != nil {
 		// Malformed manifest: NOTHING executed.
@@ -88,10 +113,11 @@ func HandleBatchForBucket(w http.ResponseWriter, r *http.Request, bucketName, bu
 	log.Printf("Successfully served batch for bucket %s (%d operations)", strconv.Quote(bucketName), len(resp.Results))
 }
 
-// ValidateObjectKey already exists as an exported alias in
-// export_test_surface.go; the webdav batch mount consumes that same
-// alias (test-surface file, but the alias is a pure passthrough with no
-// test-only behavior).
+// ValidateObjectKey is the EXPORTED key validator every mounting frontend
+// passes to HandleBatchForBucket as its ValidateKey (webdav/batch.go does).
+// It lives in keyvalidate.go — real production API, not a test-surface
+// alias: adding a //go:build test constraint to the export_*_test_surface
+// files must never be able to break the webdav batch mount.
 
 // Compile-time guard: the executor satisfies the core's op interface.
 var _ batchops.Executor = s3BatchExecutor{}
