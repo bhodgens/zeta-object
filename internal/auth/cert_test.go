@@ -161,6 +161,29 @@ func TestIdentityFromCertificate(t *testing.T) {
 	}
 }
 
+// TestCertAuthenticator_NilRegistryFailsClosed pins that a registry-less
+// adapter returns ErrCertRegistryNil rather than dereferencing nil. Before
+// this guard the zero-value adapter PANICKED inside the request handler, so a
+// wiring slip surfaced as a crash instead of a status. ErrCertRegistryNil is
+// a typed rejection: frontends render it as a client error (401), not a 500.
+func TestCertAuthenticator_NilRegistryFailsClosed(t *testing.T) {
+	a := &CertAuthenticator{}
+	_, knownParsed := issueTestCert(t, "device-1", nil, nil, true)
+
+	if _, err := a.Authenticate(&http.Request{TLS: &tls.ConnectionState{PeerCertificates: []*x509.Certificate{knownParsed}}}); !errors.Is(err, ErrCertRegistryNil) {
+		t.Fatalf("nil registry err = %v, want ErrCertRegistryNil (must not deref nil)", err)
+	}
+	// No peer certificate still short-circuits first (the same rejection a
+	// wired adapter gives, not a registry one).
+	if _, err := a.Authenticate(&http.Request{}); !errors.Is(err, ErrCertMissing) {
+		t.Fatalf("nil registry + no cert err = %v, want ErrCertMissing", err)
+	}
+	// The pure helper behaves identically.
+	if _, err := IdentityFromCertificate(nil, knownParsed); !errors.Is(err, ErrCertRegistryNil) {
+		t.Fatalf("IdentityFromCertificate(nil reg) err = %v, want ErrCertRegistryNil", err)
+	}
+}
+
 // TestCertificateCN pins the diagnostic helper.
 func TestCertificateCN(t *testing.T) {
 	_, parsed := issueTestCert(t, "cn-1", nil, nil, true)

@@ -20,6 +20,9 @@ import (
 
 // Sentinel rejections. Callers must not distinguish them from the Basic
 // sentinels' treatment: all render as the same client error on the wire.
+// ErrCertRegistryNil is the fail-closed answer when the adapter has no
+// registry to consult (see Authenticate) — it is a rejection, NOT an
+// internal fault, so frontends must classify it as a client error.
 var (
 	ErrCertMissing     = errors.New("auth: no client certificate presented")
 	ErrCertUnknownCN   = errors.New("auth: client certificate CN is not a known identity")
@@ -53,12 +56,22 @@ func NewCertAuthenticator(reg certIdentityRegistry) *CertAuthenticator {
 }
 
 // Authenticate implements auth.Authenticator. Rejections are typed:
-// no peer certificate → ErrCertMissing; empty CN or unknown CN →
+// no peer certificate → ErrCertMissing; a registry the adapter cannot
+// consult → ErrCertRegistryNil; empty CN or unknown CN →
 // ErrCertUnknownCN (one sentinel: a probe cannot enumerate device names by
-// distinguishing empty from unknown).
+// distinguishing empty from unknown). Every one of them is a client-side
+// credential rejection: frontends must render all three as 401, never 500.
 func (c *CertAuthenticator) Authenticate(r *http.Request) (Identity, error) {
 	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 		return Identity{}, ErrCertMissing
+	}
+	// Fail closed on a registry-less adapter: construction panics on a nil
+	// registry, so this is only reachable through a zero-value
+	// CertAuthenticator. Denoising must NEVER crash the request handler (a
+	// nil deref here answered as a panic, not a status), and it must not
+	// authenticate either — so it is a typed rejection, not a 500.
+	if c.registry == nil {
+		return Identity{}, ErrCertRegistryNil
 	}
 	cn := r.TLS.PeerCertificates[0].Subject.CommonName
 	if strings.TrimSpace(cn) == "" {
@@ -82,6 +95,9 @@ func IdentityFromCertificate(reg certIdentityRegistry, cert *x509.Certificate) (
 }
 
 func identityForCN(reg certIdentityRegistry, cn string) (Identity, error) {
+	if reg == nil {
+		return Identity{}, ErrCertRegistryNil
+	}
 	if strings.TrimSpace(cn) == "" {
 		return Identity{}, ErrCertUnknownCN
 	}

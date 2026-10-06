@@ -136,7 +136,7 @@ func (f *Frontend) authenticate(w http.ResponseWriter, r *http.Request) (auth.Id
 	if err == nil {
 		return id, true
 	}
-	if errors.Is(err, auth.ErrBasicMissing) || errors.Is(err, auth.ErrBasicMalformed) || errors.Is(err, auth.ErrBadCredentials) || errors.Is(err, auth.ErrBasicUnsupported) {
+	if isCredentialRejection(err) {
 		w.Header().Set("WWW-Authenticate", realm)
 		w.Header().Set("Content-Length", "0")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -146,6 +146,33 @@ func (f *Frontend) authenticate(w http.ResponseWriter, r *http.Request) (auth.Id
 	// the generic error body is the only safe response.
 	writeDavError(w, http.StatusInternalServerError, "")
 	return auth.Identity{}, false
+}
+
+// isCredentialRejection classifies an authenticator error as a client-side
+// credential rejection (⇒ 401 challenge) or as an internal fault (⇒ 500).
+//
+// The predicate is an EXPLICIT allow-list of internal/auth's typed rejection
+// sentinels — never "any error". Both shipped adapters contribute: the four
+// Basic sentinels and the three certificate sentinels, which the mTLS
+// CertAuthenticator returns (ErrCertMissing with no peer certificate,
+// ErrCertUnknownCN for an empty or unregistered CN, ErrCertRegistryNil when
+// the adapter cannot consult a registry — all three fail closed). Listing
+// only the Basic sentinels is what made every certificate rejection answer
+// 500: a denied request read as a server fault, so zeta-cache and every
+// retry/error-budget path retried and alerted on a bad certificate.
+//
+// errors.Is (not ==) so an adapter that annotates a rejection still matches.
+// A new sentinel added in internal/auth must be added here too — that is the
+// single place that decides 401-vs-500, and omitting a sentinel silently
+// re-creates this bug.
+func isCredentialRejection(err error) bool {
+	return errors.Is(err, auth.ErrBasicMissing) ||
+		errors.Is(err, auth.ErrBasicMalformed) ||
+		errors.Is(err, auth.ErrBadCredentials) ||
+		errors.Is(err, auth.ErrBasicUnsupported) ||
+		errors.Is(err, auth.ErrCertMissing) ||
+		errors.Is(err, auth.ErrCertUnknownCN) ||
+		errors.Is(err, auth.ErrCertRegistryNil)
 }
 
 // authorize enforces the identity's grants against the effective bucket
