@@ -172,17 +172,15 @@ func authFailureStatus(failure *authFailureError) int {
 	return httpStatusForbidden
 }
 
-// authenticatedIdentityContextKey is the request-context key under which
-// serveHTTP publishes the authenticated identity so handlers reached through
-// the dispatch switch (which does not thread the identity as a parameter)
-// can enforce per-bucket grants beyond the URL-path bucket — CopyObject's
-// source-bucket check (bughunt S1) is the first consumer.
-type authenticatedIdentityContextKey struct{}
-
-// withAuthenticatedIdentity stores id in ctx under
-// authenticatedIdentityContextKey.
+// withAuthenticatedIdentity stores id in ctx under auth's SHARED identity
+// key (auth.WithIdentity) — the one definition every frontend publishes
+// and reads. The private key type this package used to own
+// (authenticatedIdentityContextKey) let webdav and h3 publish identities
+// that this package's readers — the shared batch executor's principal
+// resolution first among them — could not see, so a ?batch arriving over
+// those mounts stamped owner='unauthenticated' instead of the requester.
 func withAuthenticatedIdentity(ctx context.Context, id auth.Identity) context.Context {
-	return context.WithValue(ctx, authenticatedIdentityContextKey{}, id)
+	return auth.WithIdentity(ctx, id)
 }
 
 // identityOf returns the authenticated identity carried in the request
@@ -196,7 +194,7 @@ func withAuthenticatedIdentity(ctx context.Context, id auth.Identity) context.Co
 // holds a scoped identity, so the CopyObject source-grant check (S1) is
 // live on the wire.
 func identityOf(r *http.Request) auth.Identity {
-	if id, ok := r.Context().Value(authenticatedIdentityContextKey{}).(auth.Identity); ok {
+	if id, ok := auth.IdentityFromContext(r.Context()); ok {
 		return id
 	}
 	return auth.WildcardIdentity("unauthenticated")

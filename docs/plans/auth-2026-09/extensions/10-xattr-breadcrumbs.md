@@ -78,7 +78,14 @@ type PutOptions struct {
 - **Owner:** objectmodel (seam). **Consumers:** fsbackend (stamp), s3
   frontend (populates it).
 - The dispatch layer publishes the authenticated identity into the request
-  context (`withAuthenticatedIdentity`, dispatch.go:98). Write handlers read
+  context under the ONE shared key defined in `internal/auth`
+  (`auth.WithIdentity`, read back with `auth.IdentityFromContext`;
+  `dispatch.go`'s `withAuthenticatedIdentity` is a thin alias). It MUST
+  stay shared, not per-frontend: webdav once published under its own
+  private `identityKey` type, so the shared batch executor resolved no
+  principal for a batch arriving over webdav/h3 and stamped
+  owner='unauthenticated' (found by the live ZFS harness, s15).
+  Write handlers read
   it via `identityOf(r)` and set `opts.Principal = identity.AccessKeyID`:
   - `putObjectHandler` (object_handlers.go:109) - plain PUT.
   - `copyObjectHandler` (object_handlers.go:1409) - the destination Put

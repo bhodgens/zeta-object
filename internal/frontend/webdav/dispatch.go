@@ -5,7 +5,6 @@
 package webdav
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/url"
@@ -21,18 +20,23 @@ const allowHeader = "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, MKCOL, COPY, MOV
 // breaks saved client credentials).
 const realm = `Basic realm="zeta-object"`
 
-// identityKey is the unexported context key threading the authenticated
-// Identity from the auth stage to per-method handlers (documented choice:
-// context over extra parameters, matching the handler-method signatures).
-type identityKey struct{}
-
 // serveHTTP is the pipeline entry.
+//
+// The authenticated identity is published into the request context under
+// auth's SHARED key (auth.WithIdentity) — the one definition every
+// frontend publishes and reads. It used to be this package's own
+// unexported identityKey type, which silently broke every cross-frontend
+// consumer: the JSON ?batch surface is one shared executor in the s3
+// package mounted here too, so a batch arriving over webdav (and over h3,
+// which wraps this handler) resolved no principal and stamped
+// owner='unauthenticated' instead of the requester. Documented choice:
+// context over extra parameters, matching the handler-method signatures.
 func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	identity, ok := f.authenticate(w, r)
 	if !ok {
 		return
 	}
-	ctx := context.WithValue(r.Context(), identityKey{}, identity)
+	ctx := auth.WithIdentity(r.Context(), identity)
 
 	res, ok := f.parseResource(r.URL.Path)
 	if !ok {
@@ -268,8 +272,13 @@ func (f *Frontend) handleOPTIONS(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// identityOf pulls the authenticated identity from the request context.
+// identityOf pulls the authenticated identity from the request context
+// under auth's shared key (see serveHTTP). An absent identity yields the
+// ZERO Identity: this frontend authenticates before authorize, so a
+// missing identity means a wiring bug, and every grant check on the zero
+// identity denies — fail closed, and never silently escalated to the s3
+// frontend's wildcard fallback.
 func identityOf(r *http.Request) auth.Identity {
-	id, _ := r.Context().Value(identityKey{}).(auth.Identity)
+	id, _ := auth.IdentityFromContext(r.Context())
 	return id
 }

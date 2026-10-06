@@ -118,13 +118,15 @@ func (e s3BatchExecutor) itemCtx(ctx context.Context) context.Context {
 
 // batchPrincipal resolves the authenticated principal for the item's
 // context: the AccessKeyID serveHTTP published into the request context
-// (the same seam principalOfRequest reads), so a batch-written object
-// carries the forensic attribution breadcrumbs (user.zeta.owner /
-// user.zeta.writer.*) exactly like a PutObject/CopyObject write. A
-// request that bypassed dispatch degrades to the same legacy wildcard
-// principal identityOf synthesizes — byte-identical to the single-op path.
+// under auth's SHARED key (the same seam principalOfRequest reads), so a
+// batch-written object carries the forensic attribution breadcrumbs
+// (user.zeta.owner / user.zeta.writer.*) exactly like a PutObject/
+// CopyObject write — on EVERY mount that drives this executor, webdav and
+// h3 included. A request that bypassed dispatch degrades to the same
+// legacy wildcard principal identityOf synthesizes — byte-identical to the
+// single-op path.
 func batchPrincipal(ctx context.Context) string {
-	if id, ok := ctx.Value(authenticatedIdentityContextKey{}).(auth.Identity); ok {
+	if id, ok := auth.IdentityFromContext(ctx); ok {
 		return id.AccessKeyID
 	}
 	return auth.WildcardIdentity("unauthenticated").AccessKeyID

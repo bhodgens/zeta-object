@@ -294,7 +294,7 @@ func (f *Frontend) rootEntries(ctx context.Context, depth1, write bool) ([]propf
 		// The bucket row's oc:permissions reflect THIS identity's grant
 		// on that bucket (the identity passed authorization for the
 		// listing, but may hold read-only on individual buckets).
-		id, _ := ctx.Value(identityKey{}).(auth.Identity)
+		id, _ := auth.IdentityFromContext(ctx)
 		out = append(out, propfindEntry{
 			href: f.davPath(child), bucket: b.Name, isColl: true, found: true,
 			write: id.CanWrite(b.Name),
@@ -363,7 +363,7 @@ func (f *Frontend) childEntries(ctx context.Context, res resource, write bool) (
 		if err != nil {
 			return nil, err
 		}
-		id, _ := ctx.Value(identityKey{}).(auth.Identity)
+		id, _ := auth.IdentityFromContext(ctx)
 		for _, b := range buckets {
 			child := resource{bucket: b.Name}
 			out = append(out, propfindEntry{

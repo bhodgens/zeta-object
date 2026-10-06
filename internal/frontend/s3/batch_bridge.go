@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/batchops"
 )
 
@@ -92,5 +93,19 @@ func HandleBatchForBucket(w http.ResponseWriter, r *http.Request, bucketName, bu
 // alias (test-surface file, but the alias is a pure passthrough with no
 // test-only behavior).
 
-// compile-time guard: the executor satisfies the core's op interface.
+// Compile-time guard: the executor satisfies the core's op interface.
 var _ batchops.Executor = s3BatchExecutor{}
+
+// ---------- identity context seam (cross-frontend pins) ----------
+
+// IdentityOfRequestForTest exposes identityOf, the s3 frontend's read path
+// for the shared identity context key, so a cross-package test can prove
+// both frontends read ONE definition (the pin that fails if either side
+// reintroduces a private key type).
+func IdentityOfRequestForTest(r *http.Request) auth.Identity { return identityOf(r) }
+
+// BatchPrincipalForTest exposes batchPrincipal, the batch executor's
+// principal resolution — the reader that produced owner='unauthenticated'
+// for a batch arriving over webdav/h3 while the s3 mount stamped the real
+// requester.
+func BatchPrincipalForTest(ctx context.Context) string { return batchPrincipal(ctx) }
