@@ -6,7 +6,6 @@ package h3
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -69,9 +68,6 @@ func (s *Server) Serve() error {
 
 // Addr returns the bound UDP address (useful for 127.0.0.1:0 tests).
 func (s *Server) Addr() net.Addr { return s.ln.Addr() }
-
-// TLSConfig returns the listener's TLS configuration as built.
-func (f *Frontend) ListenerTLSConfig() *tls.Config { cfg, _ := f.TLSConfig(); return cfg }
 
 // Close gracefully stops the server within a bounded default drain budget:
 // Shutdown first (GOAWAY, in-flight responses finish, socket still open),

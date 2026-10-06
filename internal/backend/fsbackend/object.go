@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -203,13 +204,26 @@ func (f *FS) Get(ctx context.Context, bucket, key string, opts objectmodel.GetOp
 // Stat reads an object's metadata without opening the data file. Serves the
 // ACTUAL file size when it differs from the sidecar (pre-seam leaf-2.4
 // fix 5 semantics).
+//
+// statLocked opens the data file inside its reader-lock region (bughunt B3),
+// so Stat MUST close the descriptor it discards — otherwise every Stat leaked
+// one descriptor, and a caller doing a Stat-per-item operation (a batch
+// delete, a List-then-stat sweep) leaked one per item until the process ran
+// out. The open stays inside the lock: closing early here would not move the
+// open out of statLocked, it would only release the descriptor.
 func (f *FS) Stat(ctx context.Context, bucket, key string) (objectmodel.Object, error) {
 	if err := ctx.Err(); err != nil {
 		return objectmodel.Object{}, err
 	}
-	meta, _, err := f.statLocked(ctx, bucket, key)
+	meta, file, err := f.statLocked(ctx, bucket, key)
 	if err != nil {
 		return objectmodel.Object{}, err
+	}
+	// Best-effort close of a read-only descriptor: a close failure here has
+	// no effect on the stat that was already answered, and the only
+	// observable effect of ignoring it is a log line.
+	if cerr := file.Close(); cerr != nil {
+		log.Printf("fsbackend: stat %s/%s: closing data file: %v", bucket, key, cerr)
 	}
 	return objectFromLegacy(key, meta, meta.ContentLength), nil
 }

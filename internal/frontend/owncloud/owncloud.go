@@ -30,6 +30,7 @@ import (
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/frontend"
+	"github.com/bhodgens/zeta-object/internal/frontend/autherr"
 	"github.com/bhodgens/zeta-object/internal/frontend/webdav"
 )
 
@@ -271,13 +272,22 @@ func (f *Frontend) methodNotAllowed(w http.ResponseWriter, version int) {
 // (classic convention: no valid credentials) — HTTP 401 on v2, HTTP 200
 // on v1 with the statuscode in the envelope. Authenticator-internal
 // failures are a wiring bug: 500 with the generic message.
+//
+// The classification is autherr.IsCredentialRejection — the SAME predicate
+// the wrapped webdav data plane uses (dispatch.go). This package used to
+// carry its own inline copy of the four Basic sentinels, which made every
+// certificate rejection (ErrCertMissing / ErrCertUnknownCN /
+// ErrCertRegistryNil) render as 500 "Internal Server Error" on the OCS
+// surface: latent while the factory wires only Basic auth, live the moment
+// anything puts a CertAuthenticator here. Two wire protocols rendering the
+// same auth adapters must not keep two sentinel lists — see autherr's
+// maintenance rule.
 func (f *Frontend) authenticateOCS(w http.ResponseWriter, version int, r *http.Request) (auth.Identity, bool) {
 	id, err := f.authnr.Authenticate(r)
 	if err == nil {
 		return id, true
 	}
-	if errors.Is(err, auth.ErrBasicMissing) || errors.Is(err, auth.ErrBasicMalformed) ||
-		errors.Is(err, auth.ErrBadCredentials) || errors.Is(err, auth.ErrBasicUnsupported) {
+	if autherr.IsCredentialRejection(err) {
 		writeOCS(w, version, http.StatusUnauthorized, ocsStatusUnauthorised, "Unauthorised", nil)
 		return auth.Identity{}, false
 	}

@@ -218,9 +218,18 @@ func (f *FS) Owner(bucket, key string) (string, bool) {
 	// legacyMeta (canonical data path) for ErrNoSuchKey — the lenient
 	// behavior the best-effort enrichment contract wants; any other read
 	// error likewise degrades to the zero meta below.
-	meta, _, err := f.statLocked(context.Background(), bucket, key)
+	meta, file, err := f.statLocked(context.Background(), bucket, key)
 	if err != nil {
 		meta = legacyMeta{}
+	}
+	// statLocked opens the data file inside its reader-lock region, so the
+	// descriptor this enrichment path never uses MUST be closed — otherwise
+	// owner enrichment over a large prefix leaked one per object (the same
+	// discard-the-reader leak Stat had).
+	if file != nil {
+		if cerr := file.Close(); cerr != nil {
+			log.Printf("fsbackend: owner %s/%s: closing data file: %v", bucket, key, cerr)
+		}
 	}
 	return OwnerXattr(resolveDataPath(bp, key, &meta))
 }
