@@ -235,6 +235,17 @@ func (f *Frontend) propfindEntries(r *http.Request, res resource, depth1, write 
 	if kind == kindMissing {
 		return nil, objectmodel.ErrNoSuchKey(f.davPath(res))
 	}
+	// Delete-marker visibility (the LISTING half of the same rule get.go
+	// applies on GET/HEAD — see markerhide.go): a versioning-Enabled DELETE
+	// records a delete marker and SUPPRESSES the plain delete, so the data
+	// file survives while the object is gone from every plain view. A
+	// Depth-0 PROPFIND of a marker-hidden key must answer the same 404 a
+	// GET answers, never a 207 row for a key the server reports deleted.
+	// The consult FAILS OPEN (a marker-read error still lists the object),
+	// so a torn sidecar can never drop a readable row.
+	if kind == kindFile && f.objectHiddenByDeleteMarker(res.bucket, res.key) {
+		return nil, objectmodel.ErrNoSuchKey(f.davPath(res))
+	}
 	out := []propfindEntry{f.entryFor(ctx, res, obj, kind == kindCollection, write)}
 	if depth1 {
 		children, err := f.childEntries(ctx, res, write)
@@ -337,6 +348,17 @@ func (f *Frontend) childEntries(ctx context.Context, res resource, write bool) (
 	var out []propfindEntry
 	err := f.eachChild(ctx, res.bucket, prefix, func(obj objectmodel.Object) error {
 		child := resource{bucket: res.bucket, key: obj.Key}
+		// Delete-marker visibility, per child row and BEFORE the row is
+		// emitted (see markerhide.go): the List the child came from walks
+		// the backing filesystem, which still holds the data file of a
+		// marker-deleted key. Dropping the row here is what stops a WebDAV
+		// client from syncing back a key the server reports deleted — the
+		// Depth-1 listing is the view clients actually reconcile from.
+		// Fail-open: a marker-read error lists the row (never hide on
+		// error — that would drop real objects during a transient EIO).
+		if f.objectHiddenByDeleteMarker(res.bucket, obj.Key) {
+			return nil
+		}
 		out = append(out, propfindEntry{
 			href: f.davPath(child), bucket: res.bucket, obj: obj, found: true, write: write,
 		})

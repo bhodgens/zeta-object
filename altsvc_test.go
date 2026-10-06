@@ -226,7 +226,9 @@ func TestAltSvc_WiringThroughApply(t *testing.T) {
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})}
-	mux = applyAltSvcAdvertisement(mux, nil, []frontendMount{{frontend: q}}, []*http.Server{srv})
+	// The returned mux is deliberately discarded: the wiring mutates
+	// srv.Handler in place, and the assertion below reads it there.
+	_ = applyAltSvcAdvertisement(mux, nil, []frontendMount{{frontend: q}}, []*http.Server{srv})
 	rec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if got := rec.Header().Get("Alt-Svc"); got != `h3=":9443"; persist=1` {

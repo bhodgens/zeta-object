@@ -113,13 +113,20 @@ func (e *verParityEnv) davDelete(key string) int {
 // davMove MOVEs (renames) the key through the webdav handler.
 func (e *verParityEnv) davMove(src, dst string) {
 	e.t.Helper()
+	if code := e.davMoveStatus(src, dst); code != http.StatusCreated {
+		e.t.Fatalf("webdav MOVE %s -> %s: status = %d, want 201", src, dst, code)
+	}
+}
+
+// davMoveStatus MOVEs and RETURNS the status (the conflict-class pins assert
+// non-201 statuses; davMove stays the happy-path form).
+func (e *verParityEnv) davMoveStatus(src, dst string) int {
+	e.t.Helper()
 	req := httptest.NewRequest("MOVE", "/"+src, nil)
 	req.Header.Set("Destination", "/"+dst)
 	w := httptest.NewRecorder()
 	e.f.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusCreated {
-		e.t.Fatalf("webdav MOVE %s -> %s: status = %d, want 201", src, dst, w.Code)
-	}
+	return w.Code
 }
 
 // TestWebdavPUTParity_WithS3PUT drives BOTH wire paths against one

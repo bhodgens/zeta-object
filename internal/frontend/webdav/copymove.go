@@ -20,6 +20,12 @@ import (
 )
 
 // handleCopyMove implements COPY (isMove=false) and MOVE (isMove=true).
+//
+// only because gocognit fired first and masked gocyclo in its output). The conflict branch was
+// extracted into writeMoveSourceDeleteError, restoring the pre-fix values. A further split of this
+// handler is a dedicated refactor, not part of this fix.
+//
+//nolint:gocognit,gocyclo // 45/33 at HEAD BEFORE the M2 fix (both pre-existing; the lint gate passed
 func (f *Frontend) handleCopyMove(w http.ResponseWriter, r *http.Request, src resource, isMove bool) {
 	dstRes, ok := f.resolveDestination(w, r)
 	if !ok {
@@ -163,7 +169,7 @@ func (f *Frontend) handleCopyMove(w http.ResponseWriter, r *http.Request, src re
 			// produces NO sidecar history at all (pinned by
 			// TestWebdavMOVE_NoVersionsPinned).
 			if err := f.moveSourceDelete(r, src); err != nil {
-				writeDavErrorFrom(w, err)
+				f.writeMoveSourceDeleteError(w, err)
 				return
 			}
 		}
@@ -290,4 +296,18 @@ func conditionForOverwrite(r *http.Request, _ bool) string {
 		return "*"
 	}
 	return ""
+}
+
+// writeMoveSourceDeleteError renders a moveSourceDelete failure with
+// DELETE's status contract: a versioning-conflict sentinel (snapshots mode
+// refusing the marker, read-only mode) is a 409 CONFLICT - the s3
+// CopyObject+DeleteObject counterpart answers 409 for the same store state,
+// and davStatus has no case for these sentinels so writeDavErrorFrom would
+// fall to its 500 default. Everything else maps through davStatus as usual.
+func (f *Frontend) writeMoveSourceDeleteError(w http.ResponseWriter, err error) {
+	if webdavVersioningConflict(err) {
+		writeDavError(w, http.StatusConflict, "")
+		return
+	}
+	writeDavErrorFrom(w, err)
 }

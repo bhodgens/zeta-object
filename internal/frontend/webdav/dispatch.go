@@ -5,12 +5,12 @@
 package webdav
 
 import (
-	"errors"
 	"net/http"
 	"net/url"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/frontend"
+	"github.com/bhodgens/zeta-object/internal/frontend/autherr"
 )
 
 // allowHeader is the Allow value advertised on OPTIONS and on 405s.
@@ -155,28 +155,26 @@ func (f *Frontend) authenticate(w http.ResponseWriter, r *http.Request) (auth.Id
 // isCredentialRejection classifies an authenticator error as a client-side
 // credential rejection (⇒ 401 challenge) or as an internal fault (⇒ 500).
 //
-// The predicate is an EXPLICIT allow-list of internal/auth's typed rejection
-// sentinels — never "any error". Both shipped adapters contribute: the four
-// Basic sentinels and the three certificate sentinels, which the mTLS
-// CertAuthenticator returns (ErrCertMissing with no peer certificate,
-// ErrCertUnknownCN for an empty or unregistered CN, ErrCertRegistryNil when
-// the adapter cannot consult a registry — all three fail closed). Listing
-// only the Basic sentinels is what made every certificate rejection answer
-// 500: a denied request read as a server fault, so zeta-cache and every
-// retry/error-budget path retried and alerted on a bad certificate.
+// The predicate is NOT this package's to decide: it delegates to
+// autherr.IsCredentialRejection, the ONE allow-list of internal/auth's typed
+// rejection sentinels, which the owncloud OCS surface classifies through too.
+// Two wire protocols rendering the same auth adapters must not keep two
+// sentinel lists — a list kept in each package goes stale in one of them, and
+// the failure mode is silent and expensive. This package used to carry its
+// own inline copy (autherr did not exist yet), which is what let a sentinel
+// added later answer 500 on this surface while the owncloud surface answered
+// 401 for the identical error. It is still an EXPLICIT allow-list, never
+// "any error": a non-sentinel authenticator failure is a wiring/lookup fault
+// and must stay 500.
 //
-// errors.Is (not ==) so an adapter that annotates a rejection still matches.
-// A new sentinel added in internal/auth must be added here too — that is the
-// single place that decides 401-vs-500, and omitting a sentinel silently
-// re-creates this bug.
+// errors.Is (not ==) so an adapter that annotates a rejection still matches
+// (that is autherr's rule, and it holds here for the same reason).
+//
+// MAINTENANCE RULE (autherr's, not this package's): a new sentinel declared
+// in internal/auth belongs in internal/frontend/autherr in the SAME change,
+// plus a wire test on every frontend that renders 401 from it.
 func isCredentialRejection(err error) bool {
-	return errors.Is(err, auth.ErrBasicMissing) ||
-		errors.Is(err, auth.ErrBasicMalformed) ||
-		errors.Is(err, auth.ErrBadCredentials) ||
-		errors.Is(err, auth.ErrBasicUnsupported) ||
-		errors.Is(err, auth.ErrCertMissing) ||
-		errors.Is(err, auth.ErrCertUnknownCN) ||
-		errors.Is(err, auth.ErrCertRegistryNil)
+	return autherr.IsCredentialRejection(err)
 }
 
 // authorize enforces the identity's grants against the effective bucket
