@@ -139,7 +139,7 @@ func probeH3(c *check, base, objURL, certFile, keyFile string) int {
 	withCert, errOpen := loadClientCert(certFile, keyFile)
 	tlsOK := &tls.Config{
 		MinVersion:         tls.VersionTLS13,
-		InsecureSkipVerify: true, // e2e: the server cert is self-signed
+		InsecureSkipVerify: true, //nolint:gosec // e2e: the server cert is self-signed
 		ServerName:         "localhost",
 	}
 	if errOpen == nil {
@@ -220,7 +220,7 @@ func probeH3(c *check, base, objURL, certFile, keyFile string) int {
 
 	// --- negative path: NO client certificate -> TLS HANDSHAKE FAILS -----
 	assertHandshakeReject(c, base, "h3 no client cert -> handshake failure (no HTTP 401 over h3)",
-		&tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true, ServerName: "localhost"})
+		&tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true, ServerName: "localhost"}) //nolint:gosec // e2e probe: self-signed server cert
 
 	// --- negative path: WRONG-CA certificate -> same handshake failure ---
 	if errOpen == nil {
@@ -235,7 +235,7 @@ func probeH3(c *check, base, objURL, certFile, keyFile string) int {
 				assertHandshakeReject(c, base, "h3 wrong-CA cert -> handshake failure",
 					&tls.Config{
 						MinVersion:         tls.VersionTLS13,
-						InsecureSkipVerify: true,
+						InsecureSkipVerify: true, //nolint:gosec // e2e probe: self-signed server cert
 						ServerName:         "localhost",
 						Certificates:       []tls.Certificate{rogue},
 					})
@@ -524,8 +524,8 @@ func probeFetch(c *check, base, objURL, certFile, keyFile, method, body string) 
 // baseLeaf returns the last path segment (the object name) of key.
 func baseLeaf(key string) string {
 	k := strings.TrimSuffix(key, "/")
-	if i := strings.LastIndex(k, "/"); i >= 0 {
-		return k[i+1:]
+	if _, leaf, found := strings.CutLast(k, "/"); found {
+		return leaf
 	}
 	return k
 }

@@ -138,7 +138,9 @@ E38_H3_URL="https://127.0.0.1:$E38_PORT_H3"
 E38_WD_URL="https://127.0.0.1:$E38_PORT_WD"
 
 # --- 38a+38b: probe h3 mode (cert asserts + handshake rejections) --------------
-E38_OUT=$(go run ./scripts/e2e/h3probe -mode h3 \
+E38_OUT=$(# -mod=mod: cases 12/13 create vendor/ mid-suite; Go then treats vendor/ as
+# a vendor tree and dies on the missing modules.txt.
+go run -mod=mod ./scripts/e2e/h3probe -mode h3 \
 	-url "$E38_H3_URL" \
 	-cert "$E38_CERT/client.pem" -key "$E38_CERT/client-key.pem" 2>&1)
 E38_RC=$?
@@ -155,7 +157,7 @@ case "$E38_OUT" in
 esac
 
 # --- 38c: probe tcp mode (401 + Alt-Svc + Range parity) -------------------------
-E38_TOUT=$(go run ./scripts/e2e/h3probe -mode tcp \
+E38_TOUT=$(go run -mod=mod ./scripts/e2e/h3probe -mode tcp \
 	-url "$E38_WD_URL" \
 	-user "$E38_USER" -pass "$E38_PASS" \
 	-port-h3 "$E38_PORT_H3" 2>&1)
