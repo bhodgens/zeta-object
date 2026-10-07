@@ -22,7 +22,7 @@ GO_TOOLS_MISSING :=
 .PHONY: help build run admin-server certs data_dir clean \
         test test-verbose test-race test-cover test-cover-enforce fuzz bench \
         lint vet fmt fmt-check mod-tidy mod-tidy-check mod-verify \
-        precommit check vuln secrets e2e hooks
+        precommit check vuln secrets e2e hooks zeta-cache
 
 help:
 	@echo "Usage: make [target]"
@@ -97,9 +97,19 @@ certs:
 data_dir:
 	@mkdir -p data
 
+# zeta-cache: the client cache daemon, its OWN Go module in zeta-cache/
+# (independent of the gateway module - the root module must not gain it as
+# a dependency). CGO banned repo-wide: modernc.org/sqlite, static binary.
+ZETA_CACHE_BIN := zeta-cache-bin
+
+zeta-cache:
+	@echo "Building $(ZETA_CACHE_BIN) (CGO_ENABLED=0)..."
+	@cd zeta-cache && CGO_ENABLED=0 go build -o ../$(ZETA_CACHE_BIN) .
+	@echo "$(ZETA_CACHE_BIN) built successfully."
+
 clean:
 	@echo "Cleaning up..."
-	@rm -f $(BINARY_NAME) $(ADMIN_BINARY_NAME) coverage.out coverage.html
+	@rm -f $(BINARY_NAME) $(ADMIN_BINARY_NAME) $(ZETA_CACHE_BIN) coverage.out coverage.html
 	@rm -rf coverage
 	@echo "Cleanup complete."
 

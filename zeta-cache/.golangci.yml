@@ -1,0 +1,64 @@
+# golangci-lint configuration for the zeta-cache module.
+# Mirrors the repo-root .golangci.yml baseline; zeta-cache is a separate Go
+# module, so the root lint run does not reach it and this file is what
+# `golangci-lint run` picks up inside zeta-cache/.
+
+version: "2"
+
+linters:
+  enable:
+    # Bugs & correctness
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - errcheck
+    - errname
+    - errorlint
+    - govet
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - staticcheck
+    - unused
+    - wastedassign
+
+    # Security
+    - gosec
+
+    # Performance
+    - unconvert
+
+    # Style & readability
+    - misspell
+    - intrange
+    - modernize
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+      - common-false-positives
+    rules:
+      - path: _test\.go
+        linters:
+          - bodyclose
+          - errcheck
+          - gosec
+          - nilnil
+
+  settings:
+    gosec:
+      excludes:
+        # G304 (file path provided as taint input) - config and DB paths
+        # are inherently user-supplied by design (same exclusion rationale
+        # as the root config).
+        - G304
+        # G306 (file perms) - the daemon is a per-user client process; the
+        # socket itself is chmod 0600 explicitly.
+        - G306
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 5
+  fix: false

@@ -42,6 +42,16 @@ jobs:
           go build ./...
           go vet ./...
 
+      # zeta-cache is a SEPARATE Go module (zeta-cache/); the root build
+      # above does not reach it. CGO_ENABLED=0 proves the repo-wide no-cgo
+      # law (SQLite via modernc.org/sqlite).
+      - name: Build zeta-cache module (CGO_ENABLED=0)
+        run: |
+          cd zeta-cache
+          go build ./...
+          go vet ./...
+          CGO_ENABLED=0 go build -o ../zeta-cache-bin .
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -58,6 +68,15 @@ jobs:
           # v2.14.0 binaries are built with go1.27 and accept the go 1.26
           # module required by golang.org/x/crypto v0.56+ (govulncheck
           # GO-2026-6355/6354); v2.6.0 is go1.24-built and rejects it.
+          version: v2.14.0
+
+      # zeta-cache is its own module, so the root lint run does not cover
+      # it. It carries its own .golangci.yml (mirror of the root baseline).
+      - name: Lint zeta-cache module (golangci-lint)
+        uses: golangci/golangci-lint-action@v7
+        with:
+          working-directory: zeta-cache
+          args: ./...
           version: v2.14.0
 
   test:
@@ -173,6 +192,14 @@ jobs:
           sudo /tmp/aws/install --update
           aws --version
           getfattr --version
+
+      # Case 40 shells out to the zeta-cache binary and builds it from its
+      # own module (zeta-cache/go.mod); setup-go installed the toolchain
+      # from the root go.mod, which declares the same go 1.27.0, so the
+      # in-case build just works. Verify that here so a future toolchain
+      # split fails here, not mid-case.
+      - name: Build zeta-cache for case 40
+        run: cd zeta-cache && go build ./...
 
       - name: E2E suite
         run: make e2e

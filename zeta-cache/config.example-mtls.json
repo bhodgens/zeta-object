@@ -1,0 +1,15 @@
+{
+  "serverUrl": "https://zeta.example.net:8443",
+  "bucket": "my-bucket",
+  "auth": {
+    "clientCert": "/Users/me/.config/zeta-cache/device.pem",
+    "clientKey": "/Users/me/.config/zeta-cache/device-key.pem"
+  },
+  "mountpoint": "/Volumes/zeta",
+  "quota": {
+    "maxCacheBytes": 53687091200,
+    "minFreeDeviceBytes": 1073741824,
+    "policy": "lru"
+  },
+  "pins": ["projects/active/"]
+}
