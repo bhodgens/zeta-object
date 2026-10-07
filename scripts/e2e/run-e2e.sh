@@ -6,6 +6,11 @@
 # - launches the server on a FREE port (detected, never a fixed 8443)
 # - sources cases/*.sh in lexical order; each case creates + cleans its buckets
 # - prints a per-case PASS/FAIL table; exits non-zero on any failure
+#
+# ONE CASE ONLY: scripts/e2e/run-one.sh <case-name-without-.sh> runs a single
+# case against its own fresh server, port and temp dataDir, and prints the
+# server log on failure. This suite runs all 40 in order, so it is the wrong
+# tool for iterating on one.
 set -u
 
 E2E_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

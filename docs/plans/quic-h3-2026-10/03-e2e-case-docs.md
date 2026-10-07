@@ -220,5 +220,7 @@ Output: APPROVED or specific gaps with file:line.
   quic-go's client API fights the probe, record the exact friction
   in the report - leaf 04's harness checks reuse the probe, so its
   ergonomics are load-bearing.
-- `run-one.sh` in scripts/e2e/ is UNTRACKED sibling WIP - use it if
-  helpful for local iteration, never stage it.
+- `scripts/e2e/run-one.sh` runs ONE case against a fresh scratch server
+  (fresh temp dataDir, fresh port, its own cert) and prints the server log on
+  failure - the fast path when the 40-case suite is too coarse to iterate
+  against. `./scripts/e2e/run-one.sh <case-name-without-.sh>`.
