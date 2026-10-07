@@ -2548,11 +2548,16 @@ check("s15 webdav ?events&versions entries are NOT delete markers here",
 S15_DEL = "s15-webdav-del.txt"
 purge(S15_DEL)
 _c, _ = wd("PUT", "/" + S15_DEL, data=b"s15-del-v1")
-check("s15 setup PUT v1 -> 200", _c == 200, f"status={_c}")
+# The setup seeds assert the RFC 4918 pair (201 Created on create, 204 No
+# Content on overwrite), NOT 200. 549d238 added these seven asserts demanding
+# 200 from a WebDAV PUT, which RFC 4918 never returns - so they failed on
+# every run while the seeds themselves worked. WebDAV PUT is not S3 PUT: the
+# sibling seeds in this same section already asserted 201/204 correctly.
+check("s15 setup PUT v1 -> 201/204 (webdav create)", _c in (201, 204), f"status={_c}")
 _c, _ = wd("PUT", "/" + S15_DEL, data=b"s15-del-v2")   # -> one captured version (v1)
-check("s15 setup PUT v2 -> 200", _c == 200, f"status={_c}")
+check("s15 setup PUT v2 -> 201/204 (webdav overwrite)", _c in (201, 204), f"status={_c}")
 _c, _ = wd("PUT", "/" + S15_DEL, data=b"s15-del-v3")   # -> a second (v2)
-check("s15 setup PUT v3 -> 200", _c == 200, f"status={_c}")
+check("s15 setup PUT v3 -> 201/204 (webdav overwrite)", _c in (201, 204), f"status={_c}")
 del_code, _ = wd("DELETE", "/" + S15_DEL)
 check("s15 webdav DELETE on a versioned bucket -> 204", del_code == 204,
       f"status={del_code}")
@@ -2580,6 +2585,44 @@ del_st, del_ents = s3_versions_for(S15_DEL)
 check("s15 ?versions shows a DELETE MARKER for the deleted key",
       del_st == 200 and any(e["marker"] for e in del_ents),
       f"status={del_st} entries={del_ents}")
+
+# ---- 15b-bis. the S3 XML manifest delete surface (bughunt 2026-10-06 M1) ----
+# POST /{bucket}?delete used to call deleteObjectCore directly and HARD-DELETE
+# on a versioning-Enabled bucket, where a single DELETE writes a recoverable
+# marker. Same bucket, same key, two delete semantics, one unrecoverable. The
+# checks above cover the webdav arm; this covers the s3 manifest arm on real
+# ZFS, because that is where the marker store lives.
+#
+# SigV4 via sign_on (the section's own idiom for the s3 surface - h3probe
+# speaks QUIC/H3 and Basic auth, neither of which applies here).
+S15_MDEL = "s15-s3-del.txt"
+purge(S15_MDEL)
+for _v, _label in ((b"s15-s3-del-v1", "create"), (b"s15-s3-del-v2", "overwrite")):
+    _ps, _ph, _pb = sign_on(PORT_S3, "PUT", f"/{BUCKET}/{S15_MDEL}", payload=_v)
+    check(f"s15 s3-manifest seed PUT ({_label}) -> 200", _ps == 200, f"status={_ps}")
+
+_md = "<Delete><Object><Key>%s</Key></Object></Delete>" % S15_MDEL
+_ds, _dh, _db = sign_on(PORT_S3, "POST", f"/{BUCKET}", query="delete",
+                        payload=_md.encode(), content_type="application/xml")
+check("s15 POST /{bucket}?delete over s3 -> 200", _ds == 200, f"status={_ds}")
+
+# THE M1 ASSERT: the manifest delete must record a delete marker, not destroy
+# the bytes. ?versions is the ground truth for what the store now holds.
+_vs, _vh, _vb = sign_on(PORT_S3, "GET", f"/{BUCKET}", query="versions")
+check("s15 ?versions after the manifest delete -> 200", _vs == 200, f"status={_vs}")
+_vxml = _vb.decode("utf-8", "replace") if isinstance(_vb, bytes) else _vb
+check("s15 ?versions shows a DELETE MARKER for the manifest-deleted key",
+      ("<Key>%s</Key>" % S15_MDEL) in _vxml and "<DeleteMarker>" in _vxml,
+      "no delete marker in the version listing for the ?delete key")
+
+# And the bytes must still be on disk: a hard delete would have removed them.
+_gone = sh("test -e %s/%s && echo present || echo absent" % (BUCKET_ROOT, S15_MDEL))
+check("s15 the manifest delete PRESERVED the bytes (data file survives)",
+      _gone.strip() == "present", _gone.strip())
+# A plain GET must answer the marker 404, matching the single-DELETE arm.
+_gs, _gh, _gb = sign_on(PORT_S3, "GET", f"/{BUCKET}/{S15_MDEL}")
+check("s15 GET after the manifest delete -> 404 (marker hides the key)",
+      _gs == 404, f"status={_gs}")
 # Recency is carried by IsLatest, NOT by document position: the renderer
 # appends the key's Versions and DeleteMarkers as two separate arrays
 # (versions_listing.go), so the marker can be emitted after the versions
@@ -2776,9 +2819,9 @@ S15_CP_SRC = "s15-cp-src.txt"
 S15_CP_DST = "s15-cp-dst.txt"
 purge(S15_CP_SRC); purge(S15_CP_DST)
 _c, _ = wd("PUT", "/" + S15_CP_SRC, data=b"s15-cp-v1")
-check("s15 setup COPY-source PUT v1 -> 200", _c == 200, f"status={_c}")
+check("s15 setup COPY-source PUT v1 -> 201/204 (webdav create)", _c in (201, 204), f"status={_c}")
 _c, _ = wd("PUT", "/" + S15_CP_SRC, data=b"s15-cp-v2")   # one recorded version
-check("s15 setup COPY-source PUT v2 -> 200", _c == 200, f"status={_c}")
+check("s15 setup COPY-source PUT v2 -> 201/204 (webdav overwrite)", _c in (201, 204), f"status={_c}")
 c_code, _ = wd("COPY", "/" + S15_CP_SRC,
                hdrs=["Destination: /" + S15_CP_DST])
 check("s15 webdav COPY -> 201/204", c_code in (201, 204), f"status={c_code}")
@@ -2795,9 +2838,9 @@ check("s15 the COPY SOURCE kept its own single version (copy is not a write "
 # (a bare-named object whose last segment matches the collection's).
 sh("mkdir -p %s/s15-coll/nested" % BUCKET_ROOT)
 _c, _ = wd("PUT", "/s15-coll/report.txt", data=b"s15-other-object")
-check("s15 setup decoy PUT s15-coll/report.txt -> 200", _c == 200, f"status={_c}")
+check("s15 setup decoy PUT s15-coll/report.txt -> 201/204 (webdav create)", _c in (201, 204), f"status={_c}")
 _c, _ = wd("PUT", "/report", data=b"s15-bare-report")
-check("s15 setup decoy PUT /report -> 200", _c == 200, f"status={_c}")
+check("s15 setup decoy PUT /report -> 201/204 (webdav create)", _c in (201, 204), f"status={_c}")
 force_collect(1.5)
 coll_code, coll_body = wd("GET", "/s15-coll/nested/?events")
 check("s15 ?events on a nested webdav collection -> 200", coll_code == 200,
