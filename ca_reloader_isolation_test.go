@@ -40,10 +40,10 @@ import (
 // fsbackendForTest builds the backend argument the frontend factories take,
 // over the test's dataDir — the same construction
 // buildH3FrontendThroughFactory performs (fsbackend.New over
-// serverConfig.DataDir), factored out so both call sites share one shape.
+// serverConfig().DataDir), factored out so both call sites share one shape.
 func fsbackendForTest(t *testing.T) (backend.Backend, error) {
 	t.Helper()
-	return fsbackend.New(strings.TrimSuffix(serverConfig.DataDir, "/"))
+	return fsbackend.New(strings.TrimSuffix(serverConfig().DataDir, "/"))
 }
 
 // isolateClientCAReloaders empties the process-global client-CA reloader

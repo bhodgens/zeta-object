@@ -146,12 +146,12 @@ func TestAdminWiringReloadAuthReloadsIdentitiesAndCA(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prevPath, prevReg, prevCfg, prevCreds := serverConfigPath, identityRegistry, serverConfig, serverCredentials
+	prevPath, prevReg, prevCfg, prevCreds := serverConfigPath, identityRegistry, *serverConfig(), serverCredentials
 	t.Cleanup(func() {
-		serverConfigPath, identityRegistry, serverConfig, serverCredentials = prevPath, prevReg, prevCfg, prevCreds
+		serverConfigPath, identityRegistry, *serverConfig(), serverCredentials = prevPath, prevReg, prevCfg, prevCreds
 	})
 	serverConfigPath = path
-	serverConfig = defaultServerConfig()
+	setServerConfig(defaultServerConfig())
 	reg, err := auth.NewMultiRegistry(nil)
 	if err != nil {
 		t.Fatalf("registry: %v", err)

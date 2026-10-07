@@ -1,7 +1,7 @@
 package main
 
 // zfs_wiring_test.go — leaf 03 (zfs-bucket-datasets) startup wiring
-// tests: with serverConfig.ZfsBucketDatasets true, installS3Seams
+// tests: with serverConfig().ZfsBucketDatasets true, installS3Seams
 // installs the s3 dataset provisioner (hooks non-nil) from the
 // startup-resolved zfsBucketsParentDataset; with the feature off the
 // hooks stay nil and nothing else changes.
@@ -20,18 +20,18 @@ func TestInstallS3SeamsZfsBucketDatasetsOn(t *testing.T) {
 		s3.ClearZfsBucketDatasetParent()
 	})
 
-	origCfg := serverConfig
-	t.Cleanup(func() { serverConfig = origCfg })
+	origCfg := *serverConfig()
+	t.Cleanup(func() { setServerConfig(origCfg) })
 	// Save/restore the startup-resolved parent: it is a process global, and
 	// leaving "pool/data" behind makes any LATER test's "no parent
 	// configured" premise false (the shuffle-order failure this fix closes).
 	origParent := zfsBucketsParentDataset
 	t.Cleanup(func() { zfsBucketsParentDataset = origParent })
-	serverConfig = ServerConfig{
+	setServerConfig(ServerConfig{
 		DataDir:           t.TempDir() + "/",
 		ZfsBucketDatasets: true,
 		ZfsBinary:         "zfs",
-	}
+	})
 	zfsBucketsParentDataset = "pool/data"
 
 	s3.UninstallZfsDatasetProvisioner()
@@ -53,15 +53,15 @@ func TestInstallS3SeamsZfsBucketDatasetsOff(t *testing.T) {
 		s3.ClearZfsBucketDatasetParent()
 	})
 
-	origCfg := serverConfig
-	t.Cleanup(func() { serverConfig = origCfg })
+	origCfg := *serverConfig()
+	t.Cleanup(func() { setServerConfig(origCfg) })
 	origParent := zfsBucketsParentDataset
 	t.Cleanup(func() { zfsBucketsParentDataset = origParent })
-	serverConfig = ServerConfig{
+	setServerConfig(ServerConfig{
 		DataDir:           t.TempDir() + "/",
 		ZfsBucketDatasets: false,
 		ZfsBinary:         "zfs",
-	}
+	})
 	zfsBucketsParentDataset = ""
 
 	s3.UninstallZfsDatasetProvisioner()

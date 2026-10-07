@@ -9,10 +9,7 @@ import "github.com/bhodgens/zeta-object/internal/backend"
 // serverConfig on first use. In production main() installs the lookup
 // before the listener opens; this lazy path only serves tests.
 func lazyDefaultBackendFor(bucket string) (backend.Backend, error) {
-	configMu.RLock()
-	cfgCopy := serverConfig
-	configMu.RUnlock()
-	lookup, err := buildBackendLookup(cfgCopy)
+	lookup, err := buildBackendLookup(*serverConfig())
 	if err != nil {
 		return nil, err
 	}

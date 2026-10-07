@@ -27,14 +27,14 @@ func setupTestEnv(t *testing.T) *testEnv {
 	env := &testEnv{dataDir: tmpDir}
 
 	// Save original config
-	env.origConfig = serverConfig
-	serverConfig = ServerConfig{
+	env.origConfig = *serverConfig()
+	setServerConfig(ServerConfig{
 		DataDir: tmpDir + "/",
 		Buckets: make(map[string]string),
-	}
+	})
 
 	t.Cleanup(func() {
-		serverConfig = env.origConfig
+		setServerConfig(env.origConfig)
 	})
 
 	return env
@@ -1722,7 +1722,7 @@ func TestPutObjectHandler_DecodedLengthMismatch(t *testing.T) {
 
 func (env *testEnv) serverConfigBuckets(t *testing.T, buckets map[string]string) {
 	t.Helper()
-	serverConfig.Buckets = buckets
+	setServerConfigField(func(c *ServerConfig) { c.Buckets = buckets })
 	_ = env
 }
 

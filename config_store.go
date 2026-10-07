@@ -102,7 +102,7 @@ var configStore *ConfigStore
 // loaded server configuration. main() calls it after loadCredentials, so the
 // store sees the resolved env-pair credential it masks on read.
 func initConfigStore() *ConfigStore {
-	configStore = NewConfigStore(&serverConfig)
+	configStore = NewConfigStore(serverConfig())
 	return configStore
 }
 

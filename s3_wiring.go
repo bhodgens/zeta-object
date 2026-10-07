@@ -235,14 +235,13 @@ func applyHotSeams(cfg *ServerConfig) error {
 // global; the s3 frontend reaches the same math through its injected fs-root
 // resolver from the installed configuration.
 func getBucketPath(bucketName string) string {
-	// Hold the read lock ACROSS the resolution: a config reload (POST
-	// /auth/reload, SIGHUP) replaces the global while request goroutines
-	// resolve bucket paths - the exact race -race flagged on CI (loadConfig
-	// write vs this read). Returning a pointer with the lock released would
-	// re-open the race on the field reads, so the math runs under the lock.
-	configMu.RLock()
-	defer configMu.RUnlock()
-	return bucketPathFor(&serverConfig, bucketName)
+	// Snapshot through the atomic pointer: a config reload (POST
+	// /auth/reload, SIGHUP) swaps the generation while request goroutines
+	// resolve bucket paths — the exact race -race flagged on CI (the
+	// loadConfig write vs this read). The returned pointer is one complete
+	// config generation, so the field reads can never observe a torn
+	// across-generation view.
+	return bucketPathFor(serverConfig(), bucketName)
 }
 
 // bucketPathFor is getBucketPath's math against an EXPLICIT configuration
@@ -314,7 +313,7 @@ func startMultipartExpirySweeper() {
 // back to plain dirs. Feature off (the default): hooks stay nil and the
 // legacy plain-dir path runs byte-identically.
 func installZfsDatasetProvisionerIfNeeded() {
-	if err := installZfsDatasetProvisionerFor(&serverConfig); err != nil {
+	if err := installZfsDatasetProvisionerFor(serverConfig()); err != nil {
 		log.Fatalf("ZFS bucket datasets provisioning install failed: %v", err)
 	}
 }

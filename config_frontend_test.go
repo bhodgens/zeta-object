@@ -16,7 +16,7 @@ func writeTempConfig(t *testing.T, content string) string {
 	return path
 }
 
-// loadConfigForTest loads a config file into the serverConfig global and
+// loadConfigForTest loads a config file into the *serverConfig() global and
 // returns the normalized result. loadConfig keeps its landed signature
 // (error-only, global-populating) — see drift note in the leaf report.
 func loadConfigForTest(t *testing.T, path string) ServerConfig {
@@ -24,7 +24,7 @@ func loadConfigForTest(t *testing.T, path string) ServerConfig {
 	if err := loadConfig(path); err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	return serverConfig
+	return *serverConfig()
 }
 
 func TestLoadConfig_Frontends(t *testing.T) {

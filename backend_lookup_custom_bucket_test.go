@@ -121,7 +121,7 @@ func TestGetBucketPathCustomAndDefault(t *testing.T) {
 }
 
 // getBucketPathForTest applies getBucketPath's precedence to an explicit
-// config (the production getBucketPath reads serverConfig; tests here must
+// config (the production getBucketPath reads *serverConfig(); tests here must
 // stay hermetic).
 func getBucketPathForTest(cfg ServerConfig, bucket string) string {
 	if p, ok := cfg.Buckets[bucket]; ok {

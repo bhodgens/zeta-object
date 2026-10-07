@@ -141,8 +141,8 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 			ClientCAFile:     cfg.Options["clientCAFile"],
 			AdminPrincipals:  splitOptionList(cfg.Options["adminPrincipals"]),
 			AllowNonLoopback: cfg.Options["allowNonLoopback"] == "true",
-			CertFile:         serverConfig.CertFile,
-			KeyFile:          serverConfig.KeyFile,
+			CertFile:         serverConfig().CertFile,
+			KeyFile:          serverConfig().KeyFile,
 			Services:         wiring.services,
 			Audit:            wiring.audit,
 		})
@@ -182,8 +182,8 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 			ListenAddr:   cfg.ListenAddr,
 			Bucket:       cfg.Bucket,
 			ClientCAFile: cfg.Options["clientCAFile"],
-			CertFile:     serverConfig.CertFile,
-			KeyFile:      serverConfig.KeyFile,
+			CertFile:     serverConfig().CertFile,
+			KeyFile:      serverConfig().KeyFile,
 		}, identityRegistry, getBucketPath)
 		if err != nil {
 			return nil, err
@@ -322,7 +322,7 @@ func (p *perBucketBackend) Capabilities() objectmodel.CapabilitySet {
 // loadServerTLSCertPair loads the server certFile/keyFile for FTP AUTH TLS
 // (explicit TLS reuses the HTTPS cert pair — no new config keys).
 func loadServerTLSCertPair() (*tls.Config, error) {
-	cert, err := tls.LoadX509KeyPair(serverConfig.CertFile, serverConfig.KeyFile)
+	cert, err := tls.LoadX509KeyPair(serverConfig().CertFile, serverConfig().KeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("ftp frontend: loading certFile/keyFile for AUTH TLS: %w", err)
 	}

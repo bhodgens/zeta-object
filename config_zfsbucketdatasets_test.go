@@ -80,7 +80,7 @@ func TestConfigZfsBucketDatasetsKeysDecode(t *testing.T) {
 				t.Fatalf("loadConfig(%s): %v", tc.json, err)
 			}
 			if tc.verify != nil {
-				tc.verify(t, serverConfig)
+				tc.verify(t, *serverConfig())
 			}
 		})
 	}

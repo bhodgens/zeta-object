@@ -257,9 +257,9 @@ func TestInitializeInactivityTimersValidBucket(t *testing.T) {
 		"inactivity_timeout": {"duration": "1s", "command": "echo idle-bucket"}
 	}`)
 
-	origConfig := serverConfig
-	serverConfig = ServerConfig{DataDir: dataDir}
-	t.Cleanup(func() { serverConfig = origConfig })
+	origConfig := *serverConfig()
+	setServerConfig(ServerConfig{DataDir: dataDir})
+	t.Cleanup(func() { setServerConfig(origConfig) })
 
 	tr := newTestTracker()
 	setGlobalTracker(t, tr)
@@ -325,9 +325,9 @@ func TestInitializeInactivityTimersMalformedFile(t *testing.T) {
 		"inactivity_timeout": {"duration": "1s", "command": "echo good"}
 	}`)
 
-	origConfig := serverConfig
-	serverConfig = ServerConfig{DataDir: dataDir}
-	t.Cleanup(func() { serverConfig = origConfig })
+	origConfig := *serverConfig()
+	setServerConfig(ServerConfig{DataDir: dataDir})
+	t.Cleanup(func() { setServerConfig(origConfig) })
 
 	tr := newTestTracker()
 	setGlobalTracker(t, tr)

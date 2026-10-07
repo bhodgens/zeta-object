@@ -81,13 +81,15 @@ func TestConfigIdentitiesParse(t *testing.T) {
 func TestBuildIdentityRegistryEnvMerge(t *testing.T) {
 	withIdentityEnv(t, "AKENV", "sk-env")
 	loadCredentials()
-	saved := serverConfig
-	defer func() { serverConfig = saved }()
-	serverConfig = defaultServerConfig()
-	serverConfig.Identities = []auth.IdentityConfig{
-		{Name: "ci-bot", AccessKey: "AKCI", SecretKey: "sk-ci"},
-		{Name: "scraper", AccessKey: "AKRO", SecretKey: "sk-ro", Grants: rawGrants(map[string]string{"photos": "readonly"})},
-	}
+	saved := *serverConfig()
+	defer func() { setServerConfig(saved) }()
+	setServerConfig(defaultServerConfig())
+	setServerConfigField(func(c *ServerConfig) {
+		c.Identities = []auth.IdentityConfig{
+			{Name: "ci-bot", AccessKey: "AKCI", SecretKey: "sk-ci"},
+			{Name: "scraper", AccessKey: "AKRO", SecretKey: "sk-ro", Grants: rawGrants(map[string]string{"photos": "readonly"})},
+		}
+	})
 	reg, err := buildIdentityRegistry()
 	if err != nil {
 		t.Fatalf("buildIdentityRegistry: %v", err)
@@ -116,9 +118,9 @@ func TestBuildIdentityRegistryEnvMerge(t *testing.T) {
 func TestBuildIdentityRegistryEnvOnly(t *testing.T) {
 	withIdentityEnv(t, "AKONLY", "sk-only")
 	loadCredentials()
-	saved := serverConfig
-	defer func() { serverConfig = saved }()
-	serverConfig = defaultServerConfig()
+	saved := *serverConfig()
+	defer func() { setServerConfig(saved) }()
+	setServerConfig(defaultServerConfig())
 	reg, err := buildIdentityRegistry()
 	if err != nil {
 		t.Fatalf("env-only build failed: %v", err)
@@ -136,14 +138,16 @@ func TestBuildIdentityRegistryEnvOnly(t *testing.T) {
 func TestBuildIdentityRegistryDuplicates(t *testing.T) {
 	withIdentityEnv(t, "AKENV", "sk-env")
 	loadCredentials()
-	saved := serverConfig
-	defer func() { serverConfig = saved }()
+	saved := *serverConfig()
+	defer func() { setServerConfig(saved) }()
 
 	t.Run("config vs env", func(t *testing.T) {
-		serverConfig = defaultServerConfig()
-		serverConfig.Identities = []auth.IdentityConfig{
-			{Name: "clash", AccessKey: "AKENV", SecretKey: "sk-x"},
-		}
+		setServerConfig(defaultServerConfig())
+		setServerConfigField(func(c *ServerConfig) {
+			c.Identities = []auth.IdentityConfig{
+				{Name: "clash", AccessKey: "AKENV", SecretKey: "sk-x"},
+			}
+		})
 		_, err := buildIdentityRegistry()
 		if err == nil {
 			t.Fatal("duplicate config-vs-env accepted")
@@ -153,11 +157,13 @@ func TestBuildIdentityRegistryDuplicates(t *testing.T) {
 		}
 	})
 	t.Run("config vs config", func(t *testing.T) {
-		serverConfig = defaultServerConfig()
-		serverConfig.Identities = []auth.IdentityConfig{
-			{Name: "a", AccessKey: "AKX", SecretKey: "sk-a"},
-			{Name: "b", AccessKey: "AKX", SecretKey: "sk-b"},
-		}
+		setServerConfig(defaultServerConfig())
+		setServerConfigField(func(c *ServerConfig) {
+			c.Identities = []auth.IdentityConfig{
+				{Name: "a", AccessKey: "AKX", SecretKey: "sk-a"},
+				{Name: "b", AccessKey: "AKX", SecretKey: "sk-b"},
+			}
+		})
 		_, err := buildIdentityRegistry()
 		if err == nil {
 			t.Fatal("duplicate config-vs-config accepted")
@@ -169,8 +175,8 @@ func TestBuildIdentityRegistryDuplicates(t *testing.T) {
 func TestBuildIdentityRegistryValidation(t *testing.T) {
 	withIdentityEnv(t, "AKENV", "sk-env")
 	loadCredentials()
-	saved := serverConfig
-	defer func() { serverConfig = saved }()
+	saved := *serverConfig()
+	defer func() { setServerConfig(saved) }()
 
 	cases := []struct {
 		name       string
@@ -184,9 +190,9 @@ func TestBuildIdentityRegistryValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			serverConfig = defaultServerConfig()
-			serverConfig.Identities = tc.identities
-			serverConfig.Auth.Mode = tc.mode
+			setServerConfig(defaultServerConfig())
+			setServerConfigField(func(c *ServerConfig) { c.Identities = tc.identities })
+			serverConfig().Auth.Mode = tc.mode
 			_, err := buildIdentityRegistry()
 			if err == nil {
 				t.Fatal("invalid config accepted")

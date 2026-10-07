@@ -15,7 +15,7 @@ func TestS3WiringRegistersZFSEventsProvider(t *testing.T) {
 	if metadata.Lookup("zfs-events") == nil {
 		// Guarded: Register panics on duplicates if another test in this
 		// package already ran installS3Seams.
-		installS3Seams(&serverConfig)
+		installS3Seams(serverConfig())
 	}
 	p := metadata.Lookup("zfs-events")
 	if p == nil {

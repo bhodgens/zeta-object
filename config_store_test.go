@@ -45,16 +45,16 @@ func findIdentity(cfg ServerConfig, accessKey string) *auth.IdentityConfig {
 // signed for a different region is rejected and one signed for the configured
 // region authenticates.
 func TestInstallS3SeamsUsesPassedConfig(t *testing.T) {
-	orig := serverConfig
+	orig := *serverConfig()
 	t.Cleanup(func() {
-		serverConfig = orig
+		setServerConfig(orig)
 		SetRegionForTest("")
 		// Restore the global-backed fs-root resolver the rest of the suite
 		// expects (installS3Seams captured a local config above).
 		s3.InstallFSRootResolver(func(bucket string) string { return getBucketPath(bucket) })
 	})
 	// The global holds the default region; the config passed in differs.
-	serverConfig = defaultServerConfig()
+	setServerConfig(defaultServerConfig())
 
 	cfg := defaultServerConfig()
 	cfg.DataDir = t.TempDir() + "/"
@@ -351,12 +351,12 @@ func TestConfigStorePersistRoundTrip(t *testing.T) {
 	if err := os.WriteFile(in, []byte(fixture), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	orig := serverConfig
-	t.Cleanup(func() { serverConfig = orig })
+	orig := *serverConfig()
+	t.Cleanup(func() { setServerConfig(orig) })
 	if err := loadConfig(in); err != nil {
 		t.Fatalf("loadConfig fixture: %v", err)
 	}
-	store := NewConfigStore(&serverConfig)
+	store := NewConfigStore(serverConfig())
 
 	out := filepath.Join(dir, "out.json")
 	if err := store.Persist(out); err != nil {
@@ -365,8 +365,8 @@ func TestConfigStorePersistRoundTrip(t *testing.T) {
 	if err := loadConfig(out); err != nil {
 		t.Fatalf("loadConfig (reload): %v", err)
 	}
-	if !reflect.DeepEqual(*store.live, serverConfig) {
-		t.Fatalf("persist round-trip mismatch:\n store=%#v\n reload=%#v", *store.live, serverConfig)
+	if !reflect.DeepEqual(*store.live, *serverConfig()) {
+		t.Fatalf("persist round-trip mismatch:\n store=%#v\n reload=%#v", *store.live, *serverConfig())
 	}
 }
 
@@ -452,14 +452,14 @@ func fileInode(t *testing.T, path string) uint64 {
 // TestInitConfigStoreStartupWiring pins that the startup wiring creates the
 // process store and it returns the loaded configuration.
 func TestInitConfigStoreStartupWiring(t *testing.T) {
-	orig := serverConfig
+	orig := *serverConfig()
 	origStore := configStore
-	t.Cleanup(func() { serverConfig = orig; configStore = origStore })
+	t.Cleanup(func() { setServerConfig(orig); configStore = origStore })
 
 	dir := t.TempDir()
-	serverConfig = defaultServerConfig()
-	serverConfig.DataDir = dir + "/"
-	serverConfig.Region = "ap-south-1"
+	setServerConfig(defaultServerConfig())
+	setServerConfigField(func(c *ServerConfig) { c.DataDir = dir + "/" })
+	setServerConfigField(func(c *ServerConfig) { c.Region = "ap-south-1" })
 
 	st := initConfigStore()
 	if st == nil || configStore == nil {

@@ -798,12 +798,12 @@ func initializeInactivityTimers() {
 	}
 
 	// Scan custom buckets
-	// Snapshot under the read lock: a config reload replaces the global
-	// while this background sweep reads it.
-	configMu.RLock()
-	bucketsSnapshot := maps.Clone(serverConfig.Buckets)
-	dataDir := serverConfig.DataDir
-	configMu.RUnlock()
+	// Snapshot through the atomic pointer: a config reload replaces the
+	// generation while this background sweep reads it — the snapshot is one
+	// consistent generation.
+	cfg := serverConfig()
+	bucketsSnapshot := maps.Clone(cfg.Buckets)
+	dataDir := cfg.DataDir
 	for bucketName, bucketPath := range bucketsSnapshot {
 		actionsPath := filepath.Join(bucketPath, actionsFileName)
 		actions, err := loadActionsFile(actionsPath)

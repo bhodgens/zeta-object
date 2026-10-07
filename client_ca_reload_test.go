@@ -173,17 +173,17 @@ func installCAPKITestWiring(t *testing.T) *caTestPKI {
 	}
 
 	prevReg := identityRegistry
-	prevCfg := serverConfig
+	prevCfg := *serverConfig()
 	prevPath := serverConfigPath
 	prevStore := configStore
 	prevCreds := serverCredentials
 	identityRegistry = auth.NewReloadableRegistry(reg)
-	serverConfig.CertFile, serverConfig.KeyFile = certPath, keyPath
-	serverConfig.DataDir = dataDir + "/"
+	setServerConfigField(func(c *ServerConfig) { c.CertFile = certPath; c.KeyFile = keyPath })
+	setServerConfigField(func(c *ServerConfig) { c.DataDir = dataDir + "/" })
 	serverCredentials.AccessKeyID, serverCredentials.SecretAccessKey = "env-ak", "env-sk"
 	t.Cleanup(func() {
 		identityRegistry = prevReg
-		serverConfig = prevCfg
+		setServerConfig(prevCfg)
 		serverConfigPath = prevPath
 		configStore = prevStore
 		serverCredentials = prevCreds
@@ -213,7 +213,7 @@ func buildH3FrontendThroughFactory(t *testing.T, pki *caTestPKI) *h3.Frontend {
 	// construction's registrant is removed.
 	prev := snapshotClientCAReloaderFuncs()
 	t.Cleanup(func() { restoreClientCAReloaderFuncs(prev) })
-	be, err := fsbackend.New(strings.TrimSuffix(serverConfig.DataDir, "/"))
+	be, err := fsbackend.New(strings.TrimSuffix(serverConfig().DataDir, "/"))
 	if err != nil {
 		t.Fatalf("fsbackend: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestH3ClientCAReload_EndToEndRevokesStaleDeviceCert(t *testing.T) {
 	// CN and answer 401 — which would mask the trust assertion.
 	cfgPath := filepath.Join(pki.dir, "config.json")
 	cfg := defaultServerConfig()
-	cfg.DataDir = strings.TrimSuffix(serverConfig.DataDir, "/")
+	cfg.DataDir = strings.TrimSuffix(serverConfig().DataDir, "/")
 	cfg.Identities = []auth.IdentityConfig{
 		{Name: "device-1", AccessKey: "device-1", SecretKey: "sk"},
 		{Name: "device-2", AccessKey: "device-2", SecretKey: "sk"},
@@ -592,15 +592,18 @@ func TestReloadAuthService_IdentityFailureStillRotatesTheCA(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte(`{"zfs_versioning":"nonsense"}`), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	prevPath, prevReg, prevCfg := serverConfigPath, identityRegistry, serverConfig
-	t.Cleanup(func() { serverConfigPath, identityRegistry, serverConfig = prevPath, prevReg, prevCfg })
+	prevPath, prevReg, prevCfg := serverConfigPath, identityRegistry, *serverConfig()
+	t.Cleanup(func() {
+		serverConfigPath, identityRegistry = prevPath, prevReg
+		setServerConfig(prevCfg)
+	})
 	serverConfigPath = cfgPath
 	reg, err := auth.NewMultiRegistry(nil)
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
 	identityRegistry = auth.NewReloadableRegistry(reg)
-	serverConfig = defaultServerConfig()
+	setServerConfig(defaultServerConfig())
 
 	caCalled := false
 	registerClientCAReloader("h3", func() error { caCalled = true; return nil })

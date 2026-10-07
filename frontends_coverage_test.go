@@ -205,10 +205,10 @@ func TestPerBucketBackendNotInstalled(t *testing.T) {
 func TestLoadServerTLSCertPair(t *testing.T) {
 	t.Run("valid pair loads", func(t *testing.T) {
 		certPath, keyPath := writeTestServerCertPair(t)
-		prevCfg := serverConfig
-		t.Cleanup(func() { serverConfig = prevCfg })
-		serverConfig.CertFile = certPath
-		serverConfig.KeyFile = keyPath
+		prevCfg := *serverConfig()
+		t.Cleanup(func() { setServerConfig(prevCfg) })
+		setServerConfigField(func(c *ServerConfig) { c.CertFile = certPath })
+		setServerConfigField(func(c *ServerConfig) { c.KeyFile = keyPath })
 
 		cfg, err := loadServerTLSCertPair()
 		if err != nil {
@@ -223,10 +223,10 @@ func TestLoadServerTLSCertPair(t *testing.T) {
 	})
 
 	t.Run("missing file errors", func(t *testing.T) {
-		prevCfg := serverConfig
-		t.Cleanup(func() { serverConfig = prevCfg })
-		serverConfig.CertFile = filepath.Join(t.TempDir(), "absent.pem")
-		serverConfig.KeyFile = filepath.Join(t.TempDir(), "absent.key")
+		prevCfg := *serverConfig()
+		t.Cleanup(func() { setServerConfig(prevCfg) })
+		setServerConfigField(func(c *ServerConfig) { c.CertFile = filepath.Join(t.TempDir(), "absent.pem") })
+		setServerConfigField(func(c *ServerConfig) { c.KeyFile = filepath.Join(t.TempDir(), "absent.key") })
 
 		_, err := loadServerTLSCertPair()
 		if err == nil {

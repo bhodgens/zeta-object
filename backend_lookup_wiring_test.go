@@ -45,7 +45,7 @@ func TestLoadConfigUnknownBucketBackendAbortsStartup(t *testing.T) {
 	if err := loadConfig(path); err != nil {
 		t.Fatalf("config parse should succeed: %v", err)
 	}
-	if _, err := buildBackendLookup(serverConfig); err == nil {
+	if _, err := buildBackendLookup(*serverConfig()); err == nil {
 		t.Fatal("unknown backend name must abort startup, not fall back to fs")
 	} else if !containsAll(err.Error(), []string{"nosuch", "fs"}) {
 		t.Fatalf("error should name the type and registered names, got: %v", err)

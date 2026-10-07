@@ -72,7 +72,7 @@ func main() {
 	// binary resolves on PATH, dataDir passes the DetectZFS statfs probe,
 	// and its dataset name resolves. Fail-loud — never a lazy
 	// first-request 500. ZETAOBJECT_ASSUME_ZFS does not bypass this.
-	if _, err := validateZfsBucketDatasets(context.Background(), &serverConfig); err != nil {
+	if _, err := validateZfsBucketDatasets(context.Background(), serverConfig()); err != nil {
 		log.Fatalf("ZFS bucket datasets validation failed: %v", err)
 	}
 	// Explicitly load credentials from environment (warn on empty values)
@@ -100,34 +100,34 @@ func main() {
 	// off). The writer-only charter discipline lives in the s3 frontend's
 	// audit_log.go: nothing ever reads the file back.
 	var auditWriter *s3.AuditWriter
-	if serverConfig.AuditLog != nil && serverConfig.AuditLog.Path != "" {
-		if dir := filepath.Dir(serverConfig.AuditLog.Path); dir != "" {
+	if serverConfig().AuditLog != nil && serverConfig().AuditLog.Path != "" {
+		if dir := filepath.Dir(serverConfig().AuditLog.Path); dir != "" {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
-				log.Fatalf("Audit log directory creation failed for %s: %v", serverConfig.AuditLog.Path, err)
+				log.Fatalf("Audit log directory creation failed for %s: %v", serverConfig().AuditLog.Path, err)
 			}
 		}
-		aw, err := s3.NewAuditWriter(serverConfig.AuditLog.Path)
+		aw, err := s3.NewAuditWriter(serverConfig().AuditLog.Path)
 		if err != nil {
-			log.Fatalf("Audit log initialization failed for %s: %v", serverConfig.AuditLog.Path, err)
+			log.Fatalf("Audit log initialization failed for %s: %v", serverConfig().AuditLog.Path, err)
 		}
 		auditWriter = aw
-		log.Printf("Audit log enabled: %s (append-only, writer-only)", serverConfig.AuditLog.Path)
+		log.Printf("Audit log enabled: %s (append-only, writer-only)", serverConfig().AuditLog.Path)
 	}
 
 	// Environment override for the listen address (beats config file)
-	applyListenAddrOverride(&serverConfig)
+	applyListenAddrOverride(serverConfig())
 
 	// Ensure data directory exists; any stat error other than IsNotExist is fatal
-	if _, err := os.Stat(serverConfig.DataDir); err != nil {
+	if _, err := os.Stat(serverConfig().DataDir); err != nil {
 		if !os.IsNotExist(err) {
-			log.Fatalf("Cannot access data directory %s: %v", serverConfig.DataDir, err)
+			log.Fatalf("Cannot access data directory %s: %v", serverConfig().DataDir, err)
 		}
-		if err := os.MkdirAll(serverConfig.DataDir, 0755); err != nil {
+		if err := os.MkdirAll(serverConfig().DataDir, 0755); err != nil {
 			log.Fatalf("Failed to create data directory: %v", err)
 		}
 	}
 	// Validate custom bucket paths exist
-	for bucketName, bucketPath := range serverConfig.Buckets {
+	for bucketName, bucketPath := range serverConfig().Buckets {
 		info, err := os.Stat(bucketPath)
 		if err != nil {
 			log.Printf("Warning: Custom bucket '%s' path '%s' error: %v", bucketName, bucketPath, err)
@@ -183,7 +183,7 @@ func main() {
 		Locks:      fslock.Default,
 		BucketPath: getBucketPath,
 		Custom: func(bucket string) (string, bool) {
-			path, ok := serverConfig.Buckets[bucket]
+			path, ok := serverConfig().Buckets[bucket]
 			return path, ok
 		},
 		Provisioner: s3.NewDatasetProvisioner(),
@@ -198,7 +198,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Default backend initialization failed: %v", err)
 	}
-	plan, err := startupPlan(serverConfig.Frontends, defaultBackend, mainCredentialSource{})
+	plan, err := startupPlan(serverConfig().Frontends, defaultBackend, mainCredentialSource{})
 	if err != nil {
 		log.Fatalf("Frontend initialization failed: %v", err)
 	}
@@ -214,6 +214,6 @@ func main() {
 	// returned value is what the default listener must serve (built here,
 	// after the wrap, before runServer starts any listener).
 	plan.mux = applyAltSvcAdvertisement(plan.mux, plan.shared, plan.mounts, extraServers)
-	srv := newServer(serverConfig.ListenAddr, plan.mux, serverConfig.CertFile, serverConfig.KeyFile)
+	srv := newServer(serverConfig().ListenAddr, plan.mux, serverConfig().CertFile, serverConfig().KeyFile)
 	runServer(srv, extraServers, nonHTTPServers, quicServers)
 }

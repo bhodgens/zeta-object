@@ -25,16 +25,16 @@ import (
 // Helpers here are deliberately self-contained (mp* prefixes) so this file
 // does not couple to helper names in main_handler_test.go.
 
-// mpTestConfig points serverConfig at a temp dir and returns the data dir.
+// mpTestConfig points *serverConfig() at a temp dir and returns the data dir.
 func mpTestConfig(t *testing.T) string {
 	t.Helper()
 	tmpDir := t.TempDir()
-	orig := serverConfig
-	serverConfig = ServerConfig{
+	orig := *serverConfig()
+	setServerConfig(ServerConfig{
 		DataDir: tmpDir + "/",
 		Buckets: make(map[string]string),
-	}
-	t.Cleanup(func() { serverConfig = orig })
+	})
+	t.Cleanup(func() { setServerConfig(orig) })
 	return tmpDir
 }
 

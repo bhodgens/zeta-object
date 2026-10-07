@@ -67,7 +67,7 @@ func buildDedicatedListeners(listeners []listenerSpec) ([]*http.Server, []nonHTT
 			continue
 		}
 		srv := newServer(ls.addr, ls.frontend.Handler(),
-			serverConfig.CertFile, serverConfig.KeyFile)
+			serverConfig().CertFile, serverConfig().KeyFile)
 		if ls.tlsConfig != nil {
 			// A TLSListenerFrontend supplies its own pre-built listener TLS
 			// configuration (client-certificate verification); main serves

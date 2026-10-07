@@ -100,8 +100,8 @@ func TestLoadConfigBackendKeysBackwardCompat(t *testing.T) {
 // expected is a parse error NAMING the bucket — never a silent empty-path
 // entry that half-initializes into a dataDir collision (bughunt E6).
 func TestLoadConfigNullBucketValueFails(t *testing.T) {
-	origConfig := serverConfig
-	defer func() { serverConfig = origConfig }()
+	origConfig := *serverConfig()
+	defer func() { setServerConfig(origConfig) }()
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
@@ -129,8 +129,8 @@ func TestLoadConfigNullBucketValueFails(t *testing.T) {
 // typo'd top-level key ("dataDirr") a loud startup failure instead of a
 // silently-ignored default (bughunt E6).
 func TestLoadConfigUnknownTopLevelKeyFails(t *testing.T) {
-	origConfig := serverConfig
-	defer func() { serverConfig = origConfig }()
+	origConfig := *serverConfig()
+	defer func() { setServerConfig(origConfig) }()
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")

@@ -76,16 +76,16 @@ func TestSweepAllBucketsOnce_ExpiredAndFreshMix(t *testing.T) {
 	}
 }
 
-// TestSweepAllBucketsOnce_CustomConfigBucket: a serverConfig.Buckets entry
+// TestSweepAllBucketsOnce_CustomConfigBucket: a serverConfig().Buckets entry
 // pointing at a temp dir is swept even though it is outside dataDir.
 func TestSweepAllBucketsOnce_CustomConfigBucket(t *testing.T) {
-	_ = mpTestConfig(t) // isolates serverConfig; custom bucket path set below
+	_ = mpTestConfig(t) // isolates *serverConfig(); custom bucket path set below
 	customPath := filepath.Join(t.TempDir(), "custom-bkt")
 	if err := os.MkdirAll(filepath.Join(customPath, ".metadata"), 0755); err != nil {
 		t.Fatalf("creating custom bucket dir: %v", err)
 	}
 	// The dataDir itself is empty; the only session lives in the custom bucket.
-	serverConfig.Buckets["custom"] = customPath
+	serverConfig().Buckets["custom"] = customPath
 
 	id := newTestUploadIDSuffix(t, "custom")
 	mpWriteUploadMeta(t, customPath, id, swExpiredMP(t, id))
@@ -101,8 +101,8 @@ func TestSweepAllBucketsOnce_CustomConfigBucket(t *testing.T) {
 // TestSweepAllBucketsOnce_MissingDataDir: a dataDir path that does not exist
 // yields 0 and no panic.
 func TestSweepAllBucketsOnce_MissingDataDir(t *testing.T) {
-	_ = mpTestConfig(t) // saves/restores serverConfig
-	serverConfig.DataDir = filepath.Join(t.TempDir(), "does", "not", "exist")
+	_ = mpTestConfig(t) // saves/restores *serverConfig()
+	setServerConfigField(func(c *ServerConfig) { c.DataDir = filepath.Join(t.TempDir(), "does", "not", "exist") })
 	if got := sweepAllBucketsOnce(); got != 0 {
 		t.Fatalf("sweepAllBucketsOnce = %d, want 0", got)
 	}

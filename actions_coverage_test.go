@@ -459,12 +459,12 @@ func sweepTrackerSwap(t *testing.T, tr *InactivityTracker) {
 	inactivityTracker = tr
 }
 
-// configSwap swaps serverConfig and restores it on cleanup.
+// configSwap swaps *serverConfig() and restores it on cleanup.
 func configSwap(t *testing.T, cfg ServerConfig) {
 	t.Helper()
-	orig := serverConfig
-	t.Cleanup(func() { serverConfig = orig })
-	serverConfig = cfg
+	orig := *serverConfig()
+	t.Cleanup(func() { setServerConfig(orig) })
+	setServerConfig(cfg)
 }
 
 // TestInitializeInactivityTimersNilTrackerIsNoOp pins the nil guard.

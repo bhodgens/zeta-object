@@ -45,9 +45,9 @@ func TestMainCredentialSource(t *testing.T) {
 // installs: a configured custom bucket path wins over dataDir join.
 func TestGetBucketPathCustomPrecedence(t *testing.T) {
 	env := setupTestEnv(t)
-	orig := serverConfig
-	t.Cleanup(func() { serverConfig = orig })
-	serverConfig.Buckets["custom"] = "/custom/mount"
+	orig := *serverConfig()
+	t.Cleanup(func() { setServerConfig(orig) })
+	serverConfig().Buckets["custom"] = "/custom/mount"
 	if got := getBucketPath("custom"); got != "/custom/mount" {
 		t.Errorf("getBucketPath(custom) = %q, want the configured custom path", got)
 	}
@@ -126,7 +126,7 @@ func TestInstallS3SeamsMetadataResolverUnavailable(t *testing.T) {
 	// installS3Seams registers the real zfs-events provider; guard against
 	// a duplicate Register panic if another test already installed.
 	if metadata.Lookup("zfs-events") == nil {
-		installS3Seams(&serverConfig)
+		installS3Seams(serverConfig())
 	}
 
 	req := buildSignedGetWithQuery(t, "/"+bucket, "events", "events")
@@ -155,13 +155,13 @@ func TestInstallBackendLookupNilRestoresLazy(t *testing.T) {
 	// rebuilding against a config with an unknown backend name — the lazy
 	// path must surface that error. (Set the config BEFORE the first
 	// backendFor call: the lazy path self-installs the built table.)
-	origCfg := serverConfig
-	t.Cleanup(func() { serverConfig = origCfg })
-	serverConfig = ServerConfig{
+	origCfg := *serverConfig()
+	t.Cleanup(func() { setServerConfig(origCfg) })
+	setServerConfig(ServerConfig{
 		DataDir:        t.TempDir() + "/",
 		Buckets:        map[string]string{"b": ""},
 		BucketBackends: map[string]string{"b": "nosuch"},
-	}
+	})
 	if _, err := backendFor("b"); err == nil {
 		t.Fatal("lazy resolver did not fail loudly on an unknown backend name")
 	}
@@ -243,15 +243,15 @@ func TestBuildBackendLookupResolutionOrder(t *testing.T) {
 // backend_lazy.go + initBackendLookup — lazy/startup resolution paths
 // ---------------------------------------------------------------------------
 
-// withBackendConfigSwapped swaps serverConfig for cfg for the test's
+// withBackendConfigSwapped swaps *serverConfig() for cfg for the test's
 // duration (restored via t.Cleanup) and returns the temp dir used.
 func withBackendConfigSwapped(t *testing.T, mutate func(cfg *ServerConfig) string) string {
 	t.Helper()
 	dir := t.TempDir()
-	orig := serverConfig
-	t.Cleanup(func() { serverConfig = orig })
-	serverConfig = ServerConfig{DataDir: dir + "/", Buckets: map[string]string{}}
-	mutate(&serverConfig)
+	orig := *serverConfig()
+	t.Cleanup(func() { setServerConfig(orig) })
+	setServerConfig(ServerConfig{DataDir: dir + "/", Buckets: map[string]string{}})
+	mutate(serverConfig())
 	return dir
 }
 

@@ -62,25 +62,25 @@ func TestNewServer(t *testing.T) {
 // TestLoadConfigDefaultsWhenFileMissing: missing file → defaults, no error.
 func TestLoadConfigDefaultsWhenFileMissing(t *testing.T) {
 	// Snapshot & restore the global so other tests are unaffected
-	origConfig := serverConfig
-	defer func() { serverConfig = origConfig }()
+	origConfig := *serverConfig()
+	defer func() { setServerConfig(origConfig) }()
 
 	if err := loadConfig(filepath.Join(t.TempDir(), "does-not-exist.json")); err != nil {
 		t.Fatalf("loadConfig on missing file returned error: %v", err)
 	}
-	if serverConfig.DataDir != defaultDataDir {
-		t.Errorf("DataDir = %q, want default %q", serverConfig.DataDir, defaultDataDir)
+	if serverConfig().DataDir != defaultDataDir {
+		t.Errorf("DataDir = %q, want default %q", serverConfig().DataDir, defaultDataDir)
 	}
-	if serverConfig.ListenAddr != defaultListenAddr {
-		t.Errorf("ListenAddr = %q, want default %q", serverConfig.ListenAddr, defaultListenAddr)
+	if serverConfig().ListenAddr != defaultListenAddr {
+		t.Errorf("ListenAddr = %q, want default %q", serverConfig().ListenAddr, defaultListenAddr)
 	}
-	if serverConfig.CertFile != defaultCertFile {
-		t.Errorf("CertFile = %q, want default %q", serverConfig.CertFile, defaultCertFile)
+	if serverConfig().CertFile != defaultCertFile {
+		t.Errorf("CertFile = %q, want default %q", serverConfig().CertFile, defaultCertFile)
 	}
-	if serverConfig.KeyFile != defaultKeyFile {
-		t.Errorf("KeyFile = %q, want default %q", serverConfig.KeyFile, defaultKeyFile)
+	if serverConfig().KeyFile != defaultKeyFile {
+		t.Errorf("KeyFile = %q, want default %q", serverConfig().KeyFile, defaultKeyFile)
 	}
-	if serverConfig.Buckets == nil {
+	if serverConfig().Buckets == nil {
 		t.Error("Buckets map should be initialized, not nil")
 	}
 }
@@ -88,15 +88,15 @@ func TestLoadConfigDefaultsWhenFileMissing(t *testing.T) {
 // TestLoadConfigNoPartialMutation: invalid JSON must leave the previous
 // (valid) config fully intact — no partial mutation of the global.
 func TestLoadConfigNoPartialMutation(t *testing.T) {
-	origConfig := serverConfig
-	defer func() { serverConfig = origConfig }()
+	origConfig := *serverConfig()
+	defer func() { setServerConfig(origConfig) }()
 
 	// Seed the global with known-valid values
-	serverConfig = defaultServerConfig()
-	serverConfig.DataDir = "/original/data/"
-	serverConfig.ListenAddr = ":9999"
-	serverConfig.CertFile = "/original/cert.pem"
-	serverConfig.KeyFile = "/original/key.pem"
+	setServerConfig(defaultServerConfig())
+	setServerConfigField(func(c *ServerConfig) { c.DataDir = "/original/data/" })
+	setServerConfigField(func(c *ServerConfig) { c.ListenAddr = ":9999" })
+	setServerConfigField(func(c *ServerConfig) { c.CertFile = "/original/cert.pem" })
+	setServerConfigField(func(c *ServerConfig) { c.KeyFile = "/original/key.pem" })
 
 	dir := t.TempDir()
 	badPath := filepath.Join(dir, "bad.json")
@@ -113,17 +113,17 @@ func TestLoadConfigNoPartialMutation(t *testing.T) {
 			t.Fatalf("case %d: loadConfig should fail on invalid JSON", i)
 		}
 		// Global must be untouched
-		if serverConfig.DataDir != "/original/data/" {
-			t.Errorf("case %d: DataDir mutated to %q", i, serverConfig.DataDir)
+		if serverConfig().DataDir != "/original/data/" {
+			t.Errorf("case %d: DataDir mutated to %q", i, serverConfig().DataDir)
 		}
-		if serverConfig.ListenAddr != ":9999" {
-			t.Errorf("case %d: ListenAddr mutated to %q", i, serverConfig.ListenAddr)
+		if serverConfig().ListenAddr != ":9999" {
+			t.Errorf("case %d: ListenAddr mutated to %q", i, serverConfig().ListenAddr)
 		}
-		if serverConfig.CertFile != "/original/cert.pem" {
-			t.Errorf("case %d: CertFile mutated to %q", i, serverConfig.CertFile)
+		if serverConfig().CertFile != "/original/cert.pem" {
+			t.Errorf("case %d: CertFile mutated to %q", i, serverConfig().CertFile)
 		}
-		if serverConfig.KeyFile != "/original/key.pem" {
-			t.Errorf("case %d: KeyFile mutated to %q", i, serverConfig.KeyFile)
+		if serverConfig().KeyFile != "/original/key.pem" {
+			t.Errorf("case %d: KeyFile mutated to %q", i, serverConfig().KeyFile)
 		}
 	}
 }
@@ -131,8 +131,8 @@ func TestLoadConfigNoPartialMutation(t *testing.T) {
 // TestLoadConfigParsesNewKeys: listenAddr/certFile/keyFile JSON keys parse
 // and normalize correctly.
 func TestLoadConfigParsesNewKeys(t *testing.T) {
-	origConfig := serverConfig
-	defer func() { serverConfig = origConfig }()
+	origConfig := *serverConfig()
+	defer func() { setServerConfig(origConfig) }()
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
@@ -148,17 +148,17 @@ func TestLoadConfigParsesNewKeys(t *testing.T) {
 	if err := loadConfig(cfgPath); err != nil {
 		t.Fatalf("loadConfig failed: %v", err)
 	}
-	if serverConfig.DataDir != filepath.ToSlash(dir)+"/customdata/" {
-		t.Errorf("DataDir = %q (want trailing slash appended)", serverConfig.DataDir)
+	if serverConfig().DataDir != filepath.ToSlash(dir)+"/customdata/" {
+		t.Errorf("DataDir = %q (want trailing slash appended)", serverConfig().DataDir)
 	}
-	if serverConfig.ListenAddr != ":18443" {
-		t.Errorf("ListenAddr = %q, want :18443", serverConfig.ListenAddr)
+	if serverConfig().ListenAddr != ":18443" {
+		t.Errorf("ListenAddr = %q, want :18443", serverConfig().ListenAddr)
 	}
-	if serverConfig.CertFile != "tls/server.crt" {
-		t.Errorf("CertFile = %q, want tls/server.crt", serverConfig.CertFile)
+	if serverConfig().CertFile != "tls/server.crt" {
+		t.Errorf("CertFile = %q, want tls/server.crt", serverConfig().CertFile)
 	}
-	if serverConfig.KeyFile != "tls/server.key" {
-		t.Errorf("KeyFile = %q, want tls/server.key", serverConfig.KeyFile)
+	if serverConfig().KeyFile != "tls/server.key" {
+		t.Errorf("KeyFile = %q, want tls/server.key", serverConfig().KeyFile)
 	}
 
 	// Empty listenAddr/cert keys normalize to defaults
@@ -169,22 +169,22 @@ func TestLoadConfigParsesNewKeys(t *testing.T) {
 	if err := loadConfig(cfgPath); err != nil {
 		t.Fatalf("loadConfig failed: %v", err)
 	}
-	if serverConfig.ListenAddr != defaultListenAddr {
-		t.Errorf("empty listenAddr: got %q, want default", serverConfig.ListenAddr)
+	if serverConfig().ListenAddr != defaultListenAddr {
+		t.Errorf("empty listenAddr: got %q, want default", serverConfig().ListenAddr)
 	}
-	if serverConfig.CertFile != defaultCertFile {
-		t.Errorf("empty certFile: got %q, want default", serverConfig.CertFile)
+	if serverConfig().CertFile != defaultCertFile {
+		t.Errorf("empty certFile: got %q, want default", serverConfig().CertFile)
 	}
-	if serverConfig.KeyFile != defaultKeyFile {
-		t.Errorf("empty keyFile: got %q, want default", serverConfig.KeyFile)
+	if serverConfig().KeyFile != defaultKeyFile {
+		t.Errorf("empty keyFile: got %q, want default", serverConfig().KeyFile)
 	}
 }
 
 // TestLoadConfigReadErrorNotIsNotExist: a read error (e.g. directory as
 // config path) must return an error, not silently use defaults.
 func TestLoadConfigReadErrorNotIsNotExist(t *testing.T) {
-	origConfig := serverConfig
-	defer func() { serverConfig = origConfig }()
+	origConfig := *serverConfig()
+	defer func() { setServerConfig(origConfig) }()
 
 	// Reading a directory yields a read error that is not IsNotExist
 	if err := loadConfig(t.TempDir()); err == nil {

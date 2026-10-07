@@ -31,8 +31,8 @@ func runServer(srv *http.Server, extraServers []*http.Server, nonHTTPServers []n
 	serverErr := make(chan error, 1+len(extraServers))
 	go func() {
 		log.Printf("Starting S3 server on %s (HTTPS, cert=%s, key=%s)",
-			srv.Addr, serverConfig.CertFile, serverConfig.KeyFile)
-		serverErr <- srv.ListenAndServeTLS(serverConfig.CertFile, serverConfig.KeyFile)
+			srv.Addr, serverConfig().CertFile, serverConfig().KeyFile)
+		serverErr <- srv.ListenAndServeTLS(serverConfig().CertFile, serverConfig().KeyFile)
 	}()
 
 	// Design-leaf 08 (key rotation/revocation): SIGHUP reloads the auth
@@ -80,7 +80,7 @@ func runServer(srv *http.Server, extraServers []*http.Server, nonHTTPServers []n
 	case err := <-serverErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("ListenAndServeTLS failed: %v. Please ensure %s and %s are correctly generated and in place.",
-				err, serverConfig.CertFile, serverConfig.KeyFile)
+				err, serverConfig().CertFile, serverConfig().KeyFile)
 		}
 	case <-shutdownCtx.Done():
 		log.Println("Shutdown signal received, draining in-flight requests...")
@@ -135,7 +135,7 @@ func runServer(srv *http.Server, extraServers []*http.Server, nonHTTPServers []n
 // before.
 func serveDedicatedListener(es *http.Server) error {
 	if es.TLSConfig == nil || len(es.TLSConfig.Certificates) == 0 {
-		return es.ListenAndServeTLS(serverConfig.CertFile, serverConfig.KeyFile)
+		return es.ListenAndServeTLS(serverConfig().CertFile, serverConfig().KeyFile)
 	}
 	l, err := net.Listen("tcp", es.Addr)
 	if err != nil {

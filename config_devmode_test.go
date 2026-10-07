@@ -27,9 +27,9 @@ func (s akStaticSource) SecretKey(accessKeyID string) (string, bool) {
 // applyServerConfig installs cfg as the global for the test's duration.
 func applyServerConfig(t *testing.T, cfg ServerConfig) {
 	t.Helper()
-	saved := serverConfig
-	t.Cleanup(func() { serverConfig = saved })
-	serverConfig = cfg
+	saved := *serverConfig()
+	t.Cleanup(func() { setServerConfig(saved) })
+	setServerConfig(cfg)
 }
 
 // TestDevModeWiring pins the s3 seam: mode "none" installs the loud

@@ -127,20 +127,20 @@ var (
 
 // installTestConfigSync installs the config-view sync hook used by the
 // test helpers (setupTestEnv / mpTestConfig): any test mutation of
-// serverConfig re-installs the frontend's config view so the moved
+// *serverConfig() re-installs the frontend's config view so the moved
 // handlers observe the same values the pre-move globals had.
 func installTestConfigSync() {
 	s3.SetConfigSyncHook(func() {
 		s3.InstallServerConfigView(s3.ServerConfigView{
-			Buckets: serverConfig.Buckets,
-			DataDir: serverConfig.DataDir,
+			Buckets: serverConfig().Buckets,
+			DataDir: serverConfig().DataDir,
 		})
 	})
 	// Install once immediately so tests that never call the hook still
 	// observe a view.
 	s3.InstallServerConfigView(s3.ServerConfigView{
-		Buckets: serverConfig.Buckets,
-		DataDir: serverConfig.DataDir,
+		Buckets: serverConfig().Buckets,
+		DataDir: serverConfig().DataDir,
 	})
 }
 
@@ -187,5 +187,5 @@ func init() {
 	})
 }
 
-// serverConfigSyncsMirror documents that serverConfig is mirrored into
+// serverConfigSyncsMirror documents that *serverConfig() is mirrored into
 // the s3 package on each setupTestEnv call (see SetConfigSyncHook).

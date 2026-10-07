@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 )
@@ -356,33 +357,43 @@ func (m bucketsRaw) apply(cfg *ServerConfig) {
 	}
 }
 
-var serverConfig = ServerConfig{
-	DataDir:      defaultDataDir,
-	Buckets:      make(map[string]string),
-	ListenAddr:   defaultListenAddr,
-	CertFile:     defaultCertFile,
-	KeyFile:      defaultKeyFile,
-	ZmetadDBPath: defaultZmetadDBPath,
-	ZmetadBinary: defaultZmetadBinary,
+// serverConfigAtom holds the process-wide configuration, swapped atomically
+// by the reload path (SIGHUP, POST /auth/reload) while request goroutines
+// read it. Readers take a consistent pointer snapshot via serverConfig().
+// Runtime access goes through serverConfig(); the var name stays serverConfig
+// (as a function) so call sites keep their shape — compile-time errors point
+// at every former direct field read.
+func serverConfig() *ServerConfig {
+	return serverConfigAtom.Load()
 }
 
-// configMu guards the serverConfig global against the reload-vs-request
-// race: POST /auth/reload (and SIGHUP) re-run loadConfig at runtime, which
-// REPLACES the global, while request goroutines read it (getBucketPath,
-// the actions sweeps, the metadata provider setup). Startup-only readers
-// (main's listener wiring, which snapshots CertFile/KeyFile into its TLS
-// configs before serving) read after the last startup write and need no
-// lock; every RUNTIME re-readable site must go through
-// serverConfigSnapshot() or hold configMu itself.
-var configMu sync.RWMutex
+var serverConfigAtom atomic.Pointer[ServerConfig]
 
-// configMuLockedZmetadBinary reads the running zmetad binary under the
-// read lock (the purge service reads it per request, racing reloads).
-func configMuLockedZmetadBinary() string {
-	configMu.RLock()
-	defer configMu.RUnlock()
-	return serverConfig.ZmetadBinary
+func init() {
+	serverConfigAtom.Store(&ServerConfig{
+		DataDir:      defaultDataDir,
+		Buckets:      make(map[string]string),
+		ListenAddr:   defaultListenAddr,
+		CertFile:     defaultCertFile,
+		KeyFile:      defaultKeyFile,
+		ZmetadDBPath: defaultZmetadDBPath,
+		ZmetadBinary: defaultZmetadBinary,
+	})
 }
+
+// setServerConfig is the single swap point: startup main() and loadConfig
+// both publish through it. Writes stay fail-closed — the value is only
+// stored after parse+normalize succeeded (loadConfig contract, unchanged).
+func setServerConfig(cfg ServerConfig) {
+	serverConfigAtom.Store(&cfg)
+}
+
+// configMu is retained as a writer-vs-writer latch: reloadIdentityRegistry
+// can be invoked concurrently (SIGHUP goroutine AND the admin POST
+// /auth/reload handler), so the whole build-validate-swap sequence runs
+// under it. Readers do NOT take configMu — the atomic pointer above is the
+// reader synchronization; readers always see one complete config generation.
+var configMu sync.Mutex
 
 // defaultServerConfig returns a fully-populated ServerConfig with all
 // defaults applied. loadConfig always starts from a fresh copy so a failed
@@ -415,7 +426,7 @@ func loadConfig(configPath string) error {
 	if os.IsNotExist(err) {
 		log.Printf("Config file %s not found, using defaults", configPath)
 		configMu.Lock()
-		serverConfig = cfg
+		setServerConfig(cfg)
 		configMu.Unlock()
 		return nil
 	}
@@ -487,11 +498,11 @@ func loadConfig(configPath string) error {
 	}
 
 	configMu.Lock()
-	serverConfig = cfg
+	setServerConfig(cfg)
 	configMu.Unlock()
 	log.Printf("Loaded config: DataDir=%s, ListenAddr=%s, CertFile=%s, KeyFile=%s, CustomBuckets=%d",
-		serverConfig.DataDir, serverConfig.ListenAddr, serverConfig.CertFile,
-		serverConfig.KeyFile, len(serverConfig.Buckets))
+		cfg.DataDir, cfg.ListenAddr, cfg.CertFile,
+		cfg.KeyFile, len(cfg.Buckets))
 	return nil
 }
 
@@ -557,14 +568,15 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 // main() after loadCredentials; with no `identities` key the result is a
 // single wildcard env identity (byte-identical to the pre-tree behavior).
 func buildIdentityRegistry() (*auth.MultiRegistry, error) {
-	switch serverConfig.Auth.Mode {
+	cfg := serverConfig()
+	switch cfg.Auth.Mode {
 	case "", authModeNone:
 	default:
-		return nil, fmt.Errorf("invalid auth.mode %q (want \"\" or %q)", serverConfig.Auth.Mode, authModeNone)
+		return nil, fmt.Errorf("invalid auth.mode %q (want \"\" or %q)", cfg.Auth.Mode, authModeNone)
 	}
-	identities := make([]auth.IdentityConfig, 0, 1+len(serverConfig.Identities))
+	identities := make([]auth.IdentityConfig, 0, 1+len(cfg.Identities))
 	identities = append(identities, auth.EnvPair(serverCredentials.AccessKeyID, serverCredentials.SecretAccessKey))
-	identities = append(identities, serverConfig.Identities...)
+	identities = append(identities, cfg.Identities...)
 	reg, err := auth.NewMultiRegistry(identities)
 	if err != nil {
 		return nil, fmt.Errorf("invalid auth configuration: %w", err)
