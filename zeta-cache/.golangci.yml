@@ -57,6 +57,19 @@ linters:
         # G306 (file perms) - the daemon is a per-user client process; the
         # socket itself is chmod 0600 explicitly.
         - G306
+        # G501 (crypto/md5 blocklist) - the wire ETag IS the body MD5
+        # (plan-tree master.md "server facts"); md5 here is protocol
+        # conformance, not a security primitive. Same rationale for
+        # G401 (use of md5), surfaced on the same calls.
+        - G501
+        - G401
+        # G115 (integer conversions) - FUSE attr plumbing converts
+        # between uint64/int64/uint32 stat fields; values are OS stat
+        # results bounded well below the overflow domain.
+        - G115
+        # G104 (errors unhandled) - best-effort Close/Chtimes on local
+        # cache files; the error paths are EIO on an already-failing op.
+        - G104
 
 issues:
   max-issues-per-linter: 50

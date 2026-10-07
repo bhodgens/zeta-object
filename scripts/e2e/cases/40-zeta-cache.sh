@@ -1,6 +1,6 @@
-# 40-zeta-cache.sh - zeta-cache daemon skeleton (client-cache-2026-10 leaf
-# 01). The daemon is a SEPARATE Go module (zeta-cache/); this case shells
-# out to its built binary.
+# 40-zeta-cache.sh - zeta-cache daemon (client-cache-2026-10 leaves 01+02).
+# The daemon is a SEPARATE Go module (zeta-cache/); this case shells out to
+# its built binary.
 #
 #   40a. --version works and prints the zeta-cache prefix.
 #   40b. fail-loud config: an unknown key aborts startup (exit != 0) with
@@ -12,7 +12,25 @@
 #        client is a tiny inline python3 (stdlib socket) - documented here
 #        as THE status client until leaf 08 ships the real one.
 #   40d. SIGTERM shutdown exits 0 and removes the socket file.
-#   40e. mount + sync sections SKIP gracefully until leaves 02 + 04 land.
+#   40e. mount section (leaf 02): detects FUSE availability and either
+#        exercises the mount or SKIPS gracefully. CI linux runners have no
+#        /dev/fuse and macFUSE is not installed on dev macOS boxes by
+#        default - the graceful skip IS the CI path (leaf 02 acceptance 2).
+#
+# MANUAL MOUNT PROCEDURE (for running 40e's green path by hand):
+#
+#   macOS:  install macFUSE (brew install --cask macfuse), then
+#               ./zeta-cache --config zeta-cache.json
+#           (go-fuse drives mount_osxfuse; the mountpoint must exist and
+#           be empty; allow_other needs macFUSE's allow_other enabled.)
+#   Linux:  fuse3 installed (/dev/fuse present), then the same command;
+#           go-fuse direct-mounts via fusermount3 or /dev/fuse.
+#   Then:   write a file in the mount, PROPFIND the bucket (curl -X
+#           PROPFIND) to see it server-side; S3 PUT server-side, look for
+#           it in the mount; read back through the mount.
+#
+# Sync-surface assertions (leaf 04) will live here: PUT through the mount
+# with If-Match, conflict-copy naming, batch delete via ?batch.
 #
 # Private-server pattern (case 19): the suite server is left untouched.
 set -u
@@ -236,16 +254,72 @@ else
 	_e2e_record 0 'shutdown removes the socket file'
 fi
 
-# --- 40e: mount + sync sections SKIP until leaves 02 + 04 land ---
-# MANUAL MOUNT PROCEDURE (SKIPPED - leaf 02 owns the FUSE layer; until it
-# lands zeta-cache has no mountpoint and sync never leaves the idle state):
-#
-#   macOS:      ./zeta-cache-bin --config zeta-cache.json  (mounts via
-#               macFUSE at cfg.mountpoint once leaf 02 lands)
-#   Linux:      fuse3/go-fuse, same config key.
-#   Then:       write a file in the mount, wait for the ~2s prompt-upload
-#               debounce (leaf 07), PROPFIND the bucket to see it.
-#
-# Sync-surface assertions (leaf 04) will live here: PUT through the mount
-# with If-Match, conflict-copy naming, batch delete via ?batch.
-echo '  (SKIP: mount/sync assertions wait for leaves 02 and 04)'
+# --- 40e: mount section (leaf 02) -------------------------------------
+# FUSE availability probe: /dev/fuse on Linux, mount_osxfuse/mount_macfuse
+# on macOS. Absent -> graceful skip with the documented message (this is
+# the path CI linux runners exercise; leaf 02 acceptance item 2).
+ZC_FUSE=0
+if [ -e /dev/fuse ]; then
+	ZC_FUSE=1
+elif command -v mount_osxfuse >/dev/null 2>&1 || command -v mount_macfuse >/dev/null 2>&1; then
+	ZC_FUSE=1
+fi
+if [ "$ZC_FUSE" -eq 0 ]; then
+	echo '  (SKIP: FUSE unavailable - install macFUSE (macOS) or run on a host with /dev/fuse (Linux); CI runners exercise this skip)'
+else
+	# GREEN PATH (manual, on a FUSE-capable host): mount against the live
+	# gateway and run the round-trip. The daemon leaves the mountpoint
+	# attached, so the case unmounts in cleanup. Steps per the leaf:
+	#   mount -> create file via mount -> PROPFIND sees it server-side ->
+	#   S3 PUT server-side -> file appears in the mount -> read back.
+	echo '  (mount section: FUSE present - running the live round-trip)'
+	ZC_MNT="$ZC_ROOT/mnt-manual"
+	mkdir -p "$ZC_MNT" "$ZC_ROOT/cache-manual" "$ZC_ROOT/run"
+	cat > "$ZC_WORK/fuse.json" <<EOF
+{
+  "serverUrl": "$ZC_ENDPOINT",
+  "bucket": "$ZC_BKT",
+  "auth": {"accessKey": "$ZC_USER", "secretKey": "$ZC_PASS"},
+  "cacheDir": "$ZC_ROOT/cache-manual",
+  "mountpoint": "$ZC_MNT",
+  "ipcSocket": "$ZC_ROOT/run/f.ipc"
+}
+EOF
+	"$ZC_BIN" --config "$ZC_WORK/fuse.json" >"$ZC_WORK/fuse.log" 2>&1 &
+	ZC_FUSE_PID=$!
+	ZC_FUSE_OK=0
+	for _ in $(seq 1 25); do
+		[ -S "$ZC_ROOT/run/f.ipc" ] && mountpoint -q "$ZC_MNT" 2>/dev/null && ZC_FUSE_OK=1 && break
+		# macOS has no mountpoint(1); check for a fuse mount in mount(8).
+		mount | grep -q "on $ZC_MNT " && ZC_FUSE_OK=1 && break
+		kill -0 "$ZC_FUSE_PID" 2>/dev/null || break
+		sleep 0.2
+	done
+	assert_eq 'daemon mounts the bucket namespace' 1 "$ZC_FUSE_OK"
+	if [ "$ZC_FUSE_OK" -eq 1 ]; then
+		# create via mount -> server-side PROPFIND
+		echo 'e2e via fuse' > "$ZC_MNT/fuse-roundtrip.txt"
+		sleep 2 # prompt-upload debounce budget (leaf 07 tightens)
+		W40_BODY=$(curl -sk --user "$ZC_USER:$ZC_PASS" \
+			-X PROPFIND -H 'Depth: 1' "$ZC_ENDPOINT/$ZC_BKT/" 2>/dev/null)
+		assert_contains 'file written via mount appears server-side' "$W40_BODY" 'fuse-roundtrip.txt'
+		# server-side write -> visible in the mount (PROPFIND-driven)
+		echo 'server wrote me' | curl -sk --user "$ZC_USER:$ZC_PASS" \
+			--data-binary @- -X PUT "$ZC_ENDPOINT/$ZC_BKT/server-seed.txt" >/dev/null
+		sleep 2 # sync-scan budget (leaf 04 tightens)
+		assert_contains 'server-side write surfaces in the mount' "$(ls "$ZC_MNT" 2>/dev/null)" 'server-seed.txt'
+		# read back through the mount
+		W40_READ=$(cat "$ZC_MNT/server-seed.txt" 2>/dev/null)
+		assert_contains 'server-seeded file reads back through the mount' "$W40_READ" 'server wrote me'
+	fi
+	kill -TERM "$ZC_FUSE_PID" 2>/dev/null
+	for _ in $(seq 1 25); do
+		kill -0 "$ZC_FUSE_PID" 2>/dev/null || break
+		sleep 0.2
+	done
+	if kill -0 "$ZC_FUSE_PID" 2>/dev/null; then
+		kill -9 "$ZC_FUSE_PID" 2>/dev/null
+		wait "$ZC_FUSE_PID" 2>/dev/null
+	fi
+	umount "$ZC_MNT" 2>/dev/null || umount -f "$ZC_MNT" 2>/dev/null || true
+fi
