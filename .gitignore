@@ -19,3 +19,6 @@ vendor/s3-tests-venv/
 .claude/
 __pycache__/
 zeta-cache-bin
+
+# Local e2e scratch binary (scripts/e2e/h3probe built at the repo root by hand)
+h3probe
