@@ -291,13 +291,21 @@ EOF
 	"$ZC_BIN" --config "$ZC_WORK/fuse.json" >"$ZC_WORK/fuse.log" 2>&1 &
 	ZC_FUSE_PID=$!
 	ZC_FUSE_OK=0
-	for _ in $(seq 1 25); do
+	for _ in $(seq 1 50); do
 		[ -S "$ZC_ROOT/run/f.ipc" ] && mountpoint -q "$ZC_MNT" 2>/dev/null && ZC_FUSE_OK=1 && break
 		# macOS has no mountpoint(1); check for a fuse mount in mount(8).
 		mount | grep -q "on $ZC_MNT " && ZC_FUSE_OK=1 && break
 		kill -0 "$ZC_FUSE_PID" 2>/dev/null || break
-		sleep 0.2
+		sleep 0.3
 	done
+	if [ "$ZC_FUSE_OK" -eq 0 ]; then
+		# Diagnose-before-fail: the daemon's own log names the mount error
+		# (fusermount permissions, stale mountpoint, kernel ABI). The trap
+		# below keeps CI output actionable instead of a bare expected/actual.
+		echo '  (mount failed - daemon log:)'
+		tail -20 "$ZC_WORK/fuse.log" 2>/dev/null || echo '  (no fuse.log)'
+		kill -0 "$ZC_FUSE_PID" 2>/dev/null && echo '  (daemon still running)' || echo '  (daemon EXITED)'
+	fi
 	assert_eq 'daemon mounts the bucket namespace' 1 "$ZC_FUSE_OK"
 	if [ "$ZC_FUSE_OK" -eq 1 ]; then
 		# create via mount -> server-side PROPFIND
