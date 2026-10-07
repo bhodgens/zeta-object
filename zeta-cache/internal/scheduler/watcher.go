@@ -141,8 +141,10 @@ func (w *watcher) drain(ctx context.Context, pending map[string]bool) bool {
 		}
 		r, err := w.store.Get(ctx, key)
 		if err != nil || !r.Dirty {
+			w.log.Printf("watch: drain skip %s (get err=%v dirty=%v)", key, err, err == nil && r.Dirty)
 			continue // cleaned by sync, deleted, or never tracked dirty
 		}
+		w.log.Printf("watch: drain upload %s", key)
 		if w.up != nil {
 			if err := w.up.UploadFile(ctx, key); err != nil {
 				if errors.Is(err, context.Canceled) {
