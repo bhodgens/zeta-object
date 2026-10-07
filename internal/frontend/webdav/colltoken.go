@@ -73,7 +73,22 @@ func collectionTokenSig(sigs []childSig) string {
 // delimiter List walk (the Depth-0 path; Depth 1 reuses the listed children
 // via tokenFromChildren instead). bucket "" (mode-A root) yields "" — the
 // synthetic root spans buckets and has no single delimiter listing.
-func collectionToken(ctx context.Context, be backend.Backend, bucket, prefix string) string {
+//
+// hidden, when non-nil, is the delete-marker consult applied to every child
+// key the walk returns. It MUST be supplied whenever the caller has a resolver
+// wired: a versioning-Enabled DELETE leaves the data file on disk, so the raw
+// List still returns the tombstoned key while the PROPFIND row set drops it
+// (childEntries applies the same consult). Without the filter the token
+// described a listing the server no longer serves, so it did NOT move across a
+// deletion and a syncing client never learned the key was gone — measured
+// before this fix (bughunt 2026-10-06 M2):
+//
+//	/2024/ token before DELETE = dir-611feda296f6e125
+//	/2024/ token after  marker  = dir-611feda296f6e125   (unchanged)
+//
+// Common-prefix children are NOT filtered: a collection is a namespace shape
+// with no object behind it, so no delete marker can hide one.
+func collectionToken(ctx context.Context, be backend.Backend, bucket, prefix string, hidden func(key string) bool) string {
 	if bucket == "" {
 		return ""
 	}
@@ -93,6 +108,9 @@ func collectionToken(ctx context.Context, be backend.Backend, bucket, prefix str
 			return "" // fail soft: hint, not correctness
 		}
 		for _, obj := range p.Objects {
+			if hidden != nil && hidden(obj.Key) {
+				continue // same visibility rule childEntries applies
+			}
 			sigs = append(sigs, childSig{name: obj.Key, size: obj.Size, mod: obj.LastModified.UnixNano()})
 		}
 		for _, cp := range p.CommonPrefixes {
@@ -133,9 +151,17 @@ func tokenFromChildren(children []propfindEntry) string {
 // tokenForEntry resolves the token for a collection entry with a dedicated
 // List walk (Depth 0 / single-row paths), leaving files and not-found rows
 // untouched.
+//
+// The walk applies the SAME delete-marker visibility rule childEntries applies
+// to the Depth-1 rows, so the Depth-0 token and the Depth-1 listing describe one
+// state. Passing the consult through here is the whole M2 fix: the token must
+// move when a child is tombstoned, because a caching client reads "unchanged
+// token" as "nothing changed here".
 func (f *Frontend) tokenForEntry(ctx context.Context, e *propfindEntry, prefix string) {
 	if !e.isColl || !e.found || e.bucket == "" {
 		return
 	}
-	e.collToken = collectionToken(ctx, f.be, e.bucket, prefix)
+	e.collToken = collectionToken(ctx, f.be, e.bucket, prefix, func(key string) bool {
+		return f.objectHiddenByDeleteMarker(e.bucket, key)
+	})
 }

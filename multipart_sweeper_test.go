@@ -102,7 +102,7 @@ func TestSweepAllBucketsOnce_CustomConfigBucket(t *testing.T) {
 // yields 0 and no panic.
 func TestSweepAllBucketsOnce_MissingDataDir(t *testing.T) {
 	_ = mpTestConfig(t) // saves/restores *serverConfig()
-	setServerConfigField(func(c *ServerConfig) { c.DataDir = filepath.Join(t.TempDir(), "does", "not", "exist") })
+	setServerConfigFieldT(t, func(c *ServerConfig) { c.DataDir = filepath.Join(t.TempDir(), "does", "not", "exist") })
 	if got := sweepAllBucketsOnce(); got != 0 {
 		t.Fatalf("sweepAllBucketsOnce = %d, want 0", got)
 	}

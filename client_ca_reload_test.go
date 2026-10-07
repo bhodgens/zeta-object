@@ -178,8 +178,8 @@ func installCAPKITestWiring(t *testing.T) *caTestPKI {
 	prevStore := configStore
 	prevCreds := serverCredentials
 	identityRegistry = auth.NewReloadableRegistry(reg)
-	setServerConfigField(func(c *ServerConfig) { c.CertFile = certPath; c.KeyFile = keyPath })
-	setServerConfigField(func(c *ServerConfig) { c.DataDir = dataDir + "/" })
+	setServerConfigFieldT(t, func(c *ServerConfig) { c.CertFile = certPath; c.KeyFile = keyPath })
+	setServerConfigFieldT(t, func(c *ServerConfig) { c.DataDir = dataDir + "/" })
 	serverCredentials.AccessKeyID, serverCredentials.SecretAccessKey = "env-ak", "env-sk"
 	t.Cleanup(func() {
 		identityRegistry = prevReg

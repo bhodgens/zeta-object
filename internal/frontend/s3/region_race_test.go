@@ -10,6 +10,7 @@
 //
 // This test FAILS (under -race) on the old plain-var implementation and PASSES
 // on the atomic.Pointer one. Run it as:
+//
 //	go test ./internal/frontend/s3 -race -run TestRegionConcurrentSetAndRead
 package s3
 

@@ -300,7 +300,13 @@ func (f *Frontend) rootEntries(ctx context.Context, depth1, write bool) ([]propf
 				return nil, err
 			}
 			out = append(out, children...)
-			root.collToken = tokenFromChildren(children)
+			// out[0], NOT the local `root`: the slice element was copied
+			// when `out` was built, so assigning to `root` left the row the
+			// 207 actually renders with an empty token. Measured before this
+			// fix (bughunt 2026-10-06 M3):
+			//   Depth-1 root getetag = ""
+			//   Depth-0 root getetag = "dir-8419b82681603009"
+			out[0].collToken = tokenFromChildren(children)
 		}
 		return out, nil
 	}

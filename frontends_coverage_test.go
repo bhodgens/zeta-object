@@ -207,8 +207,8 @@ func TestLoadServerTLSCertPair(t *testing.T) {
 		certPath, keyPath := writeTestServerCertPair(t)
 		prevCfg := *serverConfig()
 		t.Cleanup(func() { setServerConfig(prevCfg) })
-		setServerConfigField(func(c *ServerConfig) { c.CertFile = certPath })
-		setServerConfigField(func(c *ServerConfig) { c.KeyFile = keyPath })
+		setServerConfigFieldT(t, func(c *ServerConfig) { c.CertFile = certPath })
+		setServerConfigFieldT(t, func(c *ServerConfig) { c.KeyFile = keyPath })
 
 		cfg, err := loadServerTLSCertPair()
 		if err != nil {
@@ -225,8 +225,8 @@ func TestLoadServerTLSCertPair(t *testing.T) {
 	t.Run("missing file errors", func(t *testing.T) {
 		prevCfg := *serverConfig()
 		t.Cleanup(func() { setServerConfig(prevCfg) })
-		setServerConfigField(func(c *ServerConfig) { c.CertFile = filepath.Join(t.TempDir(), "absent.pem") })
-		setServerConfigField(func(c *ServerConfig) { c.KeyFile = filepath.Join(t.TempDir(), "absent.key") })
+		setServerConfigFieldT(t, func(c *ServerConfig) { c.CertFile = filepath.Join(t.TempDir(), "absent.pem") })
+		setServerConfigFieldT(t, func(c *ServerConfig) { c.KeyFile = filepath.Join(t.TempDir(), "absent.key") })
 
 		_, err := loadServerTLSCertPair()
 		if err == nil {

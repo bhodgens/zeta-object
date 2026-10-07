@@ -434,5 +434,5 @@ func batchDelete(ctx context.Context, bucket, bucketPath, key, ifMatch string) e
 	if suppress {
 		return nil
 	}
-	return deleteObjectCore(bucketPath, bucket, key)
+	return deleteObjectCore(ctx, bucketPath, bucket, key)
 }

@@ -723,7 +723,7 @@ func deleteObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, obj
 		return
 	}
 
-	if err := deleteObjectCore(bucketPath, bucketName, objectName); err != nil {
+	if err := deleteObjectCore(r.Context(), bucketPath, bucketName, objectName); err != nil {
 		log.Printf("Error deleting object %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), err)
 		writeS3ErrorFrom(w, err)
 		return
@@ -738,12 +738,26 @@ func deleteObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, obj
 // semantics). Returns an error only on real I/O failure of the data file.
 // Data-plane flip (leaf 02): the delete goes through the Backend seam; this
 // wrapper keeps the after_delete action-context plumbing handler-side.
-func deleteObjectCore(bucketPath, bucketName, objectName string) error {
+//
+// ctx is the request context (nil degrades to Background). It is NOT the
+// versioned-marker step: every caller must consult
+// deleteObjectVersionedMarker FIRST and skip this function when it reports
+// suppression, exactly as deleteObjectHandler does. On a versioning-Enabled
+// bucket, reaching deleteObjectCore for a key whose marker was NOT written
+// destroys the bytes unrecoverably (bughunt 2026-10-06 M1) - which is how
+// POST /{bucket}?delete silently diverged from a single DELETE.
+func deleteObjectCore(ctx context.Context, bucketPath, bucketName, objectName string) error {
 	if err := validateObjectKey(objectName); err != nil {
 		return objectmodel.ErrInvalidArgument(err.Error())
 	}
+	// The CALLER's context, not a fresh Background: on the batch surfaces
+	// (DeleteObjects' 1000-key manifest, ?batch) a disconnected client must
+	// stop the remaining work. bughunt 2026-10-06 M1.
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	delErr := backendCallBucketErr(bucketName, func(b backend.Backend) error {
-		return b.Delete(context.Background(), bucketName, objectName)
+		return b.Delete(ctx, bucketName, objectName)
 	})
 	if delErr != nil {
 		return delErr
@@ -1844,6 +1858,21 @@ type deleteBatchExecutor struct {
 	ctx    context.Context
 }
 
+// itemCtx resolves the context an item runs under, mirroring
+// s3BatchExecutor.itemCtx: the caller's per-item context wins, the executor's
+// stored one is the fallback, and never nil (bughunt 2026-10-06 M1 - the
+// manifest's 1000 keys must stop on client disconnect, which a hardcoded
+// context.Background() in deleteObjectCore prevented).
+func (e deleteBatchExecutor) itemCtx(ctx context.Context) context.Context {
+	if ctx != nil {
+		return ctx
+	}
+	if e.ctx != nil {
+		return e.ctx
+	}
+	return context.Background()
+}
+
 func (e deleteBatchExecutor) Copy(_ context.Context, _, _, _ string) error {
 	// DeleteObjects carries delete items only.
 	return objectmodel.ErrInvalidArgument("DeleteObjects carries delete operations only")
@@ -1853,8 +1882,23 @@ func (e deleteBatchExecutor) Move(_ context.Context, _, _, _ string) error {
 	return objectmodel.ErrInvalidArgument("DeleteObjects carries delete operations only")
 }
 
-func (e deleteBatchExecutor) Delete(_ context.Context, key, _ string) error {
-	if err := deleteObjectCore(getBucketPath(e.bucket), e.bucket, key); err != nil {
+func (e deleteBatchExecutor) Delete(ctx context.Context, key, _ string) error {
+	// Versioned-marker FIRST, exactly as deleteObjectHandler does (M1): on a
+	// versioning-Enabled bucket a DELETE records a recoverable marker and
+	// suppresses the plain delete. Calling deleteObjectCore directly - as this
+	// executor used to - HARD-deleted the bytes on the same bucket the single
+	// DELETE protected, so POST /{bucket}?delete destroyed data that one
+	// request earlier had preserved recoverably. The JSON ?batch surface
+	// already did this (batchDelete); the S3 XML manifest surface did not.
+	bucketPath := getBucketPath(e.bucket)
+	suppress, markerErr := deleteObjectVersionedMarker(bucketPath, e.bucket, key)
+	if markerErr != nil {
+		return markerErr
+	}
+	if suppress {
+		return nil
+	}
+	if err := deleteObjectCore(e.itemCtx(ctx), bucketPath, e.bucket, key); err != nil {
 		var oe *objectmodel.Error
 		if errors.As(err, &oe) && oe.Code == objectmodel.CodeNoSuchKey {
 			return nil // S3 semantics: a missing key still reports Deleted

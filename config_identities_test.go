@@ -84,7 +84,7 @@ func TestBuildIdentityRegistryEnvMerge(t *testing.T) {
 	saved := *serverConfig()
 	defer func() { setServerConfig(saved) }()
 	setServerConfig(defaultServerConfig())
-	setServerConfigField(func(c *ServerConfig) {
+	setServerConfigFieldT(t, func(c *ServerConfig) {
 		c.Identities = []auth.IdentityConfig{
 			{Name: "ci-bot", AccessKey: "AKCI", SecretKey: "sk-ci"},
 			{Name: "scraper", AccessKey: "AKRO", SecretKey: "sk-ro", Grants: rawGrants(map[string]string{"photos": "readonly"})},
@@ -143,7 +143,7 @@ func TestBuildIdentityRegistryDuplicates(t *testing.T) {
 
 	t.Run("config vs env", func(t *testing.T) {
 		setServerConfig(defaultServerConfig())
-		setServerConfigField(func(c *ServerConfig) {
+		setServerConfigFieldT(t, func(c *ServerConfig) {
 			c.Identities = []auth.IdentityConfig{
 				{Name: "clash", AccessKey: "AKENV", SecretKey: "sk-x"},
 			}
@@ -158,7 +158,7 @@ func TestBuildIdentityRegistryDuplicates(t *testing.T) {
 	})
 	t.Run("config vs config", func(t *testing.T) {
 		setServerConfig(defaultServerConfig())
-		setServerConfigField(func(c *ServerConfig) {
+		setServerConfigFieldT(t, func(c *ServerConfig) {
 			c.Identities = []auth.IdentityConfig{
 				{Name: "a", AccessKey: "AKX", SecretKey: "sk-a"},
 				{Name: "b", AccessKey: "AKX", SecretKey: "sk-b"},
@@ -191,7 +191,7 @@ func TestBuildIdentityRegistryValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			setServerConfig(defaultServerConfig())
-			setServerConfigField(func(c *ServerConfig) { c.Identities = tc.identities })
+			setServerConfigFieldT(t, func(c *ServerConfig) { c.Identities = tc.identities })
 			serverConfig().Auth.Mode = tc.mode
 			_, err := buildIdentityRegistry()
 			if err == nil {

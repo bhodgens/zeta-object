@@ -93,10 +93,10 @@ func TestLoadConfigNoPartialMutation(t *testing.T) {
 
 	// Seed the global with known-valid values
 	setServerConfig(defaultServerConfig())
-	setServerConfigField(func(c *ServerConfig) { c.DataDir = "/original/data/" })
-	setServerConfigField(func(c *ServerConfig) { c.ListenAddr = ":9999" })
-	setServerConfigField(func(c *ServerConfig) { c.CertFile = "/original/cert.pem" })
-	setServerConfigField(func(c *ServerConfig) { c.KeyFile = "/original/key.pem" })
+	setServerConfigFieldT(t, func(c *ServerConfig) { c.DataDir = "/original/data/" })
+	setServerConfigFieldT(t, func(c *ServerConfig) { c.ListenAddr = ":9999" })
+	setServerConfigFieldT(t, func(c *ServerConfig) { c.CertFile = "/original/cert.pem" })
+	setServerConfigFieldT(t, func(c *ServerConfig) { c.KeyFile = "/original/key.pem" })
 
 	dir := t.TempDir()
 	badPath := filepath.Join(dir, "bad.json")

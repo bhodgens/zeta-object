@@ -458,8 +458,8 @@ func TestInitConfigStoreStartupWiring(t *testing.T) {
 
 	dir := t.TempDir()
 	setServerConfig(defaultServerConfig())
-	setServerConfigField(func(c *ServerConfig) { c.DataDir = dir + "/" })
-	setServerConfigField(func(c *ServerConfig) { c.Region = "ap-south-1" })
+	setServerConfigFieldT(t, func(c *ServerConfig) { c.DataDir = dir + "/" })
+	setServerConfigFieldT(t, func(c *ServerConfig) { c.Region = "ap-south-1" })
 
 	st := initConfigStore()
 	if st == nil || configStore == nil {

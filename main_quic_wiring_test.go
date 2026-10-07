@@ -93,10 +93,10 @@ func installH3ProcessWiring(t *testing.T, pki *mainH3PKI) func() {
 	prevReg := identityRegistry
 	identityRegistry = auth.NewReloadableRegistry(pki.registry)
 	prevCert, prevKey := serverConfig().CertFile, serverConfig().KeyFile
-	setServerConfigField(func(c *ServerConfig) { c.CertFile = pki.certPath; c.KeyFile = pki.keyPath })
+	setServerConfigFieldT(t, func(c *ServerConfig) { c.CertFile = pki.certPath; c.KeyFile = pki.keyPath })
 	return func() {
 		identityRegistry = prevReg
-		setServerConfigField(func(c *ServerConfig) { c.CertFile = prevCert; c.KeyFile = prevKey })
+		setServerConfigFieldT(t, func(c *ServerConfig) { c.CertFile = prevCert; c.KeyFile = prevKey })
 	}
 }
 

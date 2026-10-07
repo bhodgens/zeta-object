@@ -3,19 +3,24 @@
 // THE CLASS: one PUT /config patch feeds FOUR authorities that each derived
 // their answer independently:
 //
-//	 1. serverConfig()          — the atomic pointer (config.go)
-//	 2. the installed s3 view   — installServerConfigView (seam.go)
-//	 3. the fs-root resolver    — a closure wired ONCE at startup
-//	 4. the backend lookup      — built ONCE at startup
+//  1. serverConfig()          — the atomic pointer (config.go)
+//  2. the installed s3 view   — installServerConfigView (seam.go)
+//  3. the fs-root resolver    — a closure wired ONCE at startup
+//  4. the backend lookup      — built ONCE at startup
 //
 // H1: applyHotSeams installed the CANDIDATE wholesale, so a restart-required
-//     key in the same patch reached the live data plane while GET /config
-//     (which reads s.live) reported the old value.
+//
+//	key in the same patch reached the live data plane while GET /config
+//	(which reads s.live) reported the old value.
+//
 // H2: with four authorities, one of them must be wrong; the resolver and the
-//     backend lookup stayed frozen at the startup generation.
+//
+//	backend lookup stayed frozen at the startup generation.
+//
 // H3: the security-relevant consequence — validBucket reads the HOT view while
-//     getBucketPath went through the STARTUP-frozen resolver, so the gate
-//     authorized one path and the data plane used another.
+//
+//	getBucketPath went through the STARTUP-frozen resolver, so the gate
+//	authorized one path and the data plane used another.
 //
 // Every test below drives the REAL Apply path and reads the REAL seams.
 package main
@@ -79,7 +84,7 @@ func TestHotPatchKeepsRestartRequiredKeyOutOfTheLiveView(t *testing.T) {
 	t.Cleanup(installTestConfigSync)
 
 	applied, restart, err := configStore.Apply(ConfigPatch{JSON: []byte(
-		`{"dataDir":"` + newRoot + `","region":"eu-central-1"}`)}, )
+		`{"dataDir":"` + newRoot + `","region":"eu-central-1"}`)})
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}

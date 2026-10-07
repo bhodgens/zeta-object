@@ -5,13 +5,13 @@ BINARY_NAME := zeta-object-server
 # The web console is a second binary (cmd/admin-server); `build` produces both.
 ADMIN_BINARY_NAME := zeta-object-admin
 
-# Coverage floor. Measured 47.9% aggregate (go test -cover ./...) after the
-# frontend-interface split (2026-09) moved code from package main into
-# internal/frontend/s3 (own-package coverage there is 24.3%). The old floor of
-# 70 was set when the whole S3 layer lived in package main and broke the moment
-# the split landed. This floor must ratchet back up as tests land in the new
-# packages - see AGENTS.md "Coverage floors move with code".
-COVER_MIN := 47
+# Coverage floor. Measured 82.4% aggregate (`go test -cover ./...`, 2026-10-06)
+# - the 47 that sat here since the 2026-09 frontend-interface split was never
+# ratcheted, so the gate could not detect a regression of any size this decade
+# could cause. Set to 80 (one margin under the measurement, and under the 81.0
+# the same tree reports WITH -race). This floor must ratchet back up as tests
+# land - see AGENTS.md "Coverage floors move with code".
+COVER_MIN := 80
 
 # Lint only issues introduced since NEW_FROM_REV (any rev/ref):
 #   make lint NEW_FROM_REV=HEAD
@@ -20,7 +20,7 @@ NEW_FROM_REV ?=
 GO_TOOLS_MISSING :=
 
 .PHONY: help build run admin-server certs data_dir clean \
-        test test-verbose test-race test-cover test-cover-enforce fuzz bench \
+        test test-verbose test-race test-shuffle test-shuffle-quick test-cover test-cover-enforce fuzz bench \
         lint vet fmt fmt-check mod-tidy mod-tidy-check mod-verify \
         precommit check vuln secrets e2e hooks zeta-cache
 
@@ -38,6 +38,8 @@ help:
 	@echo "  test             Run tests (count=1, coverage summary)"
 	@echo "  test-verbose     Run tests with -v"
 	@echo "  test-race        Run tests with the race detector"
+	@echo "  test-shuffle     Run package main under 6 fixed shuffle seeds (order-dependence gate)"
+	@echo "  test-shuffle-quick  One shuffle seed (12345) for a fast pre-push check"
 	@echo "  test-cover       Run tests with HTML coverage report"
 	@echo "  test-cover-enforce  Fail if coverage drops below $(COVER_MIN)%"
 	@echo "  fuzz             Run fuzz targets (30s each)"
@@ -127,6 +129,21 @@ test-verbose:
 test-race:
 	@go test -race -count=1 ./...
 
+# Order-dependence gate (bughunt 2026-10-06 X1). The suite passes in
+# declaration order no matter how much global state a test leaks, so the
+# shuffle seeds are the only honest check: 269c193 shipped 138 failing tests
+# under -shuffle=12345 while `make test` stayed green, and every seed below
+# passes on its parent commit. Cheap enough for `check`; NOT in `precommit`,
+# because it re-runs package main's whole suite several times over.
+test-shuffle:
+	@for seed in 1 7 11 23 12345 99999; do \
+		echo "shuffle seed $$seed"; \
+		go test . -count=1 -shuffle=$$seed || exit 1; \
+	done
+
+test-shuffle-quick:
+	@go test . -count=1 -shuffle=12345
+
 test-cover:
 	@mkdir -p coverage
 	@go test -count=1 -coverprofile=coverage/coverage.out ./...
@@ -209,19 +226,43 @@ parity-test: ## Run the S3 parity gates: metadata (FS vs provider-enabled) and o
 	go test ./internal/objectmodel/ -run 'TestSnapshotHeaders|TestAssertHeaderParity' -count=1 -v
 
 # Full local gate: what a push should pass.
-check: precommit test-race vuln secrets
+check: precommit test-race test-shuffle vuln secrets
 	@echo ""
 	@echo "check gate passed (build, vet, fmt, lint, test, tidy, race, vuln, secrets)."
 
+# Fail CLOSED when the scanner is missing (bughunt 2026-10-06 G1): a green
+# `make check` with zero vulnerability scanning is worse than a red one. Set
+# SKIP_SCANNERS=1 to opt out explicitly and have the skip PRINTED.
+# One shell per line: the presence check and the scan must be the SAME `if`,
+# because make runs each recipe LINE in its own shell - an `exit 0` in an
+# earlier line does not stop the next line from invoking the absent binary.
 vuln:
-	@which govulncheck > /dev/null 2>&1 || { echo "govulncheck not installed, skipping. Install: go install golang.org/x/vuln/cmd/govulncheck@latest"; exit 0; }
-	@echo "Running govulncheck..."
-	@govulncheck ./...
+	@if ! which govulncheck > /dev/null 2>&1; then \
+		if [ "$${SKIP_SCANNERS:-0}" = "1" ]; then \
+			echo "SKIPPED govulncheck (SKIP_SCANNERS=1) - vulnerability scanning did NOT run"; \
+		else \
+			echo "FAIL: govulncheck not installed. Install: go install golang.org/x/vuln/cmd/govulncheck@latest"; \
+			echo "      (or set SKIP_SCANNERS=1 to accept an unscanned build)"; \
+			exit 1; \
+		fi; \
+	else \
+		echo "Running govulncheck..."; \
+		govulncheck ./...; \
+	fi
 
 secrets:
-	@which gitleaks > /dev/null 2>&1 || { echo "gitleaks not installed, skipping. Install: brew install gitleaks"; exit 0; }
-	@echo "Running gitleaks..."
-	@gitleaks detect --source . --config .gitleaks.toml
+	@if ! which gitleaks > /dev/null 2>&1; then \
+		if [ "$${SKIP_SCANNERS:-0}" = "1" ]; then \
+			echo "SKIPPED gitleaks (SKIP_SCANNERS=1) - secret scanning did NOT run"; \
+		else \
+			echo "FAIL: gitleaks not installed. Install: brew install gitleaks"; \
+			echo "      (or set SKIP_SCANNERS=1 to accept an unscanned build)"; \
+			exit 1; \
+		fi; \
+	else \
+		echo "Running gitleaks..."; \
+		gitleaks detect --source . --config .gitleaks.toml; \
+	fi
 
 # =============================================================================
 # E2E (suite lands with leaf 3.6 — fail with a clear message until then)

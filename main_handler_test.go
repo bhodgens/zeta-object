@@ -1722,7 +1722,7 @@ func TestPutObjectHandler_DecodedLengthMismatch(t *testing.T) {
 
 func (env *testEnv) serverConfigBuckets(t *testing.T, buckets map[string]string) {
 	t.Helper()
-	setServerConfigField(func(c *ServerConfig) { c.Buckets = buckets })
+	setServerConfigFieldT(t, func(c *ServerConfig) { c.Buckets = buckets })
 	_ = env
 }
 

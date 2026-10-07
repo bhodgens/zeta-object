@@ -121,6 +121,20 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	return s.ResponseWriter.Write(b)
 }
 
+// Unwrap returns the wrapped http.ResponseWriter so http.ResponseController can
+// walk down to the real response and reach its optional capabilities (Flush,
+// Hijack, SetReadDeadline, SetWriteDeadline).
+//
+// The embedded field is an INTERFACE, so nothing is promoted through it: an
+// embedded concrete *http.response's Flush would promote onto this struct, but
+// an embedded http.ResponseWriter's method set is exactly the interface's six
+// methods. Without this, the controller's rwUnwrapper walk stops here and
+// every capability degrades to ErrNotSupported for every authenticated admin
+// request. Commit 2e0d736 added the same method to the s3 twin
+// (internal/frontend/s3/audit_log.go) and to altsvc.go, and stopped one layer
+// short of this file (bughunt 2026-10-06 L3).
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
 // serveHTTP is the auth-wrapped entry point. Every route, including /status,
 // requires a verified client certificate; there is no unauthenticated route.
 // Every AUTHENTICATED request appends EXACTLY ONE audit record (principal =

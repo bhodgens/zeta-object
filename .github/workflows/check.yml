@@ -115,22 +115,22 @@ jobs:
           # s3 85.8, sftp 68.4, webdav 81.8, owncloud 89.7, metadata 89.0,
           # objectmodel 92.7.
           case "${{ matrix.package }}" in
-            github.com/bhodgens/zeta-object)       FLOOR=79 ;; # measured 79.5 local / 81.1 CI after the management-api + admin-server wiring tests (2026-10-04); RAISE as tests land
-            github.com/bhodgens/zeta-object/internal/auth)                 FLOOR=0  ;; # type-only seam interface: zero executable statements (contract pinned by tests)
-            github.com/bhodgens/zeta-object/internal/backend)              FLOOR=91 ;; # measured 93.9
-            github.com/bhodgens/zeta-object/internal/backend/conformance)  FLOOR=77 ;; # measured 79.0 - remaining bodies are violation-reporting, proven by detection_test.go child harness
+            github.com/bhodgens/zeta-object)              FLOOR=80 ;; # measured 82.4 without -race / 81.0 WITH -race (the CI job runs -race; the floor must clear the lower number); RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/auth) FLOOR=90 ;; # measured 91.5 (2026-10-06) - the floor said 'type-only seam, 0', but the package has 12 source files and 55 funcs; RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/backend) FLOOR=92 ;; # measured 93.9 (2026-10-06 ratchet); RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/backend/conformance) FLOOR=78 ;; # measured 79.0 (2026-10-06) - remaining bodies are violation-reporting, proven by detection_test.go child harness
             github.com/bhodgens/zeta-object/internal/backend/fsbackend)    FLOOR=83 ;; # measured 85.3
-            github.com/bhodgens/zeta-object/internal/bucketmanager)        FLOOR=80 ;; # measured 82.6 (new, 2026-10-04); RAISE as tests land
-            github.com/bhodgens/zeta-object/internal/frontend)             FLOOR=91 ;; # measured 93.4
-            github.com/bhodgens/zeta-object/internal/frontend/ftp)         FLOOR=56 ;; # measured 58.8
+            github.com/bhodgens/zeta-object/internal/bucketmanager) FLOOR=87 ;; # measured 88.9 (2026-10-06 bughunt ratchet); RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/frontend) FLOOR=92 ;; # measured 93.3 (2026-10-06 ratchet); RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/frontend/ftp) FLOOR=66 ;; # measured 67.3 (2026-10-06 ratchet); RAISE as tests land
             github.com/bhodgens/zeta-object/internal/frontend/s3)          FLOOR=83 ;; # measured 85.8 (re-measured 85.0 2026-10-04)
-            github.com/bhodgens/zeta-object/internal/frontend/sftp)        FLOOR=66 ;; # measured 68.4
-            github.com/bhodgens/zeta-object/internal/frontend/webdav)      FLOOR=79 ;; # measured 81.8
-            github.com/bhodgens/zeta-object/internal/frontend/owncloud)    FLOOR=87 ;; # measured 89.7
-            github.com/bhodgens/zeta-object/internal/fslock)               FLOOR=98 ;; # measured 100.0 (new, 2026-10-04); RAISE as tests land
-            github.com/bhodgens/zeta-object/internal/metadata)             FLOOR=87 ;; # measured 89.0
-            github.com/bhodgens/zeta-object/internal/objectmodel)          FLOOR=90 ;; # measured 92.7
-            github.com/bhodgens/zeta-object/internal/adminserver)          FLOOR=84 ;; # measured 86.7 (new, 2026-10-04); RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/frontend/sftp) FLOOR=68 ;; # measured 69.8 (2026-10-06 ratchet); RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/frontend/webdav) FLOOR=83 ;; # measured 84.7 (2026-10-06 bughunt ratchet); RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/frontend/owncloud) FLOOR=92 ;; # measured 93.9 (2026-10-06 ratchet); RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/fslock) FLOOR=99 ;; # measured 100.0 (2026-10-06 ratchet); RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/metadata) FLOOR=91 ;; # measured 92.9 (2026-10-06 ratchet); RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/objectmodel) FLOOR=91 ;; # measured 92.8 (2026-10-06 ratchet); RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/adminserver) FLOOR=87 ;; # measured 88.4 (2026-10-06 ratchet); RAISE as tests land
             github.com/bhodgens/zeta-object/cmd/admin-server)              FLOOR=0  ;; # main-only console binary wiring: not unit-tested
           esac
           if [ "${{ matrix.package }}" = "github.com/bhodgens/zeta-object/internal/frontend/s3" ]; then
