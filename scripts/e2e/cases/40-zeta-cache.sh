@@ -251,7 +251,18 @@ assert_contains 'status answers ok:true' "$ZC_RESP" '"ok":true'
 assert_contains 'status reports state idle' "$ZC_RESP" '"state":"idle"'
 assert_contains 'status echoes the bucket' "$ZC_RESP" "\"bucket\":\"$ZC_BKT\""
 assert_contains 'status echoes the server url' "$ZC_RESP" "\"server\":\"$ZC_ENDPOINT\""
-assert_contains 'status lastSync is null' "$ZC_RESP" '"lastSync":null'
+# lastSync is now stamped by the startup sync (leaf 04): a unix-seconds
+# number, never null, on a daemon whose probe succeeded.
+# The startup sync stamps lastSync when it completes; on a 2-core CI
+# runner it may still be running when the first status lands - poll.
+ZC_LS=''
+for _ in $(seq 1 10); do
+	ZC_RESP=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"status"}')
+	ZC_LS=$(printf '%s' "$ZC_RESP" | grep -o '"lastSync":[0-9]*' | head -1)
+	[ -n "$ZC_LS" ] && break
+	sleep 1
+done
+assert_contains 'status lastSync stamped by initial sync' "$ZC_RESP" '"lastSync":1'
 assert_contains 'status carries protocol v1' "$ZC_RESP" '"v":1'
 
 ZC_RESP=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"frobnicate"}')
@@ -340,12 +351,20 @@ EOF
 	if [ "$ZC_FUSE_OK" -eq 1 ]; then
 		# create via mount -> server-side PROPFIND
 		echo 'e2e via fuse' > "$ZC_MNT/fuse-roundtrip.txt"
-		sleep 4 # prompt-upload debounce budget (leaf 07 tightens)
-		W40_BODY=$(curl -sk --user "$ZC_USER:$ZC_PASS" \
-			-X PROPFIND -H 'Depth: 1' "$ZC_ENDPOINT/$ZC_BKT/" 2>/dev/null)
+		# Prompt-upload: watcher debounce (2s) + PUT. Poll up to 12s before
+		# declaring failure - CI runners are slow and the debounce plus a
+		# PUT can exceed 4s.
+		W40_BODY=''
+		for _ in $(seq 1 6); do
+			sleep 2
+			W40_BODY=$(curl -sk --user "$ZC_USER:$ZC_PASS" \
+				-X PROPFIND -H 'Depth: 1' "$ZC_ENDPOINT/$ZC_BKT/" 2>/dev/null)
+			printf '%s' "$W40_BODY" | grep -q 'fuse-roundtrip.txt' && break
+		done
 		if ! printf '%s' "$W40_BODY" | grep -q 'fuse-roundtrip.txt'; then
-			echo '  (diag: file not server-side after 4s - daemon log:)'
+			echo '  (diag: file not server-side after 12s - daemon log:)'
 			tail -25 "$ZC_WORK/fuse.log" 2>/dev/null || echo '  (no fuse.log)'
+			echo '  (diag: ipc status:)' ; zc_status "$ZC_ROOT/run/f.ipc" '{"v":1,"type":"status"}' 2>/dev/null || true
 			echo "  (diag: cache files dir:)" ; ls -R "$ZC_ROOT/cache-manual" 2>/dev/null | head -20
 		fi
 		assert_contains 'file written via mount appears server-side' "$W40_BODY" 'fuse-roundtrip.txt'
