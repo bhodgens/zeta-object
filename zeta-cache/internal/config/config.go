@@ -20,27 +20,43 @@ type Auth struct {
 }
 
 // Quota fields are parsed by leaf 01; enforcement is leaf 07
-// (quota-eviction-scheduler).
+// (quota-eviction-scheduler). HighWaterPercent / LowWaterPercent default
+// to the locked 90 / 70 (leaf: "high-water ~90% starts eviction, low-water
+// ~70% is the eviction target"). TombstoneRetentionDays defaults to the
+// locked 30-day deletion grace.
 type Quota struct {
 	MaxCacheBytes   int64  `json:"maxCacheBytes,omitempty"`
 	MinFreeDevBytes int64  `json:"minFreeDeviceBytes,omitempty"`
 	Policy          string `json:"policy,omitempty"`
+	HighWaterPct    int    `json:"highWaterPercent,omitempty"`
+	LowWaterPct     int    `json:"lowWaterPercent,omitempty"`
+	TombstoneDays   int    `json:"tombstoneRetentionDays,omitempty"`
 }
 
 // Config is the zeta-cache daemon configuration. Every key is known; unknown
 // keys abort startup (Load uses DisallowUnknownFields, mirroring the
 // gateway's ServerConfig validator).
 type Config struct {
-	ServerURL  string   `json:"serverUrl"`
-	Bucket     string   `json:"bucket"`
-	Auth       Auth     `json:"auth"`
-	CacheDir   string   `json:"cacheDir,omitempty"`
-	IndexDB    string   `json:"indexDB,omitempty"`
-	Mountpoint string   `json:"mountpoint"`
-	IPCSocket  string   `json:"ipcSocket,omitempty"`
-	Quota      Quota    `json:"quota"`
-	LogLevel   string   `json:"logLevel,omitempty"`
-	Pins       []string `json:"pins,omitempty"`
+	ServerURL string `json:"serverUrl"`
+	Bucket    string `json:"bucket"`
+	Auth      Auth   `json:"auth"`
+	// CAFile is the PEM bundle the gateway's server certificate is
+	// verified against (self-signed private gateway: point it at the
+	// gateway's cert). Empty = the system trust pool.
+	CAFile string `json:"caFile,omitempty"`
+	// InsecureSkipVerify disables server-certificate verification. There
+	// is NO reason to set it outside throwaway loops: Load allows it but
+	// callers MUST log a WARNING when it is set (main.go does; the
+	// config-level default is false and stays undocumented in the
+	// examples).
+	InsecureSkipVerify bool     `json:"insecureSkipVerify,omitempty"`
+	CacheDir           string   `json:"cacheDir,omitempty"`
+	IndexDB            string   `json:"indexDB,omitempty"`
+	Mountpoint         string   `json:"mountpoint"`
+	IPCSocket          string   `json:"ipcSocket,omitempty"`
+	Quota              Quota    `json:"quota"`
+	LogLevel           string   `json:"logLevel,omitempty"`
+	Pins               []string `json:"pins,omitempty"`
 }
 
 // defaultCacheDir returns the per-OS app-data path for the cache.
@@ -130,9 +146,27 @@ func (c *Config) validate() error {
 		c.IPCSocket = filepath.Join(defaultRuntimeDir(), "zeta-cache.ipc")
 	}
 	switch c.Quota.Policy {
-	case "", "lru", "lifo", "pinned-first":
+	case "":
+		c.Quota.Policy = "lru" // locked default policy (leaf 07)
+	case "lru", "size", "size+age":
 	default:
-		return fmt.Errorf("config: quota.policy %q is not one of lru/lifo/pinned-first", c.Quota.Policy)
+		return fmt.Errorf("config: quota.policy %q is not one of size/size+age/lru", c.Quota.Policy)
+	}
+	if c.Quota.HighWaterPct == 0 {
+		c.Quota.HighWaterPct = 90
+	}
+	if c.Quota.LowWaterPct == 0 {
+		c.Quota.LowWaterPct = 70
+	}
+	if c.Quota.HighWaterPct <= c.Quota.LowWaterPct || c.Quota.HighWaterPct > 100 {
+		return fmt.Errorf("config: quota: highWaterPercent (%d) must be above lowWaterPercent (%d) and at most 100",
+			c.Quota.HighWaterPct, c.Quota.LowWaterPct)
+	}
+	if c.Quota.TombstoneDays == 0 {
+		c.Quota.TombstoneDays = 30
+	}
+	if c.Quota.TombstoneDays < 0 {
+		return fmt.Errorf("config: quota: tombstoneRetentionDays (%d) must be >= 0", c.Quota.TombstoneDays)
 	}
 	switch c.LogLevel {
 	case "":

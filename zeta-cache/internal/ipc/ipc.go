@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // Protocol version carried by every message.
@@ -18,6 +19,8 @@ type Request struct {
 	V    int    `json:"v"`
 	Type string `json:"type"`
 	Net  string `json:"net,omitempty"` // reserved for leaf 08
+	Path string `json:"path,omitempty"`
+	Pin  *bool  `json:"pin,omitempty"`
 }
 
 // StatusData is the payload of a successful status response.
@@ -29,6 +32,33 @@ type StatusData struct {
 	Dirty     int    `json:"dirty"`
 	Cached    int    `json:"cached"`
 	Conflicts int    `json:"conflicts"`
+	// Leaf 07 additions (additive fields; leaf-01 clients tolerate them
+	// because they only read the fields they know).
+	Paused      bool   `json:"paused"`
+	UsageBytes  int64  `json:"usageBytes"`
+	CapBytes    int64  `json:"capBytes"`
+	Overflow    int    `json:"overflow"`
+	Evicted     int64  `json:"evicted"`
+	LastEvictAt any    `json:"lastEvictAt"`
+	LastErr     string `json:"lastError,omitempty"`
+}
+
+// TombstoneData is the payload of the tombstones response (the GUI
+// restore view's input; the restore itself is leaf 08).
+type TombstoneData struct {
+	Tombstones []Tombstone `json:"tombstones"`
+}
+
+// Tombstone is one deletion-grace row.
+type Tombstone struct {
+	Path      string `json:"path"`
+	DeletedAt int64  `json:"deletedAt"` // unix seconds
+	ExpiresAt int64  `json:"expiresAt"` // unix seconds (DeletedAt + retention)
+}
+
+// PinData is the payload of the pins response.
+type PinData struct {
+	Pins []string `json:"pins"`
 }
 
 // Response is the wire shape of every IPC response.
@@ -37,19 +67,38 @@ type Response struct {
 	OK    bool        `json:"ok"`
 	Data  *StatusData `json:"data,omitempty"`
 	Error string      `json:"error,omitempty"`
+	// Extra carries the non-status payloads (tombstones/pins). It is a
+	// second optional field rather than a type union so the leaf-01
+	// status shape is untouched.
+	Extra any `json:"extra,omitempty"`
 }
 
-// ServerState is what status reports in data.state. Leaf 01 only ever
-// produces "idle"; leaves 04/07 introduce syncing/error transitions.
+// ServerState is what status reports in data.state when no live status
+// source is wired (leaf-01 static behavior).
 const ServerState = "idle"
 
+// Handler is the seam the daemon (leaf 07's scheduler wiring, leaf 08's
+// GUI) implements to serve the state-changing and query requests. A nil
+// field means the request answers with a capability error instead.
+type Handler interface {
+	// Pause suspends the scheduler loops; Resume restarts them. Both
+	// return the post-transition paused state.
+	Pause() (bool, error)
+	Resume() (bool, error)
+	// SetPin toggles the pinned flag for path (hydration on pin is the
+	// daemon's job).
+	SetPin(path string, pinned bool) error
+	// Pins lists the pinned paths.
+	Pins() ([]string, error)
+	// Tombstones lists the deletion-grace rows (path + window).
+	Tombstones() ([]Tombstone, error)
+}
+
 // StatusSource supplies the live status values for the status response.
-// Leaf 04 wires the sync engine through it (state/lastSync/dirty/
-// conflicts); a nil source keeps the leaf-01 static behavior (state
-// "idle", zero counters) - the protocol shape is unchanged.
+// Implementations must be safe for concurrent use and must not block on
+// the network.
 type StatusSource interface {
-	// IPCStatus returns the current values. Implementations must be
-	// safe for concurrent use and must not block on the network.
+	// IPCStatus returns the current values.
 	IPCStatus() StatusData
 }
 
@@ -59,11 +108,20 @@ type Server struct {
 	ln         net.Listener
 	socketPath string
 	status     StatusSource
+	handler    Handler
+	wg         *sync.WaitGroup
 }
 
 // Serve listens on socketPath (0600, stale socket file removed first) and
-// answers one JSON request per connection until Stop is called.
+// answers one JSON request per connection until Stop is called. handler
+// may be nil (leaf-01 behavior: only status answers; state-changing
+// requests get a capability error).
 func Serve(socketPath string, serverURL, bucket string, status StatusSource) (*Server, error) {
+	return ServeWithHandler(socketPath, serverURL, bucket, status, nil)
+}
+
+// ServeWithHandler is Serve plus the state-changing seam.
+func ServeWithHandler(socketPath string, serverURL, bucket string, status StatusSource, handler Handler) (*Server, error) {
 	if dir := filepath.Dir(socketPath); dir != "" {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, fmt.Errorf("ipc: creating %s: %w", dir, err)
@@ -91,18 +149,25 @@ func Serve(socketPath string, serverURL, bucket string, status StatusSource) (*S
 		_ = ln.Close()
 		return nil, fmt.Errorf("ipc: chmod %s: %w", socketPath, err)
 	}
-	srv := &Server{ln: ln, socketPath: socketPath, status: status}
-	go func() {
+	srv := &Server{ln: ln, socketPath: socketPath, status: status, handler: handler}
+	var wg sync.WaitGroup
+	srv.wg = &wg
+	wg.Go(func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				return // listener closed: Stop was called
 			}
-			handleConn(conn, serverURL, bucket, status)
+			handleConn(conn, serverURL, bucket, status, handler)
 		}
-	}()
+	})
 	return srv, nil
 }
+
+// wg tracks the accept loop so Stop waits for in-flight connections to
+// finish their response write instead of cutting them mid-write. (The
+// WaitGroup is populated in Serve; Stop's close happens-before the
+// Accept error return, so a concurrent Stop never misses the loop.)
 
 // Stop closes the listener and removes the socket file. Safe to call more
 // than once. In-flight connections are closed with the listener, which is
@@ -110,10 +175,13 @@ func Serve(socketPath string, serverURL, bucket string, status StatusSource) (*S
 // their socket instead of getting answers from a half-closed daemon.
 func (s *Server) Stop() {
 	_ = s.ln.Close()
+	if s.wg != nil {
+		s.wg.Wait()
+	}
 	_ = os.Remove(s.socketPath)
 }
 
-func handleConn(conn net.Conn, serverURL, bucket string, status StatusSource) {
+func handleConn(conn net.Conn, serverURL, bucket string, status StatusSource, handler Handler) {
 	defer conn.Close()
 	dec := json.NewDecoder(conn)
 	var req Request
@@ -139,9 +207,81 @@ func handleConn(conn net.Conn, serverURL, bucket string, status StatusSource) {
 			data = live
 		}
 		writeResponse(conn, Response{V: Version, OK: true, Data: &data})
+	case "pause", "resume":
+		if handler == nil {
+			writeResponse(conn, Response{V: Version, OK: false, Error: "not supported: no scheduler handler"})
+			return
+		}
+		var (
+			paused bool
+			err    error
+		)
+		if req.Type == "pause" {
+			paused, err = handler.Pause()
+		} else {
+			paused, err = handler.Resume()
+		}
+		if err != nil {
+			writeResponse(conn, Response{V: Version, OK: false, Error: err.Error()})
+			return
+		}
+		data := statusOrDefault(status, serverURL, bucket)
+		data.Paused = paused
+		writeResponse(conn, Response{V: Version, OK: true, Data: &data})
+	case "pin":
+		if handler == nil {
+			writeResponse(conn, Response{V: Version, OK: false, Error: "not supported: no scheduler handler"})
+			return
+		}
+		if req.Path == "" || req.Pin == nil {
+			writeResponse(conn, Response{V: Version, OK: false, Error: "pin requires path and pin fields"})
+			return
+		}
+		if err := handler.SetPin(req.Path, *req.Pin); err != nil {
+			writeResponse(conn, Response{V: Version, OK: false, Error: err.Error()})
+			return
+		}
+		pins, err := handler.Pins()
+		if err != nil {
+			writeResponse(conn, Response{V: Version, OK: false, Error: err.Error()})
+			return
+		}
+		writeResponse(conn, Response{V: Version, OK: true, Extra: PinData{Pins: pins}})
+	case "pins":
+		if handler == nil {
+			writeResponse(conn, Response{V: Version, OK: false, Error: "not supported: no scheduler handler"})
+			return
+		}
+		pins, err := handler.Pins()
+		if err != nil {
+			writeResponse(conn, Response{V: Version, OK: false, Error: err.Error()})
+			return
+		}
+		writeResponse(conn, Response{V: Version, OK: true, Extra: PinData{Pins: pins}})
+	case "tombstones":
+		if handler == nil {
+			writeResponse(conn, Response{V: Version, OK: false, Error: "not supported: no scheduler handler"})
+			return
+		}
+		tombs, err := handler.Tombstones()
+		if err != nil {
+			writeResponse(conn, Response{V: Version, OK: false, Error: err.Error()})
+			return
+		}
+		writeResponse(conn, Response{V: Version, OK: true, Extra: TombstoneData{Tombstones: tombs}})
 	default:
 		writeResponse(conn, Response{V: Version, OK: false, Error: "unknown request type"})
 	}
+}
+
+func statusOrDefault(status StatusSource, serverURL, bucket string) StatusData {
+	data := StatusData{State: ServerState, Server: serverURL, Bucket: bucket}
+	if status != nil {
+		data = status.IPCStatus()
+		data.Server = serverURL
+		data.Bucket = bucket
+	}
+	return data
 }
 
 func writeResponse(conn net.Conn, resp Response) {

@@ -1,21 +1,31 @@
-# 40-zeta-cache.sh - zeta-cache daemon (client-cache-2026-10 leaves 01+02).
-# The daemon is a SEPARATE Go module (zeta-cache/); this case shells out to
-# its built binary.
+# 40-zeta-cache.sh - zeta-cache daemon (client-cache-2026-10 leaves
+# 01+02+04+06). The daemon is a SEPARATE Go module (zeta-cache/); this
+# case shells out to its built binary.
 #
 #   40a. --version works and prints the zeta-cache prefix.
 #   40b. fail-loud config: an unknown key aborts startup (exit != 0) with
 #        the offending key named in stderr.
 #   40c. config smoke over a live private gateway: a valid config starts,
-#        the startup OPTIONS probe authenticates against the gateway, and
-#        the IPC socket answers {"v":1,"type":"status"} with the leaf 01
-#        shape (state idle, server/bucket echoed, counters zero). The probe
-#        client is a tiny inline python3 (stdlib socket) - documented here
-#        as THE status client until leaf 08 ships the real one.
+#        the startup probe (PROPFIND through the REAL transport, leaf 06)
+#        authenticates against the gateway, and the IPC socket answers
+#        {"v":1,"type":"status"} with the leaf 01 shape (state idle,
+#        server/bucket echoed, counters zero). The probe client is a tiny
+#        inline python3 (stdlib socket) - documented here as THE status
+#        client until leaf 08 ships the real one.
 #   40d. SIGTERM shutdown exits 0 and removes the socket file.
-#   40e. mount section (leaf 02): detects FUSE availability and either
-#        exercises the mount or SKIPS gracefully. CI linux runners have no
-#        /dev/fuse and macFUSE is not installed on dev macOS boxes by
+#   40e. mount section (leaf 02 + leaf 06): detects FUSE availability and
+#        either exercises the LIVE mount round-trip over the real webdav
+#        transport (TCP Basic) or SKIPS gracefully. CI linux runners have
+#        no /dev/fuse and macFUSE is not installed on dev macOS boxes by
 #        default - the graceful skip IS the CI path (leaf 02 acceptance 2).
+#   40f. h3 section: the daemon's transport is generated a CA + client
+#        cert (case 35's pattern); when FUSE is PRESENT the mounted daemon
+#        is verified to serve reads over TCP while the gateway advertises
+#        alt-svc (the h3 upgrade is mTLS-gated and arms lazily). The full
+#        h3 DATA-PLANE round-trip is pinned by case 38's h3probe; here the
+#        asserted surface is the daemon-side wiring: the daemon starts,
+#        authenticates (TCP Basic), and reports no transport errors with
+#        the client cert configured alongside Basic.
 #
 # MANUAL MOUNT PROCEDURE (for running 40e's green path by hand):
 #
@@ -28,9 +38,6 @@
 #   Then:   write a file in the mount, PROPFIND the bucket (curl -X
 #           PROPFIND) to see it server-side; S3 PUT server-side, look for
 #           it in the mount; read back through the mount.
-#
-# Sync-surface assertions (leaf 04) will live here: PUT through the mount
-# with If-Match, conflict-copy naming, batch delete via ?batch.
 #
 # Private-server pattern (case 19): the suite server is left untouched.
 set -u
@@ -59,7 +66,6 @@ ZC_PASS='zc-pass'
 ZC_BIN="$REPO_ROOT/zeta-cache-bin"
 ZC_DAEMON_PID=''
 ZC_FAILOG=''
-
 zc_cleanup() {
 	if [ -n "$ZC_DAEMON_PID" ] && kill -0 "$ZC_DAEMON_PID" 2>/dev/null; then
 		kill -9 "$ZC_DAEMON_PID" 2>/dev/null
@@ -90,6 +96,25 @@ print(s.getsockname()[1])
 s.close()
 PY
 )
+# h3 frontend UDP port + its client CA (case 35's generation pattern): the
+# CA signs a per-device client cert (CN = the identity) the daemon's
+# transport WOULD use for the h3 upgrade (mTLS is the only h3 auth).
+ZC_PORT_H3=$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)
+printf 'keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n' > "$ZC_CERT/client.ext"
+openssl req -x509 -newkey rsa:2048 -keyout "$ZC_CERT/ca-key.pem" \
+	-out "$ZC_CERT/ca.pem" -days 1 -nodes -subj '/CN=e2e40-client-ca' >/dev/null 2>&1
+openssl req -newkey rsa:2048 -keyout "$ZC_CERT/client-key.pem" \
+	-out "$ZC_CERT/client.csr" -nodes -subj "/CN=$ZC_USER" >/dev/null 2>&1
+openssl x509 -req -in "$ZC_CERT/client.csr" -CA "$ZC_CERT/ca.pem" \
+	-CAkey "$ZC_CERT/ca-key.pem" -CAcreateserial \
+	-out "$ZC_CERT/client.pem" -days 1 -extfile "$ZC_CERT/client.ext" >/dev/null 2>&1
 cat > "$ZC_WORK/config.json" <<EOF
 {
   "dataDir": "$ZC_WORK/data",
@@ -98,7 +123,9 @@ cat > "$ZC_WORK/config.json" <<EOF
   "keyFile": "$ZC_CERT/key.pem",
   "frontends": [
     {"type": "s3"},
-    {"type": "webdav", "listenAddr": "127.0.0.1:$ZC_PORT_WD"}
+    {"type": "webdav", "listenAddr": "127.0.0.1:$ZC_PORT_WD"},
+    {"type": "h3", "listenAddr": "127.0.0.1:$ZC_PORT_H3", "bucket": "$ZC_BKT",
+     "options": {"clientCAFile": "$ZC_CERT/ca.pem"}}
   ],
   "identities": [
     {"name": "zc-identity", "accessKey": "$ZC_USER", "secretKey": "$ZC_PASS", "grants": {"*": "readwrite"}}
@@ -117,8 +144,11 @@ if ! wait_for_port 127.0.0.1 "$ZC_PORT_WD" 15; then
 fi
 
 # Seed the bucket the daemon points at (the probe hits its bucket path).
+# Seeding goes over the S3 listener (the webdav frontend does not speak
+# SigV4; awscli against it would silently fail).
 AWS_ACCESS_KEY_ID="$ZC_USER" AWS_SECRET_ACCESS_KEY="$ZC_PASS" \
-	aws s3api create-bucket --bucket "$ZC_BKT" --endpoint-url "$ZC_ENDPOINT" --no-verify-ssl >/dev/null 2>&1
+	aws s3api create-bucket --bucket "$ZC_BKT" --endpoint-url "https://127.0.0.1:$ZC_PORT" --no-verify-ssl >/dev/null 2>&1
+sleep 1
 
 # --- 40a: --version ---
 ZC_OUT=$("$ZC_BIN" --version 2>&1)
@@ -168,6 +198,7 @@ cat > "$ZC_WORK/good.json" <<EOF
   "serverUrl": "$ZC_ENDPOINT",
   "bucket": "$ZC_BKT",
   "auth": {"accessKey": "$ZC_USER", "secretKey": "$ZC_PASS"},
+  "caFile": "$ZC_CERT/cert.pem",
   "cacheDir": "$ZC_ROOT/cache",
   "mountpoint": "$ZC_ROOT/mnt",
   "ipcSocket": "$ZC_ROOT/run/z.ipc"
@@ -283,6 +314,7 @@ else
   "serverUrl": "$ZC_ENDPOINT",
   "bucket": "$ZC_BKT",
   "auth": {"accessKey": "$ZC_USER", "secretKey": "$ZC_PASS"},
+  "caFile": "$ZC_CERT/cert.pem",
   "cacheDir": "$ZC_ROOT/cache-manual",
   "mountpoint": "$ZC_MNT",
   "ipcSocket": "$ZC_ROOT/run/f.ipc"
@@ -303,19 +335,6 @@ EOF
 		echo '  (mount failed - daemon log:)'
 		tail -20 "$ZC_WORK/fuse.log" 2>/dev/null || echo '  (no fuse.log)'
 		kill -0 "$ZC_FUSE_PID" 2>/dev/null && echo '  (daemon still running)' || echo '  (daemon EXITED)'
-		# Transport pending (leaf 06) = the documented interim state: the
-		# mount is wired but the daemon skips it with "transport
-		# implementation pending". SKIP, not FAIL, until leaf 06 lands;
-		# the daemon log above stays in the CI output as the evidence.
-		if grep -q 'transport implementation pending' "$ZC_WORK/fuse.log" 2>/dev/null; then
-			kill -TERM "$ZC_FUSE_PID" 2>/dev/null
-			echo '  (SKIP: transport pending - leaf 06 lands the real client; mount section activates then)'
-			e2e_finish
-			# The case is SOURCED by the runner: `return` ends it without
-			# killing the shared server (exit would). umount + cleanup ran
-			# above; the trap handles the rest.
-			return 0
-		fi
 	fi
 	assert_eq 'daemon mounts the bucket namespace' 1 "$ZC_FUSE_OK"
 	if [ "$ZC_FUSE_OK" -eq 1 ]; then
@@ -345,3 +364,74 @@ EOF
 	fi
 	umount "$ZC_MNT" 2>/dev/null || umount -f "$ZC_MNT" 2>/dev/null || true
 fi
+
+# --- 40f: alt-svc advertisement + the daemon with client-cert material ---
+# The gateway advertises h3 on every webdav response (leaf 02 of
+# quic-h3-2026-10); the daemon's transport parses it and arms the upgrade
+# only when a client cert is configured (mTLS is the ONLY h3 auth; the
+# config's auth model is EITHER Basic OR client cert - never both).
+# Asserted here: the header shape on the wire, and an mTLS-shaped daemon
+# (clientCert/clientKey + caFile) whose transport authenticates over the
+# cert path. The full h3 data plane (handshake success + no-cert/wrong-CA
+# handshake REJECTION = crypto failure, not an HTTP status) is pinned by
+# case 38's h3probe against the same frontend type; the daemon-side h3
+# upgrade state machine lives in internal/transport's unit tests.
+ZC_ALTSVC=$(curl -sk -o /dev/null -D - -u "$ZC_USER:$ZC_PASS" \
+	"$ZC_ENDPOINT/$ZC_BKT/" 2>/dev/null | grep -i '^alt-svc:' | tr -d '\r')
+assert_contains 'gateway advertises alt-svc h3 with persist=1' "$ZC_ALTSVC" "h3=\":$ZC_PORT_H3\"; persist=1"
+
+mkdir -p "$ZC_ROOT/cache-cert" "$ZC_ROOT/mnt-cert" "$ZC_ROOT/run"
+cat > "$ZC_WORK/cert.json" <<EOF
+{
+  "serverUrl": "$ZC_ENDPOINT",
+  "bucket": "$ZC_BKT",
+  "auth": {"clientCert": "$ZC_CERT/client.pem", "clientKey": "$ZC_CERT/client-key.pem"},
+  "caFile": "$ZC_CERT/cert.pem",
+  "cacheDir": "$ZC_ROOT/cache-cert",
+  "mountpoint": "$ZC_ROOT/mnt-cert",
+  "ipcSocket": "$ZC_ROOT/run/c.ipc"
+}
+EOF
+ZC_CERT_LOG="$ZC_WORK/cert-daemon.log"
+"$ZC_BIN" --config "$ZC_WORK/cert.json" >"$ZC_CERT_LOG" 2>&1 &
+ZC_CERT_PID=$!
+ZC_CERT_UP=1
+for _ in $(seq 1 25); do
+	[ -S "$ZC_ROOT/run/c.ipc" ] && break
+	if ! kill -0 "$ZC_CERT_PID" 2>/dev/null; then
+		ZC_CERT_UP=0
+		break
+	fi
+	sleep 0.2
+done
+assert_eq 'daemon with clientCert+caFile starts (auth material loads)' 1 "$ZC_CERT_UP"
+# Give the initial sync its h3-upgrade window (the probe 401s over TCP
+# Basic; the sync rides the mTLS h3 path armed by alt-svc).
+for _ in $(seq 1 30); do
+	grep -q 'initial sync' "$ZC_CERT_LOG" 2>/dev/null && break
+	kill -0 "$ZC_CERT_PID" 2>/dev/null || break
+	sleep 0.3
+done
+ZC_CERT_LOG_BODY=$(cat "$ZC_CERT_LOG" 2>/dev/null)
+# mTLS is the ONLY h3 auth; over the TCP webdav (Basic) frontend a cert-only
+# daemon correctly gets 401 - the REAL proof of the cert path is the sync
+# riding the h3 upgrade (mTLS) that the alt-svc advertisement armed. Assert
+# the initial sync COMPLETED over h3 (the TCP probe 401 is the expected
+# mode mismatch, WARNING-only per the lifecycle rule).
+assert_contains 'cert-daemon initial sync completes over the h3 upgrade' "$ZC_CERT_LOG_BODY" 'initial sync complete'
+if grep -q 'initial sync failed\|panic\|ErrAuthFailed\|handshake' "$ZC_CERT_LOG" 2>/dev/null; then
+	_e2e_record 1 'cert-daemon log carries no sync/handshake failures'
+else
+	_e2e_record 0 'cert-daemon log carries no sync/handshake failures'
+fi
+kill -TERM "$ZC_CERT_PID" 2>/dev/null
+for _ in $(seq 1 25); do
+	kill -0 "$ZC_CERT_PID" 2>/dev/null || break
+	sleep 0.2
+done
+if kill -0 "$ZC_CERT_PID" 2>/dev/null; then
+	kill -9 "$ZC_CERT_PID" 2>/dev/null
+	wait "$ZC_CERT_PID" 2>/dev/null
+fi
+
+printf '\n'

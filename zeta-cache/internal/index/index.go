@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,7 +21,9 @@ import (
 )
 
 // schemaVersion is the user_version this package migrates the DB to.
-const schemaVersion = 1
+// v2 (leaf 07): additive eviction columns - lastAccess (LRU touch) and
+// pinned (hard eviction filter). See schemaV2DDL.
+const schemaVersion = 2
 
 // Journal operations (journal.op). An operation that must be attributable
 // on reconnect ("I changed it" vs "the world changed it") appends exactly
@@ -31,6 +34,8 @@ const (
 	OpUploadConflict = "upload-conflict" // If-Match 412; conflict-copy landed
 	OpDelete         = "delete"          // local delete recorded (tombstone)
 	OpHydrate        = "hydrate"         // body fetched into the cache dir
+	OpEvict          = "evict"           // clean cache file evicted (leaf 07)
+	OpPin            = "pin"             // pinned flag toggled via IPC (leaf 07)
 )
 
 // Schema v1 DDL, executed inside the migration transaction.
@@ -58,6 +63,18 @@ CREATE TABLE IF NOT EXISTS meta (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
 );
+`
+
+// Schema v2 DDL (leaf 07, additive): lastAccess backs the LRU eviction
+// policy (unix seconds, 0 = never touched; touched by TouchAccessed on
+// hydrate/read); pinned is the hard eviction filter set by config pins
+// and the IPC pin toggle (leaf 08 uses the same surface). Both default
+// so v1 rows survive unchanged.
+const schemaV2DDL = `
+ALTER TABLE resources ADD COLUMN lastAccess INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE resources ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_resources_lru ON resources(lastAccess);
+CREATE INDEX IF NOT EXISTS idx_resources_pinned ON resources(pinned) WHERE pinned = 1;
 `
 
 // migration attaches the schema pragmas to a connection's first use. WAL is
@@ -137,9 +154,10 @@ func (s *Store) init(diskCheck func(string) bool) error {
 	return nil
 }
 
-// migrate moves user_version to schemaVersion, each step in one
-// transaction. v0 (leaf-01 placeholder) has no application schema, so its
-// single step is: create everything, stamp user_version = 1.
+// migrate moves user_version to schemaVersion, one transaction per step.
+// v0 -> v1: full schema (leaf 03). v1 -> v2: additive eviction columns
+// (leaf 07). Every step is idempotent-shaped DDL guarded by its version
+// check, so a crash mid-migration replays safely.
 func (s *Store) migrate() error {
 	var v int
 	if err := s.write.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
@@ -148,18 +166,31 @@ func (s *Store) migrate() error {
 	if v > schemaVersion {
 		return fmt.Errorf("index: DB user_version %d newer than supported %d", v, schemaVersion)
 	}
-	if v == schemaVersion {
-		return nil
+	for ; v < schemaVersion; v++ {
+		if err := s.migrateStep(v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateStep applies ONE version bump: from -> from+1, in one
+// transaction. v0's step creates everything; v1's step adds the leaf-07
+// eviction columns.
+func (s *Store) migrateStep(from int) error {
+	ddl := schemaDDL
+	if from != 0 {
+		ddl = schemaV2DDL
 	}
 	tx, err := s.write.Begin()
 	if err != nil {
 		return fmt.Errorf("index: begin migration: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(schemaDDL); err != nil {
-		return fmt.Errorf("index: applying schema v%d: %w", schemaVersion, err)
+	if _, err := tx.Exec(ddl); err != nil {
+		return fmt.Errorf("index: applying schema v%d: %w", from+1, err)
 	}
-	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
+	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, from+1)); err != nil {
 		return fmt.Errorf("index: stamping user_version: %w", err)
 	}
 	return tx.Commit()
@@ -178,30 +209,42 @@ func (s *Store) Close() error {
 // Resource is one row of the resources index: a path known to be
 // remote-or-local, with per-file protocol fields and cache-state flags.
 type Resource struct {
-	Path     string
-	ETag     string
-	Mtime    int64 // unix seconds
-	Size     int64
-	Hydrated bool
-	Dirty    bool
-	Deleted  bool // tombstone feeding the deletion-grace table (leaf 07)
+	Path       string
+	ETag       string
+	Mtime      int64 // unix seconds
+	Size       int64
+	Hydrated   bool
+	Dirty      bool
+	Deleted    bool // tombstone feeding the deletion-grace table (leaf 07)
+	LastAccess int64 // unix seconds of the last hydrate/read (LRU policy; 0 = never)
+	Pinned     bool // hard eviction filter (config pins + IPC toggle)
+}
+
+// fullColumns is the SELECT column list every resources read shares
+// (keeps Get/CleanHydratedRows/... in lockstep with the struct).
+const fullColumns = `path, etag, mtime, size, hydrated, dirty, deleted, lastAccess, pinned`
+
+func scanResource(scanner interface{ Scan(...any) error }) (Resource, error) {
+	var r Resource
+	var hyd, dirty, del, pinned int
+	if err := scanner.Scan(&r.Path, &r.ETag, &r.Mtime, &r.Size,
+		&hyd, &dirty, &del, &r.LastAccess, &pinned); err != nil {
+		return r, err
+	}
+	r.Hydrated, r.Dirty, r.Deleted, r.Pinned = hyd == 1, dirty == 1, del == 1, pinned == 1
+	return r, nil
 }
 
 // Get returns the row for path, or ErrNotFound.
 func (s *Store) Get(ctx context.Context, path string) (Resource, error) {
-	const q = `SELECT path, etag, mtime, size, hydrated, dirty, deleted
-	           FROM resources WHERE path = ?`
-	var r Resource
-	var hyd, dirty, del int
-	err := s.read.QueryRowContext(ctx, q, path).
-		Scan(&r.Path, &r.ETag, &r.Mtime, &r.Size, &hyd, &dirty, &del)
+	q := `SELECT ` + fullColumns + ` FROM resources WHERE path = ?`
+	r, err := scanResource(s.read.QueryRowContext(ctx, q, path))
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return Resource{}, fmt.Errorf("%w: %s", ErrNotFound, path)
 	case err != nil:
 		return Resource{}, fmt.Errorf("index: get %s: %w", path, err)
 	}
-	r.Hydrated, r.Dirty, r.Deleted = hyd == 1, dirty == 1, del == 1
 	return r, nil
 }
 
@@ -226,14 +269,18 @@ func (s *Store) PutPath(ctx context.Context, r Resource, op, detail string) erro
 }
 
 func putPathTx(ctx context.Context, tx *sql.Tx, r Resource) error {
-	const q = `INSERT INTO resources (path, etag, mtime, size, hydrated, dirty, deleted)
-	           VALUES (?, ?, ?, ?, ?, ?, ?)
+	const q = `INSERT INTO resources (path, etag, mtime, size, hydrated, dirty, deleted, lastAccess, pinned)
+	           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	           ON CONFLICT(path) DO UPDATE SET
 	             etag = excluded.etag, mtime = excluded.mtime, size = excluded.size,
 	             hydrated = excluded.hydrated, dirty = excluded.dirty,
-	             deleted = excluded.deleted`
+	             deleted = excluded.deleted,
+	             lastAccess = CASE WHEN excluded.lastAccess > 0 THEN excluded.lastAccess
+	                               ELSE resources.lastAccess END,
+	             pinned = CASE WHEN excluded.pinned = 1 THEN 1
+	                           ELSE resources.pinned END`
 	_, err := tx.ExecContext(ctx, q, r.Path, r.ETag, r.Mtime, r.Size,
-		b2i(r.Hydrated), b2i(r.Dirty), b2i(r.Deleted))
+		b2i(r.Hydrated), b2i(r.Dirty), b2i(r.Deleted), r.LastAccess, b2i(r.Pinned))
 	if err != nil {
 		return fmt.Errorf("index: upsert %s: %w", r.Path, err)
 	}
@@ -287,22 +334,21 @@ func (s *Store) TombstonedPaths(ctx context.Context) ([]string, error) {
 	return s.queryPaths(ctx, `SELECT path FROM resources WHERE deleted = 1 ORDER BY path`)
 }
 
+// EvictionPredicate is the single source of truth for the eviction filter,
+// exported as a constant so tests and leaf 07's purge keep the exact shape.
+// Leaf 07 made "NOT pinned" first-class SQL: the pinned column landed in
+// schema v2 and the eviction query below embeds this predicate verbatim.
+const EvictionPredicate = `hydrated = 1 AND dirty = 0 AND deleted = 0 AND NOT pinned`
+
 // CleanHydratedPaths returns the eviction candidates in ONE query: fully
-// uploaded (clean), body present locally, not tombstoned, and not pinned.
-//
-// The pins column arrives in leaf 07; until then the pinned filter is kept
-// parameterized so leaf 07 extends the QUERY, not this function's shape.
-// pinnedPaths maps the paths the caller considers pinned (leaf 07 passes
-// the pin table's contents); the SQL predicate is written so adding the
-// column later is a text change in one place.
+// uploaded (clean), body present locally, not tombstoned, and not pinned
+// (the pinned filter is the pinned COLUMN since schema v2; the
+// pinnedPaths argument is kept for call compatibility and is OR-ed in -
+// passing nil is the normal case).
 func (s *Store) CleanHydratedPaths(ctx context.Context, pinnedPaths map[string]bool) ([]string, error) {
-	// Eviction query (doc.go is authoritative for the shape):
-	//   hydrated = 1 AND dirty = 0 AND deleted = 0 AND NOT pinned
-	// v1 (no pins column yet): "NOT pinned" is enforced against the
-	// caller-supplied set, so leaf 07's change is purely additive SQL.
 	rows, err := s.read.QueryContext(ctx, `
 		SELECT path FROM resources
-		WHERE hydrated = 1 AND dirty = 0 AND deleted = 0
+		WHERE `+EvictionPredicate+`
 		ORDER BY path`)
 	if err != nil {
 		return nil, fmt.Errorf("index: eviction query: %w", err)
@@ -321,11 +367,147 @@ func (s *Store) CleanHydratedPaths(ctx context.Context, pinnedPaths map[string]b
 	return out, rows.Err()
 }
 
-// EvictionPredicate is the single source of truth for the eviction filter,
-// exported as a constant so tests and leaf 07's purge keep the exact shape.
-// The `:pinned` placeholder is v1-doc only; the pins column lands in leaf
-// 07 and replaces the caller-side filter in CleanHydratedPaths.
-const EvictionPredicate = `hydrated = 1 AND dirty = 0 AND deleted = 0 AND NOT pinned`
+// CleanHydratedRows returns the eviction candidates WITH the fields the
+// policy ordering needs (size, mtime, lastAccess), already filtered by the
+// EvictionPredicate (clean, hydrated, not tombstoned, not pinned) in one
+// SQL query - the pinned term is the column, so IPC pin toggles take
+// effect without a restart. Leaf 07's quota engine orders these by policy.
+func (s *Store) CleanHydratedRows(ctx context.Context) ([]Resource, error) {
+	rows, err := s.read.QueryContext(ctx, `
+		SELECT `+fullColumns+` FROM resources
+		WHERE `+EvictionPredicate)
+	if err != nil {
+		return nil, fmt.Errorf("index: eviction rows: %w", err)
+	}
+	defer rows.Close()
+	var out []Resource
+	for rows.Next() {
+		r, err := scanResource(rows)
+		if err != nil {
+			return nil, fmt.Errorf("index: eviction row scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// HydratedRows returns every hydrated, non-tombstoned row (clean, dirty,
+// and pinned): the cache working set the quota measures. Read-only; leaf
+// 07 addition.
+func (s *Store) HydratedRows(ctx context.Context) ([]Resource, error) {
+	rows, err := s.read.QueryContext(ctx, `
+		SELECT `+fullColumns+` FROM resources
+		WHERE hydrated = 1 AND deleted = 0`)
+	if err != nil {
+		return nil, fmt.Errorf("index: hydrated rows: %w", err)
+	}
+	defer rows.Close()
+	var out []Resource
+	for rows.Next() {
+		r, err := scanResource(rows)
+		if err != nil {
+			return nil, fmt.Errorf("index: hydrated row scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// TouchAccessed stamps lastAccess = now for path (LRU policy input;
+// called on hydrate and on every cache read by leaf 07's quota engine).
+func (s *Store) TouchAccessed(ctx context.Context, path string, now time.Time) error {
+	_, err := s.write.ExecContext(ctx,
+		`UPDATE resources SET lastAccess = ? WHERE path = ?`, now.Unix(), path)
+	if err != nil {
+		return fmt.Errorf("index: touch %s: %w", path, err)
+	}
+	return nil
+}
+
+// SetPinned flips the pinned flag for path and returns whether the row
+// existed. Pinned rows are hard-filtered from eviction in SQL; pinning
+// ALSO clears the tombstone flag (a pinned path is wanted).
+func (s *Store) SetPinned(ctx context.Context, path string, pinned bool) (bool, error) {
+	res, err := s.write.ExecContext(ctx,
+		`UPDATE resources SET pinned = ?, deleted = CASE WHEN ? = 1 THEN 0 ELSE deleted END
+		 WHERE path = ?`, b2i(pinned), b2i(pinned), path)
+	if err != nil {
+		return false, fmt.Errorf("index: pin %s: %w", path, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("index: pin %s rows: %w", path, err)
+	}
+	return n > 0, nil
+}
+
+// PinnedPaths returns every pinned path (the IPC pins view + the daemon's
+// hydration trigger after a config-pin add).
+func (s *Store) PinnedPaths(ctx context.Context) ([]string, error) {
+	return s.queryPaths(ctx, `SELECT path FROM resources WHERE pinned = 1 ORDER BY path`)
+}
+
+// Evict demotes path to not-hydrated and appends the journal row in the
+// SAME transaction (the crash-safety rule: index mutation and journal row
+// commit or abort together). The cache FILE deletion happens before the
+// call (the remote copy is authoritative for a clean file); if the
+// process dies between the file delete and this commit, the daemon-start
+// reconcile's R2 rule repairs the row (hydrated=1, disk absent ->
+// demote), so the eviction is safe either way.
+func (s *Store) Evict(ctx context.Context, path, detail string) error {
+	tx, err := s.write.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("index: evict %s: %w", path, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE resources SET hydrated = 0 WHERE path = ?`, path); err != nil {
+		return fmt.Errorf("index: evict update %s: %w", path, err)
+	}
+	if err := journalAppendTx(ctx, tx, OpEvict, path, detail); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// PruneTombstones deletes tombstone rows older than the retention window
+// (the deletion-grace expiry pass, leaf 07) and returns the pruned paths.
+// The grace window is measured from the tombstone's mtime (set when the
+// delete was recorded).
+func (s *Store) PruneTombstones(ctx context.Context, retention time.Duration, now time.Time) ([]string, error) {
+	cutoff := now.Add(-retention).Unix()
+	tx, err := s.write.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("index: prune tombstones: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `
+		DELETE FROM resources WHERE deleted = 1 AND mtime < ?
+		RETURNING path`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("index: prune tombstones: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("index: prune scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("index: prune rows: %w", err)
+	}
+	sort.Strings(out)
+	if len(out) == 0 {
+		return nil, tx.Commit() // nothing to do; commit is a no-op either way
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("index: prune commit: %w", err)
+	}
+	return out, nil
+}
 
 // JournalAppend appends one journal row OUTSIDE any index mutation. It
 // exists for pure observations (e.g. hydrate-started markers); every
@@ -356,7 +538,7 @@ func journalAppendTx(ctx context.Context, tx *sql.Tx, op, path, detail string) e
 
 func validOp(op string) bool {
 	switch op {
-	case OpLocalWrite, OpUploadOK, OpUploadConflict, OpDelete, OpHydrate:
+	case OpLocalWrite, OpUploadOK, OpUploadConflict, OpDelete, OpHydrate, OpEvict, OpPin:
 		return true
 	}
 	return false

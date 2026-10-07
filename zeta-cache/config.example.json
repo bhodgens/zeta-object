@@ -5,6 +5,7 @@
     "accessKey": "AKIAEXAMPLE",
     "secretKey": "change-me"
   },
+  "caFile": "/Users/me/.config/zeta-cache/gateway.pem",
   "mountpoint": "/Volumes/zeta",
   "quota": {
     "maxCacheBytes": 53687091200,

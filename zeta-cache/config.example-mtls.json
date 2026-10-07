@@ -5,6 +5,7 @@
     "clientCert": "/Users/me/.config/zeta-cache/device.pem",
     "clientKey": "/Users/me/.config/zeta-cache/device-key.pem"
   },
+  "caFile": "/Users/me/.config/zeta-cache/gateway.pem",
   "mountpoint": "/Volumes/zeta",
   "quota": {
     "maxCacheBytes": 53687091200,

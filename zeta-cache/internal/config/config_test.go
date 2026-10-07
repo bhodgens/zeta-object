@@ -141,9 +141,65 @@ func TestLoadQuotaAndLogLevelValidation(t *testing.T) {
 	if _, err := Load(mustWrite(t, `{
   "serverUrl": "https://x", "bucket": "b", "mountpoint": "/mnt",
   "auth": {"accessKey": "a", "secretKey": "s"},
+  "quota": {"policy": "lifo"}
+}`)); err == nil || !strings.Contains(err.Error(), "quota.policy") {
+		t.Errorf("lifo (leaf-01 placeholder set) = %v, want error naming quota.policy", err)
+	}
+	if _, err := Load(mustWrite(t, `{
+  "serverUrl": "https://x", "bucket": "b", "mountpoint": "/mnt",
+  "auth": {"accessKey": "a", "secretKey": "s"},
+  "quota": {"highWaterPercent": 50, "lowWaterPercent": 80}
+}`)); err == nil || !strings.Contains(err.Error(), "highWaterPercent") {
+		t.Errorf("high <= low = %v, want error", err)
+	}
+	if _, err := Load(mustWrite(t, `{
+  "serverUrl": "https://x", "bucket": "b", "mountpoint": "/mnt",
+  "auth": {"accessKey": "a", "secretKey": "s"},
+  "quota": {"highWaterPercent": 110}
+}`)); err == nil || !strings.Contains(err.Error(), "highWaterPercent") {
+		t.Errorf("high > 100 = %v, want error", err)
+	}
+	if _, err := Load(mustWrite(t, `{
+  "serverUrl": "https://x", "bucket": "b", "mountpoint": "/mnt",
+  "auth": {"accessKey": "a", "secretKey": "s"},
+  "quota": {"tombstoneRetentionDays": -1}
+}`)); err == nil || !strings.Contains(err.Error(), "tombstoneRetentionDays") {
+		t.Errorf("negative retention = %v, want error", err)
+	}
+	if _, err := Load(mustWrite(t, `{
+  "serverUrl": "https://x", "bucket": "b", "mountpoint": "/mnt",
+  "auth": {"accessKey": "a", "secretKey": "s"},
   "logLevel": "loud"
 }`)); err == nil || !strings.Contains(err.Error(), "logLevel") {
 		t.Errorf("bad logLevel = %v, want error", err)
+	}
+}
+
+func TestLoadQuotaDefaultsAndPolicySet(t *testing.T) {
+	for _, policy := range []string{"size", "size+age", "lru"} {
+		cfg, err := Load(mustWrite(t, `{
+  "serverUrl": "https://x", "bucket": "b", "mountpoint": "/mnt",
+  "auth": {"accessKey": "a", "secretKey": "s"},
+  "quota": {"policy": "`+policy+`"}
+}`))
+		if err != nil {
+			t.Fatalf("policy %s: %v", policy, err)
+		}
+		if cfg.Quota.Policy != policy {
+			t.Errorf("policy = %q, want %q", cfg.Quota.Policy, policy)
+		}
+	}
+	// Empty policy defaults to lru; water marks and retention default to
+	// the locked 90/70/30.
+	cfg, err := Load(mustWrite(t, validConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Quota.Policy != "lru" {
+		t.Errorf("default policy = %q, want lru", cfg.Quota.Policy)
+	}
+	if cfg.Quota.HighWaterPct != 90 || cfg.Quota.LowWaterPct != 70 || cfg.Quota.TombstoneDays != 30 {
+		t.Errorf("quota defaults wrong: %+v", cfg.Quota)
 	}
 }
 

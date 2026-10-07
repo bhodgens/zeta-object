@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -97,8 +98,10 @@ func TestOpenUpgradesLegacyV0Placeholder(t *testing.T) {
 		t.Fatalf("OpenWithDiskCheck(legacy) = %v, want nil", err)
 	}
 	defer s.Close()
-	if got := userVersion(t, s); got != 1 {
-		t.Errorf("user_version = %d, want 1", got)
+	// Leaf 07 bumped the schema to v2 (additive eviction columns); the
+	// legacy v0 placeholder migrates through v1 to the current version.
+	if got := userVersion(t, s); got != schemaVersion {
+		t.Errorf("user_version = %d, want %d", got, schemaVersion)
 	}
 }
 
@@ -106,17 +109,19 @@ func TestOpenRejectsNewerSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "index.db")
 	s := open(t)
 	_ = s
-	// Build a v2 DB directly.
+	// Build a DB with a user_version NEWER than the package's current
+	// schema directly (bumped as the package migrates forward).
+	futureVersion := schemaVersion + 1
 	future, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := future.Exec(`PRAGMA user_version = 2`); err != nil {
+	if _, err := future.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, futureVersion)); err != nil {
 		t.Fatal(err)
 	}
 	future.Close()
 	if _, err := OpenWithDiskCheck(path, diskSet()); err == nil {
-		t.Fatal("OpenWithDiskCheck(user_version=2) = nil error, want refusal")
+		t.Fatal("OpenWithDiskCheck(newer user_version) = nil error, want refusal")
 	} else if !strings.Contains(err.Error(), "newer") {
 		t.Errorf("error %q does not mention 'newer'", err)
 	}

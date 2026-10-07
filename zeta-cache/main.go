@@ -2,19 +2,21 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/bhodgens/zeta-object/zeta-cache/internal/config"
 	"github.com/bhodgens/zeta-object/zeta-cache/internal/fusefs"
 	"github.com/bhodgens/zeta-object/zeta-cache/internal/index"
 	"github.com/bhodgens/zeta-object/zeta-cache/internal/ipc"
+	"github.com/bhodgens/zeta-object/zeta-cache/internal/scheduler"
+	"github.com/bhodgens/zeta-object/zeta-cache/internal/sync"
 	"github.com/bhodgens/zeta-object/zeta-cache/internal/transport"
 )
 
@@ -42,6 +44,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("zeta-cache: %v", err)
 	}
+	if cfg.InsecureSkipVerify {
+		// The leaf's locked rule: verification is only ever disabled by
+		// an EXPLICIT config key, and that choice logs a WARNING.
+		log.Printf("zeta-cache: WARNING insecureSkipVerify=true: server certificate verification is DISABLED (config %s)", *configPath)
+	}
 	log.Printf("zeta-cache: starting %s (bucket %s at %s)", Version, cfg.Bucket, cfg.ServerURL)
 
 	db, err := index.Open(cfg.IndexDB)
@@ -49,21 +56,42 @@ func main() {
 		log.Fatalf("zeta-cache: %v", err)
 	}
 
-	// Startup connectivity probe: ONE authenticated OPTIONS on the bucket
-	// path. Failure is a WARNING, never an abort - the daemon still starts
-	// and still mounts (locked lifecycle rule: mount succeeds even when
-	// the server is unreachable).
-	if err := probe(cfg); err != nil {
+	// Leaf 06: the REAL transport. Basic (accessKey/secretKey) or mTLS
+	// (clientCert/clientKey); CAFile pins the gateway's self-signed cert
+	// for server verification. The alt-svc/h3 upgrade arms itself lazily
+	// (only with a client cert configured).
+	store := transport.NewFileCertStore(cfg.Auth.ClientCert, cfg.Auth.ClientKey, cfg.CAFile)
+	tr, err := transport.NewClient(transport.Options{
+		ServerURL:          cfg.ServerURL,
+		Bucket:             cfg.Bucket,
+		BasicAuthUser:      cfg.Auth.AccessKey,
+		BasicAuthPass:      cfg.Auth.SecretKey,
+		Store:              store,
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+		Logf:               func(f string, a ...any) { log.Printf("zeta-cache: "+f, a...) },
+	})
+	if err != nil {
+		log.Fatalf("zeta-cache: transport: %v", err)
+	}
+	defer tr.Close()
+
+	// Startup connectivity probe: ONE authenticated PROPFIND (Depth 0)
+	// on the bucket path. Failure is a WARNING, never an abort - the
+	// daemon still starts and still mounts (locked lifecycle rule: mount
+	// succeeds even when the server is unreachable).
+	if err := probe(context.Background(), tr); err != nil {
 		log.Printf("zeta-cache: WARNING connectivity probe failed: %v", err)
 	} else {
 		log.Printf("zeta-cache: connectivity probe ok")
 	}
 
-	// Leaf 04: exactly ONE initial sync after the probe (leaf 07 owns
-	// the scheduler loops). With the transport still pending (leaf 06)
-	// this is a no-op logging the degraded state; the meta table keeps
-	// the persisted status values for IPC either way.
-	runInitialSync(cfg, db)
+	// Leaf 04 + leaf 06: exactly ONE initial sync after the probe over
+	// the REAL transport (leaf 07 owns the scheduler loops). Failure is
+	// logged, never fatal - the next sync retries.
+	runInitialSync(cfg, db, tr)
+
+	mainCtx, mainCancel := context.WithCancel(context.Background())
+	defer mainCancel()
 
 	srv, err := ipc.Serve(cfg.IPCSocket, cfg.ServerURL, cfg.Bucket, statusSource{db: db})
 	if err != nil {
@@ -79,17 +107,44 @@ func main() {
 	// placeholder is explicitly wanted. v1 ships the mount wired to the
 	// interface: without leaf 06's client the transport calls fail (EIO),
 	// which is the documented degraded state.
-	mounted, err := mountBucket(cfg, db)
+	mounted, err := mountBucket(cfg, db, tr)
 	if err != nil {
 		log.Printf("zeta-cache: WARNING mount failed: %v (daemon stays up; status reports the error state)", err)
 	} else if mounted {
 		log.Printf("zeta-cache: mounted %s at %s", cfg.Bucket, cfg.Mountpoint)
 	}
 
+	// Leaf 07: the scheduler loops (prompt upload, periodic sync, quota
+	// eviction). MountedFS is the per-file uploader (nil when the mount
+	// failed - prompt-upload then falls back to engine.SyncOnce). One
+	// Engine shared with the initial sync keeps index state consistent.
+	engine, err := sync.NewEngine(sync.Options{
+		Transport: tr,
+		Store:     db,
+		CacheDir:  cfg.CacheDir,
+		Logger:    log.Default(),
+	})
+	if err != nil {
+		log.Printf("zeta-cache: WARNING sync engine construction: %v (scheduler disabled)", err)
+	} else {
+		sched, err := scheduler.New(scheduler.Options{
+			Store:    db,
+			Engine:   engine,
+			Config:   cfg,
+			Uploader: mountedFS,
+		})
+		if err != nil {
+			log.Printf("zeta-cache: WARNING scheduler construction: %v (scheduler disabled)", err)
+		} else {
+			go sched.Start(mainCtx)
+		}
+	}
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	s := <-sig
 	log.Printf("zeta-cache: %v received, shutting down", s)
+	mainCancel()
 
 	// Shutdown order (leaf 01 contract, extended by leaf 02): stop IPC
 	// first (clients see the socket vanish), then the bounded-flush
@@ -122,34 +177,23 @@ func main() {
 	// exit 0
 }
 
-// mountBucket wires the FUSE layer to the index + transport seams. The
-// *sql.DB from leaf 01's index.Open is the placeholder schema (leaf 03
-// owns the real one); the fusefs.Index adapter below runs narrow queries
-// against it, and leaf 03 preserves the interface. Returns mounted=false
-// with a nil error when the transport implementation is absent (leaf 06
-// pending): the process stays up, status stays idle.
-func mountBucket(cfg *config.Config, db *index.Store) (bool, error) {
+// mountBucket wires the FUSE layer to the index + the REAL transport
+// (leaf 06). The daemon now mounts with a live webdav client; transport
+// failures surface as EIO per the leaf-02 degraded-state contract, and
+// the sync engine repairs state on its next pass.
+func mountBucket(cfg *config.Config, db *index.Store, tr transport.Transport) (bool, error) {
 	fs, err := fusefs.Mount(fusefs.Options{
 		CacheDir:   cfg.CacheDir,
 		Bucket:     cfg.Bucket,
 		Mountpoint: cfg.Mountpoint,
 		Index:      newIndexAdapter(db),
-		Transport:  transportStubUntilLeaf06(),
+		Transport:  tr,
 	})
 	if err != nil {
 		return false, err
 	}
 	mountedFS = fs
 	return fs.Mounted(), nil
-}
-
-// transportStubUntilLeaf06 supplies the transport seam. Leaf 06 owns the
-// real HTTP client; until it lands the daemon runs WITHOUT a transport and
-// skips the mount (process up, status idle) rather than serving errors.
-// The stub transport (in-memory map) is what unit tests use directly.
-func transportStubUntilLeaf06() transport.Transport {
-	log.Printf("zeta-cache: transport implementation pending (leaf 06); mount skipped")
-	return nil
 }
 
 // mountedFS holds the live mount for the unmount hook.
@@ -166,35 +210,21 @@ func unmountHook() error {
 	return err
 }
 
-// probe sends exactly one authenticated request (OPTIONS on the bucket path)
-// over the configured server URL. Leaf 06 replaces this with the real
-// transport (Basic and mTLS); leaf 01 does Basic auth over plain HTTP
-// semantics via http.Client, which works for both http and https URLs.
-func probe(cfg *config.Config) error {
-	req, err := http.NewRequest(http.MethodOptions, cfg.ServerURL+"/"+cfg.Bucket+"/", nil)
+// probe sends exactly one authenticated request (PROPFIND Depth 0 on the
+// bucket path) through the REAL transport (leaf 06): it exercises the
+// same TLS trust + auth material every later request uses.
+func probe(ctx context.Context, tr transport.Transport) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, err := tr.Propfind(ctx, "", false)
 	if err != nil {
-		return fmt.Errorf("building probe request: %w", err)
-	}
-	req.SetBasicAuth(cfg.Auth.AccessKey, cfg.Auth.SecretKey)
-	// Leaf 01 probes with the server's own self-signed cert accepted:
-	// the gateway ships a private CA / self-signed pair, and real trust
-	// handling (CA pool, mTLS, h3) is leaf 06. The probe still proves the
-	// URL is reachable and the credentials authenticate.
-	// #nosec G402 -- deliberate: self-signed private-server certs until
-	// leaf 06 lands CA/mTLS trust handling.
-	client := &http.Client{
-		Timeout:   10e9,                                                                    // 10s
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // G402: leaf 06 owns real trust handling
-	}
-	resp, err := client.Do(req)
-	if err != nil {
+		if errors.Is(err, transport.ErrNotExist) {
+			// The bucket does not exist yet - the server answered, so
+			// reachability and auth are proven; the bucket's existence
+			// is sync's problem.
+			return nil
+		}
 		return err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("server rejected credentials (HTTP %d)", resp.StatusCode)
-	}
-	// Any other status (200, 207, 404, 405, ...) proves the server spoke
-	// to us over the wire; the bucket's existence is sync's problem.
 	return nil
 }

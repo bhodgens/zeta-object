@@ -5,15 +5,23 @@ package main
 // conflicts); the IPC listener reads them through the StatusSource seam.
 // The scheduler (leaf 07) owns the loops; the daemon runs exactly ONE
 // initial SyncOnce after the startup probe.
+//
+// Leaf 06 wires the REAL transport in: the engine is constructed with
+// the live webdav client, and the initial SyncOnce runs for real
+// (failures logged, never fatal - the scheduler's next pass retries).
 
 import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 
 	"github.com/bhodgens/zeta-object/zeta-cache/internal/config"
 	"github.com/bhodgens/zeta-object/zeta-cache/internal/index"
 	"github.com/bhodgens/zeta-object/zeta-cache/internal/ipc"
+	"github.com/bhodgens/zeta-object/zeta-cache/internal/sync"
+	"github.com/bhodgens/zeta-object/zeta-cache/internal/transport"
 )
 
 // statusSource adapts the index Store to ipc.StatusSource. The counts are
@@ -59,16 +67,33 @@ func (s statusSource) IPCStatus() ipc.StatusData {
 var _ ipc.StatusSource = statusSource{}
 
 // runInitialSync performs the one startup sync (leaf 04; leaf 07 adds
-// the scheduler loops). The transport is still leaf-01's placeholder
-// (nil until leaf 06), so until then there is nothing to sync and the
-// daemon stays in the documented degraded state. Failures are logged,
+// the scheduler loops) over the REAL transport (leaf 06). The download
+// path stages into <cacheDir>/staging, so the dir is created here (the
+// FUSE layer creates it only when IT mounts). Failures are logged,
 // never fatal: the daemon stays up and the next sync retries.
-func runInitialSync(cfg *config.Config, db *index.Store) {
-	// Leaf 06 wires the real transport here; until then the engine has
-	// nothing to talk to. The engine CONSTRUCTION path is exercised in
-	// internal/sync's tests against the memfs stub.
-	if cfg == nil || db == nil {
+func runInitialSync(cfg *config.Config, db *index.Store, tr transport.Transport) {
+	if cfg == nil || db == nil || tr == nil {
 		return
 	}
-	log.Printf("zeta-cache: sync engine ready (transport pending leaf 06; initial sync deferred)")
+	if err := os.MkdirAll(filepath.Join(cfg.CacheDir, "staging"), 0o700); err != nil {
+		log.Printf("zeta-cache: WARNING creating staging dir: %v (initial sync skipped)", err)
+		return
+	}
+	engine, err := sync.NewEngine(sync.Options{
+		Transport: tr,
+		Store:     db,
+		CacheDir:  cfg.CacheDir,
+		Logger:    log.Default(),
+	})
+	if err != nil {
+		log.Printf("zeta-cache: WARNING sync engine construction: %v", err)
+		return
+	}
+	if err := engine.SyncOnce(context.Background()); err != nil {
+		log.Printf("zeta-cache: initial sync failed (will retry on the next scheduled pass): %v", err)
+		return
+	}
+	rep := engine.LastReport()
+	log.Printf("zeta-cache: initial sync complete: scanned=%d downloads=%d uploads=%d conflicts=%d (token-skips=%d fullscans=%d)",
+		rep.Scanned, rep.Downloads, rep.Uploads, rep.ConflictCopies, rep.TokenVerified, rep.FullscanVerified)
 }
