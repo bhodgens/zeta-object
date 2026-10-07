@@ -174,10 +174,10 @@ makes this legal). Do not gate v1 on the cursor.
 | 01 | Module skeleton + daemon lifecycle | DONE | bda8c8e | e2e 40: 19 asserts; make e2e 900/0; race green; lint 0 |
 | 02 | FUSE filesystem layer | DONE | 84b21fb | race green; lint 0; case 40 mount skip on FUSE-less hosts; live-mount activates with leaf 06 |
 | 03 | Index DB + sync journal | DONE | 84b21fb | race green (WAL concurrency, reconcile, crash-sim); lint 0 |
-| 04 | Sync engine (scan path) | DISPATCHED | - | - |
+| 04 | Sync engine (scan path) | DONE | b221669 (+a757d01 adapter) | race green all 5 pkgs; lint 0; 10 sync tests incl. full matrix |
 | 05 | Event cursor (CONDITIONAL on #15) | PARKED-PREREQ | - | - |
-| 06 | Transport + auth | PENDING | - | - |
-| 07 | Scheduler + quota + eviction | PENDING | - | - |
+| 06 | Transport + auth | DISPATCHED | - | - |
+| 07 | Scheduler + quota + eviction | DISPATCHED | - | - |
 | 08 | GUI + IPC | PENDING | - | - |
 
 Dispatch order: 1 -> (2 + 3) -> 4 -> 5/6/7 -> 8. Leaf 05 stays parked
