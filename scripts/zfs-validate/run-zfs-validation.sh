@@ -306,15 +306,18 @@ cat > "$WORK/checks-floor.py" <<'PYEOF'
 # check-floor — fail a block that ran fewer checks than it guarantees.
 import ast as _ast, os as _os, sys as _sys
 
-_BLOCK = os.path.basename(os.path.abspath(__file__))
+_BLOCK = _os.path.basename(_os.path.abspath(__file__))
 _CONTROL = (_ast.If, _ast.For, _ast.AsyncFor, _ast.While, _ast.Try,
             _ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)
 
 
 def _self_source():
     # The floor must describe the CHECK BLOCK, not this helper: __file__ in the
-    # exec'd scope is the checks-*.py that exec'd us.
-    return open(os.path.abspath(__file__), encoding="utf-8").read()
+    # exec'd scope is the checks-*.py that exec'd us. (bughunt 2026-10-06 Y1:
+    # this used a bare `os`, which is NOT bound here - the module imports it as
+    # _os - so the function raised NameError on every call. Both the missing
+    # call sites and this typo meant the floor had never executed.)
+    return _os.path.abspath(__file__), open(__file__, encoding="utf-8").read()
 
 
 def _check_calls(node):
@@ -324,7 +327,15 @@ def _check_calls(node):
 
 
 def _unconditional(node):
-    """check() calls reachable with no if/for/while/try/def in between."""
+    """check() calls reachable with no if/for/while/def in between.
+
+    A `try:` body is NOT excluded: those checks run on the normal path, and a
+    raised exception aborts the block with a non-zero exit, which is already a
+    failure - never a silent green. Excluding them would leave
+    checks-mgmt.py's MGMT_MODE=ds arm (every check inside its try) at floor 0.
+    """
+    if isinstance(node, _ast.Try):
+        return sum(_unconditional(s) for s in node.body)
     if isinstance(node, _CONTROL):
         return 0
     total = 0
@@ -350,6 +361,30 @@ def _branch_taken(stmt, var, val):
     return None
 
 
+def _branch_checks(stmt, var, val):
+    """check() count guaranteed by the SELECTED arm of an if/elif/else chain.
+
+    Returns None when `stmt` is not an `if <var> == ...:` at all, so the
+    caller can keep scanning. Walks the elif chain through `orelse` (the AST
+    nests each elif as an If inside the previous If's orelse) - without that
+    descent MGMT_MODE=ds matched nothing and floored at 0.
+    """
+    if not isinstance(stmt, _ast.If):
+        return None
+    taken = _branch_taken(stmt, var, val)
+    if taken is None:
+        return None
+    if taken:
+        return sum(_unconditional(s) for s in stmt.body)
+    total = 0
+    for s in stmt.orelse:
+        got = _branch_checks(s, var, val)
+        if got is not None:
+            return got
+        total += _unconditional(s)
+    return total
+
+
 def require_floor(block, results, branch_var=None, branch_val=None):
     """Fail `results` unless every guaranteed check() actually ran.
 
@@ -357,17 +392,14 @@ def require_floor(block, results, branch_var=None, branch_val=None):
     empty or truncated run exits non-zero instead of reporting green.
     Returns (required, defined).
     """
-    tree = _ast.parse(_self_source())
+    tree = _ast.parse(_self_source()[1])
     required = sum(_unconditional(s) for s in tree.body)
     if branch_var is not None:
         for stmt in tree.body:
-            if not isinstance(stmt, _ast.If):
+            got = _branch_checks(stmt, branch_var, branch_val)
+            if got is None:
                 continue
-            taken = _branch_taken(stmt, branch_var, branch_val)
-            if taken is None:
-                continue
-            required += sum(_unconditional(s)
-                            for s in (stmt.body if taken else stmt.orelse))
+            required += got
             break
         else:
             # A renamed mode must be loud, never silently floorless.
@@ -429,6 +461,12 @@ def force_collect(secs=1.5):
 results = []
 def check(name, ok, detail=""):
     results.append((name, bool(ok), str(detail)[:300]))
+
+# Load the shared count floor (checks-floor.py). It derives this block's
+# minimum from THIS file's own check() calls, then require_floor below fails
+# the run when fewer checks executed than the block guarantees — so a truncated
+# or skipped block cannot report TOTAL: 0/0 and exit 0.
+exec(open("checks-floor.py").read())
 
 def wait_events(secs=1.2):
     time.sleep(secs)
@@ -1166,6 +1204,9 @@ check("s11 version still readable by id after the delete marker",
 # Restore the snapshots-mode config for any post-run manual poking.
 sh("cp $HOME/zeta-validate/config-snapshots.json $HOME/zeta-validate/config.json 2>/dev/null; true")
 
+# Count floor BEFORE the tally: appends a FAIL when fewer checks ran than this
+# block guarantees, so a truncated run cannot print 0/0 and exit 0.
+require_floor("checks.py", results)
 failed = [(n, d) for n, ok, d in results if not ok]
 for n, ok, d in results:
     print(f"{'PASS' if ok else 'FAIL'} | {n}" + (f" | {d}" if not ok else ""))
@@ -1216,6 +1257,10 @@ def db_query(sql):
 results = []
 def check(name, ok, detail=""):
     results.append((name, bool(ok), str(detail)[:300]))
+
+# Shared count floor (see checks-floor.py): a truncated block fails here
+# instead of printing ZBD_TOTAL: 0/0 and exiting 0.
+exec(open("checks-floor.py").read())
 
 def ds_exists(name):
     return sh(f"zfs list -H -o name {name} 2>/dev/null").strip() != ""
@@ -1353,6 +1398,9 @@ leaked = cleanup.strip().splitlines()[-1].strip() if cleanup.strip() else "0"
 check("s12 no zbd12 dataset/snapshot leaks under the scratch parent", leaked == "0",
       cleanup[:200])
 
+# Count floor BEFORE the tally: appends a FAIL when fewer checks ran than this
+# block guarantees, so a truncated run cannot print 0/0 and exit 0.
+require_floor("checks-zbd.py", results)
 failed = [(n, d) for n, ok, d in results if not ok]
 for n, ok, d in results:
     print(f"{'PASS' if ok else 'FAIL'} | {n}" + (f" | {d}" if not ok else ""))
@@ -1394,6 +1442,12 @@ REMOTE_BASE = sh("echo $HOME") + "/zeta-validate"
 results = []
 def check(name, ok, detail=""):
     results.append((name, bool(ok), str(detail)[:300]))
+
+# Shared count floor (see checks-floor.py). This block switches on MODE, so
+# the floor is derived from the SELECTED branch's own check() calls via
+# require_floor(..., "MODE", MODE) at the tally below — the other mode's
+# checks are not part of this run and must not raise this run's floor.
+exec(open("checks-floor.py").read())
 
 def _curl(method, path, cert, key, data=None):
     parts = ["curl", "-sS", "-k", "--max-time", "20",
@@ -1508,6 +1562,9 @@ elif MODE == "ds":
 else:
     check(f"s13 unknown MGMT_MODE {MODE!r}", False, "set MGMT_MODE=plain|ds")
 
+# Count floor BEFORE the tally: appends a FAIL when fewer checks ran than this
+# block guarantees, so a truncated run cannot print 0/0 and exit 0.
+require_floor("checks-mgmt.py", results, "MODE", MODE)
 failed = [(n, d) for n, ok, d in results if not ok]
 for n, ok, d in results:
     print(f"{'PASS' if ok else 'FAIL'} | {n}" + (f" | {d}" if not ok else ""))
@@ -1832,6 +1889,10 @@ results = []
 def check(name, ok, detail=""):
     results.append((name, bool(ok), str(detail)[:300]))
 
+# Shared count floor (see checks-floor.py): a truncated block fails here
+# instead of printing H3_TOTAL: 0/0 and exiting 0.
+exec(open("checks-floor.py").read())
+
 def force_collect(secs=1.5):
     sh("pkill -USR1 -f 'zmeta[d].*zeta-validate' 2>/dev/null; true")
     time.sleep(secs)
@@ -2117,6 +2178,9 @@ check("s14 batch delete removed the object from the dataset",
 sh(f"curl -sS -k -o /dev/null -u valuser:valpass -X DELETE "
    f"https://127.0.0.1:{WD_PORT}/{S14_RANGE_KEY}")
 
+# Count floor BEFORE the tally: appends a FAIL when fewer checks ran than this
+# block guarantees, so a truncated run cannot print 0/0 and exit 0.
+require_floor("checks-h3.py", results)
 failed = [(n, d) for n, ok, d in results if not ok]
 for n, ok, d in results:
     print(f"{'PASS' if ok else 'FAIL'} | {n}" + (f" | {d}" if not ok else ""))
@@ -2259,6 +2323,10 @@ REMOTE_BASE = sh("echo $HOME") + "/zeta-validate"
 results = []
 def check(name, ok, detail=""):
     results.append((name, bool(ok), str(detail)[:400]))
+
+# Shared count floor (see checks-floor.py): a truncated block fails here
+# instead of printing FIX_TOTAL: 0/0 and exiting 0.
+exec(open("checks-floor.py").read())
 
 def force_collect(secs=1.8):
     sh("pkill -USR1 -f 'zmeta[d].*zeta-validate' 2>/dev/null; true")
@@ -2755,6 +2823,9 @@ for k in [S15_KEY, S15_CP_SRC, S15_CP_DST, "report", "s15-coll/report.txt",
     purge(k)
 sh("rm -rf %s/s15-ifmatch-dst-*.bin 2>/dev/null; true" % BUCKET_ROOT)
 
+# Count floor BEFORE the tally: appends a FAIL when fewer checks ran than this
+# block guarantees, so a truncated run cannot print 0/0 and exit 0.
+require_floor("checks-fix.py", results)
 failed = [(n, d) for n, ok, d in results if not ok]
 for n, ok, d in results:
     print(f"{'PASS' if ok else 'FAIL'} | {n}" + (f" | {d}" if not ok else ""))
@@ -2772,7 +2843,13 @@ if [[ $ZBD_RC -ne 0 ]]; then RC=$ZBD_RC; fi
 if [[ $MGMT_RC -ne 0 ]]; then RC=$MGMT_RC; fi
 if [[ $H3_RC -ne 0 ]]; then RC=$H3_RC; fi
 if [[ $FIX_RC -ne 0 ]]; then RC=$FIX_RC; fi
-if [[ $RC -ne 0 || $KEEP_SERVER -eq 0 ]]; then
+# --keep-server means keep, on a FAILING run too: the operator passed it
+# precisely to inspect the dataset the failure left behind, and destroying it
+# here would delete the only evidence before the log tail below is printed.
+# Previously `$RC -ne 0 ||` short-circuited and wiped the scratch dataset on
+# every failed run (bughunt 2026-10-06 Y1), contradicting the --keep-server
+# help text.
+if [[ $KEEP_SERVER -eq 0 ]]; then
   log "Cleanup: stopping server + zmetad, destroying $DATASET"
   # A ROOT-owned phase-2 server cannot die by unprivileged pkill (its
   # config lives in an env var, invisible to -f matching) — and a live
