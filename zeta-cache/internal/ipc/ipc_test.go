@@ -45,7 +45,7 @@ func shortSocket(t *testing.T) string {
 func startServer(t *testing.T) string {
 	t.Helper()
 	path := shortSocket(t)
-	srv, err := Serve(path, "https://srv", "bkt")
+	srv, err := Serve(path, "https://srv", "bkt", nil)
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestStaleSocketRemoved(t *testing.T) {
 	if err := os.WriteFile(path, []byte("stale"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	srv, err := Serve(path, "https://srv", "bkt")
+	srv, err := Serve(path, "https://srv", "bkt", nil)
 	if err != nil {
 		t.Fatalf("Serve over stale file = %v, want nil", err)
 	}
@@ -135,7 +135,7 @@ func TestStaleSocketRemoved(t *testing.T) {
 
 func TestRestartDropsClientsCleanly(t *testing.T) {
 	path := shortSocket(t)
-	srv1, err := Serve(path, "https://srv", "bkt")
+	srv1, err := Serve(path, "https://srv", "bkt", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestRestartDropsClientsCleanly(t *testing.T) {
 		t.Fatalf("socket file survived Stop: %v", err)
 	}
 	// A second daemon takes over the same path and answers.
-	srv2, err := Serve(path, "https://srv", "bkt")
+	srv2, err := Serve(path, "https://srv", "bkt", nil)
 	if err != nil {
 		t.Fatalf("restart: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestParentDirCreated(t *testing.T) {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
-	srv, err := Serve(path, "https://srv", "bkt")
+	srv, err := Serve(path, "https://srv", "bkt", nil)
 	if err != nil {
 		t.Fatalf("Serve into missing parent = %v, want nil", err)
 	}

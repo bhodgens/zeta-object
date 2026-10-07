@@ -43,16 +43,27 @@ type Response struct {
 // produces "idle"; leaves 04/07 introduce syncing/error transitions.
 const ServerState = "idle"
 
+// StatusSource supplies the live status values for the status response.
+// Leaf 04 wires the sync engine through it (state/lastSync/dirty/
+// conflicts); a nil source keeps the leaf-01 static behavior (state
+// "idle", zero counters) - the protocol shape is unchanged.
+type StatusSource interface {
+	// IPCStatus returns the current values. Implementations must be
+	// safe for concurrent use and must not block on the network.
+	IPCStatus() StatusData
+}
+
 // Server is a running IPC listener. Stop closes it and removes the socket
 // file.
 type Server struct {
 	ln         net.Listener
 	socketPath string
+	status     StatusSource
 }
 
 // Serve listens on socketPath (0600, stale socket file removed first) and
 // answers one JSON request per connection until Stop is called.
-func Serve(socketPath string, serverURL, bucket string) (*Server, error) {
+func Serve(socketPath string, serverURL, bucket string, status StatusSource) (*Server, error) {
 	if dir := filepath.Dir(socketPath); dir != "" {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, fmt.Errorf("ipc: creating %s: %w", dir, err)
@@ -80,14 +91,14 @@ func Serve(socketPath string, serverURL, bucket string) (*Server, error) {
 		_ = ln.Close()
 		return nil, fmt.Errorf("ipc: chmod %s: %w", socketPath, err)
 	}
-	srv := &Server{ln: ln, socketPath: socketPath}
+	srv := &Server{ln: ln, socketPath: socketPath, status: status}
 	go func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				return // listener closed: Stop was called
 			}
-			handleConn(conn, serverURL, bucket)
+			handleConn(conn, serverURL, bucket, status)
 		}
 	}()
 	return srv, nil
@@ -102,7 +113,7 @@ func (s *Server) Stop() {
 	_ = os.Remove(s.socketPath)
 }
 
-func handleConn(conn net.Conn, serverURL, bucket string) {
+func handleConn(conn net.Conn, serverURL, bucket string, status StatusSource) {
 	defer conn.Close()
 	dec := json.NewDecoder(conn)
 	var req Request
@@ -116,11 +127,18 @@ func handleConn(conn net.Conn, serverURL, bucket string) {
 	}
 	switch req.Type {
 	case "status":
-		writeResponse(conn, Response{V: Version, OK: true, Data: &StatusData{
+		data := StatusData{
 			State:  ServerState,
 			Server: serverURL,
 			Bucket: bucket,
-		}})
+		}
+		if status != nil {
+			live := status.IPCStatus()
+			live.Server = serverURL // identity fields are the listener's
+			live.Bucket = bucket
+			data = live
+		}
+		writeResponse(conn, Response{V: Version, OK: true, Data: &data})
 	default:
 		writeResponse(conn, Response{V: Version, OK: false, Error: "unknown request type"})
 	}

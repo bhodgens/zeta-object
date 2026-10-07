@@ -1,5 +1,9 @@
-// Package sync owns the two-way sync engine: the ETag-diff PROPFIND scan
-// (leaf 04), the event-cursor optimization path (leaf 05, conditional on
-// zeta-object#15), and the upload path with If-Match. Leaf 01 ships only
-// this placeholder; the daemon runs an idle loop until those leaves land.
+// Package sync owns the two-way sync engine (leaf 04): the ETag-diff
+// PROPFIND scan with collection-token subtree skip, the locked conflict
+// matrix (download / upload-with-If-Match / conflict-copy / delete with
+// tombstone / remote-delete-keep-local), the upload and remote-apply
+// pipelines, and the ChangeFeed seam leaf 05's event cursor implements
+// (default: full scan always). The engine owns the IPC status fields
+// (state/lastSync/dirty/conflicts) and exposes SyncOnce(ctx) and
+// FullRescan(ctx); the daemon loops are leaf 07's scheduler.
 package sync

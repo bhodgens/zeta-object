@@ -271,6 +271,22 @@ func (s *Store) DirtyPaths(ctx context.Context) ([]string, error) {
 	return s.queryPaths(ctx, q)
 }
 
+// AllPaths returns every resources path, sorted - the sync engine's
+// complement set for the PROPFIND walk (rows the server no longer lists
+// are remote deletions or local-only files). Includes tombstones and
+// dir-token rows (trailing-slash paths); callers filter by suffix.
+// Leaf-04 addition: read-only, single-column, same shape as DirtyPaths.
+func (s *Store) AllPaths(ctx context.Context) ([]string, error) {
+	return s.queryPaths(ctx, `SELECT path FROM resources ORDER BY path`)
+}
+
+// TombstonedPaths returns the paths of every deleted=1 row, sorted -
+// local deletes awaiting their remote DELETE (leaf 04 matrix 6) plus
+// tombstones feeding the leaf-07 deletion-grace table. Leaf-04 addition.
+func (s *Store) TombstonedPaths(ctx context.Context) ([]string, error) {
+	return s.queryPaths(ctx, `SELECT path FROM resources WHERE deleted = 1 ORDER BY path`)
+}
+
 // CleanHydratedPaths returns the eviction candidates in ONE query: fully
 // uploaded (clean), body present locally, not tombstoned, and not pinned.
 //

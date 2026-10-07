@@ -20,6 +20,7 @@ package transport
 import (
 	"context"
 	"crypto/md5" // #nosec G401 -- the wire ETag IS the body MD5 (server contract); not a security use
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -40,11 +41,12 @@ type memNode struct {
 
 // MemFS is an in-memory Transport. Create with NewMemFS.
 type MemFS struct {
-	mu     sync.Mutex
-	nodes  map[string]*memNode
-	putErr error // injected Put failure (tests)
-	getErr error // injected Get failure (tests)
-	allErr error // injected failure for every verb (tests)
+	mu          sync.Mutex
+	nodes       map[string]*memNode
+	putErr      error // injected Put failure (tests)
+	getErr      error // injected Get failure (tests)
+	allErr      error // injected failure for every verb (tests)
+	propfindErr error // injected Propfind-only failure (tests, via FailPropfinds)
 }
 
 // NewMemFS builds an empty stub.
@@ -197,7 +199,13 @@ func (m *MemFS) Get(_ context.Context, key string, req *RangeRequest) (io.ReadCl
 
 func (m *MemFS) Put(_ context.Context, key string, body io.ReadSeeker, etag string) (string, error) {
 	if err := m.pickErr(m.putErr); err != nil {
-		return "", err
+		// Surgical fault: only the named key fails (tests).
+		var ge *GateError
+		if errors.As(err, &ge) && ge.OnlyKey != nil && *ge.OnlyKey != key {
+			// fall through: this key's Put is allowed
+		} else {
+			return "", err
+		}
 	}
 	if reservedKey(key) {
 		return "", ErrNotExist
@@ -339,7 +347,7 @@ func (m *MemFS) Move(_ context.Context, oldKey, newKey, destETag string) error {
 }
 
 func (m *MemFS) Propfind(_ context.Context, key string, recursive bool) ([]Entry, error) {
-	if err := m.pickErr(m.allErr); err != nil {
+	if err := m.pickErr(m.propfindErr); err != nil {
 		return nil, err
 	}
 	if reservedKey(key) {
@@ -361,7 +369,13 @@ func (m *MemFS) Propfind(_ context.Context, key string, recursive bool) ([]Entry
 	var out []Entry
 	if key != "" {
 		n := m.nodes[key]
-		out = append(out, Entry{Key: key, IsDir: n.dir, Size: int64(len(n.body)), ModTime: n.modTime})
+		entry := Entry{Key: key, IsDir: n.dir, Size: int64(len(n.body)), ModTime: n.modTime}
+		if n.dir {
+			entry.ETag = m.dirETagLocked(key)
+		} else {
+			entry.ETag = m.fileETagLocked(n)
+		}
+		out = append(out, entry)
 	}
 	keys := make([]string, 0, len(m.nodes))
 	for k := range m.nodes {
@@ -393,12 +407,21 @@ func (m *MemFS) Propfind(_ context.Context, key string, recursive bool) ([]Entry
 			}
 		}
 		seen[name] = true
-		out = append(out, Entry{
+		entry := Entry{
 			Key:     prefix + name, // direct children surface their name; nested collapse to the first segment
 			IsDir:   isDir,
 			Size:    int64(len(n.body)),
 			ModTime: n.modTime,
-		})
+		}
+		switch {
+		case !isDir:
+			entry.ETag = m.fileETagLocked(n) // file getetag: body MD5
+		case rel == name:
+			entry.ETag = m.dirETagLocked(k) // real collection row: its own child token
+		default:
+			entry.ETag = m.dirETagLocked(prefix + name) // nested collapse: derive from the child collection
+		}
+		out = append(out, entry)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out, nil

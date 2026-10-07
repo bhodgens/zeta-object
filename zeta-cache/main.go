@@ -59,7 +59,13 @@ func main() {
 		log.Printf("zeta-cache: connectivity probe ok")
 	}
 
-	srv, err := ipc.Serve(cfg.IPCSocket, cfg.ServerURL, cfg.Bucket)
+	// Leaf 04: exactly ONE initial sync after the probe (leaf 07 owns
+	// the scheduler loops). With the transport still pending (leaf 06)
+	// this is a no-op logging the degraded state; the meta table keeps
+	// the persisted status values for IPC either way.
+	runInitialSync(cfg, db)
+
+	srv, err := ipc.Serve(cfg.IPCSocket, cfg.ServerURL, cfg.Bucket, statusSource{db: db})
 	if err != nil {
 		_ = db.Close()
 		log.Fatalf("zeta-cache: %v", err)
@@ -97,7 +103,7 @@ func main() {
 		// on a fresh socket) can report the error state. SIGUSR1 retries
 		// the unmount; SIGTERM again force-stops without unmounting.
 		log.Printf("zeta-cache: unmount refused: %v (process stays alive; SIGTERM again to force-stop)", unmountErr)
-		ipcReserve, rerr := ipc.Serve(cfg.IPCSocket, cfg.ServerURL, cfg.Bucket)
+		ipcReserve, rerr := ipc.Serve(cfg.IPCSocket, cfg.ServerURL, cfg.Bucket, statusSource{db: db})
 		if rerr == nil {
 			s2 := <-sig
 			ipcReserve.Stop()
