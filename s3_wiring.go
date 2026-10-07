@@ -72,10 +72,18 @@ func installS3Seams(cfg *ServerConfig) {
 	})
 
 	// Above-seam multipart staging root: getBucketPath semantics exactly
-	// (custom path wins, else dataDir/bucket) computed from the installed
-	// configuration, not the package global.
+	// (custom path wins, else dataDir/bucket).
+	//
+	// bughunt 2026-10-06 H3: this closure used to be frozen against the
+	// STARTUP snapshot (`bucketPathFor(cfg, bucket)` with the startup cfg),
+	// so after a hot PUT /config the resolver kept resolving the old dataDir
+	// and old custom-bucket map while validBucket - which reads the
+	// hot-installed view - approved the NEW mapping. The gate authorized one
+	// path and the data plane used another. The resolver now consults the
+	// installed view per call, so both read the same generation. The layout
+	// math itself is unchanged (custom wins, else dataDir/bucket).
 	s3.InstallFSRootResolver(func(bucket string) string {
-		return bucketPathFor(cfg, bucket)
+		return s3.BucketPathFromInstalledView(bucket)
 	})
 
 	// Credentials.

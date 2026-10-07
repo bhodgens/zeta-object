@@ -209,13 +209,26 @@ func (s *ConfigStore) Apply(patch ConfigPatch) (applied []string, restartRequire
 
 	// From here the mutations run. Any failure restores the running
 	// configuration's seams instead of leaving a half-applied install.
+	//
+	// bughunt 2026-10-06 H1/H2: the installed seams must be built from the
+	// RUNNING configuration plus the hot-applied keys, NEVER from the raw
+	// candidate. The candidate also carries this patch's restart-required
+	// values, so installing it wholesale put a restart-required key into the
+	// live data plane while GET /config (which reads s.live) reported the old
+	// one - a client reading the advertised value got a path (or a region)
+	// the server was not using. merge: live + applied keys = exactly the
+	// configuration the running process should serve.
 	if len(applied) > 0 {
-		if err := applyHotSeams(&candidate); err != nil {
+		seamCfg := deepCopyServerConfig(s.live)
+		copyAppliedKeys(&seamCfg, &candidate, applied)
+		if err := applyHotSeams(&seamCfg); err != nil {
 			hotSeamsRollback(s.live)
 			return nil, nil, err
 		}
 	}
 	if _, ok := fields["identities"]; ok {
+		// The registry is identity-scoped, not layout-scoped, and identities
+		// is a hot key, so the candidate and live+applied agree here.
 		if err := rebuildIdentityRegistryFor(&candidate); err != nil {
 			hotSeamsRollback(s.live)
 			return nil, nil, err

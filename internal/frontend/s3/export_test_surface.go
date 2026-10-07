@@ -278,8 +278,12 @@ func BuildCopyMetadata(srcMeta *ObjectMetadata, r *httpRequest, data []byte, eTa
 	return buildCopyMetadata(srcMeta, r, data, eTag, dstDataPath)
 }
 
+// DeleteObjectCore keeps the context-free signature other packages' tests use
+// (they have no request context); the production core takes one so the batch
+// surfaces can honour client cancellation (bughunt 2026-10-06 M1). nil degrades
+// to context.Background() inside.
 func DeleteObjectCore(bucketPath, bucketName, objectName string) error {
-	return deleteObjectCore(bucketPath, bucketName, objectName)
+	return deleteObjectCore(context.TODO(), bucketPath, bucketName, objectName)
 }
 
 func ResolveObjectDataPath(bucketPath, objectName string, meta *ObjectMetadata) string {

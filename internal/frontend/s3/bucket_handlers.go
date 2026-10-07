@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -43,6 +44,41 @@ func validBucket(name string) bool {
 		return true
 	}
 	return validateBucketName(name) == nil
+}
+
+// BucketPathFromInstalledView resolves a bucket's on-disk root from the
+// INSTALLED configuration view - the same generation validBucket consults and
+// the same one the hot-apply path rewrites (bughunt 2026-10-06 H3). The layout
+// math is identical to getBucketPath's fallback: a config-declared custom path
+// wins, else dataDir/bucket.
+//
+// It exists as an exported seam because the wiring layer's fs-root resolver
+// used to close over the STARTUP snapshot, which made the resolver and the
+// gate disagree after any hot config patch: the gate approved a name because
+// the hot view declared it custom while the resolver resolved it through the
+// startup map. Both must read one generation.
+func BucketPathFromInstalledView(bucketName string) string {
+	cfg := currentServerConfig()
+	if customPath, ok := cfg.Buckets[bucketName]; ok {
+		return customPath
+	}
+	return filepath.Join(cfg.DataDir, bucketName)
+}
+
+// InstalledDataDir reports the data root the INSTALLED configuration view
+// resolves buckets under. The management layer's honesty gate compares it
+// against the config store's reported live value: a divergence means a
+// restart-required key reached the live data plane (bughunt 2026-10-06 H1).
+func InstalledDataDir() string { return currentServerConfig().DataDir }
+
+// InstalledCustomBucketPaths returns the custom-bucket map the installed view
+// holds. The gate that authorizes a custom bucket name and the resolver that
+// builds its path must consult the same generation (bughunt 2026-10-06 H3).
+func InstalledCustomBucketPaths() map[string]string {
+	cfg := currentServerConfig()
+	out := make(map[string]string, len(cfg.Buckets))
+	maps.Copy(out, cfg.Buckets)
+	return out
 }
 
 // bucketExists checks if a bucket exists (follows symlinks)
