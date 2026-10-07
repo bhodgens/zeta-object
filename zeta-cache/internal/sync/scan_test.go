@@ -8,6 +8,8 @@ package sync
 import (
 	"strings"
 	"testing"
+
+	"github.com/bhodgens/zeta-object/zeta-cache/internal/transport"
 )
 
 func TestCollectionTokenSkip(t *testing.T) {
@@ -105,5 +107,52 @@ func TestPropfindFaultFallsBackToErrorNotSilentSkip(t *testing.T) {
 	}
 	if st := h.eng.Status(); st.State != StateIdle {
 		t.Fatalf("status.state after recovery = %q, want %q", st.State, StateIdle)
+	}
+}
+
+// TestEmptyBucketRoot404IsEmptySync pins the gateway interaction the
+// live mount round-trip found (2026-10-07): an EMPTY bucket 404s on the
+// root PROPFIND (the webdav view resolves a collection only when it
+// holds content). The engine must treat root+ErrNotExist as an empty
+// tree - the sync succeeds with no actions and its own later PUTs
+// create the collection - while a 404 below the root stays an error.
+func TestEmptyBucketRoot404IsEmptySync(t *testing.T) {
+	h := newHarness(t)
+	// The local side has a dirty file (the "first client" write); the
+	// server answers 404 for the root listing (bucket exists, empty).
+	h.putLocal("a.txt", "first client write")
+	h.fs.FailPropfindsWith(transport.ErrNotExist)
+
+	if err := h.eng.SyncOnce(bg()); err != nil {
+		t.Fatalf("sync on empty bucket (root 404): %v", err)
+	}
+	rep := h.eng.LastReport()
+	if rep.Uploads != 1 {
+		t.Fatalf("uploads = %d, want 1 (the local file must upload): %+v", rep.Uploads, rep)
+	}
+	h.fs.ClearFaults()
+
+	// The server now holds the file; a second sync is a no-op.
+	if err := h.eng.SyncOnce(bg()); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	rep = h.eng.LastReport()
+	if rep.Uploads+rep.Downloads+rep.ConflictCopies != 0 {
+		t.Fatalf("second sync ran actions on a settled tree: %+v", rep)
+	}
+}
+
+// TestNonRoot404StaysError pins the complement: a 404 below the root
+// (the parent listing just named that child) is a genuine error.
+func TestNonRoot404StaysError(t *testing.T) {
+	h := newHarness(t)
+	h.fs.PutRaw("d/a.txt", "x")
+	h.putLocal("d/a.txt", "x")
+	if err := h.eng.SyncOnce(bg()); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	h.fs.FailPropfindsWith(transport.ErrNotExist)
+	if err := h.eng.SyncOnce(bg()); err == nil {
+		t.Fatal("subtree 404 must stay an error, not an empty tree")
 	}
 }

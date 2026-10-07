@@ -376,6 +376,15 @@ func (e *Engine) walk(ctx context.Context, dir string, seen map[string]bool) (Re
 	rep := Report{}
 	entries, err := e.tr.Propfind(ctx, dir, false)
 	if err != nil {
+		// An EMPTY bucket 404s on the root PROPFIND: the webdav view
+		// resolves a collection only when it holds content (F-oc-1
+		// relaxation), and a freshly created bucket is empty. Root +
+		// ErrNotExist = empty tree (the sync's own PUTs will create it);
+		// a 404 below the root is a genuine error (the parent listing
+		// just named that child).
+		if dir == "" && errors.Is(err, transport.ErrNotExist) {
+			return rep, nil
+		}
 		return rep, fmt.Errorf("sync: propfind %q: %w", dir, err)
 	}
 	for i := range entries {

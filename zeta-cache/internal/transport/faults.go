@@ -29,6 +29,15 @@ func (m *MemFS) FailPropfinds() {
 	m.propfindErr = &GateError{Gate: "propfind", Cause: errInjected}
 }
 
+// FailPropfindsWith makes every Propfind fail with err until cleared
+// (nil clears). The engine's empty-bucket rule keys off ErrNotExist -
+// tests inject exactly that to pin the empty-tree branch.
+func (m *MemFS) FailPropfindsWith(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.propfindErr = err
+}
+
 // FailPutsWith makes every Put fail with err until cleared (nil clears);
 // pass &GateErr{Gate: "put", ...} to name the gate.
 func (m *MemFS) FailPutsWith(err error) {

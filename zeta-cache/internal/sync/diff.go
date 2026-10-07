@@ -80,7 +80,15 @@ func (e *Engine) diffAndApply(ctx context.Context, key string, listed *transport
 	} else {
 		entries, err := e.tr.Propfind(ctx, parentDirOf(key), false)
 		if err != nil {
-			return fmt.Errorf("sync: propfind parent of %s: %w", key, err)
+			// An EMPTY bucket 404s on the root PROPFIND (the webdav
+			// view resolves a collection only when it holds content):
+			// the key does not exist server-side, which is exactly the
+			// not-listed path this branch implements.
+			if parentDirOf(key) == "" && errors.Is(err, transport.ErrNotExist) {
+				entries = nil
+			} else {
+				return fmt.Errorf("sync: propfind parent of %s: %w", key, err)
+			}
 		}
 		for i := range entries {
 			if entries[i].Key == key && !entries[i].IsDir {
