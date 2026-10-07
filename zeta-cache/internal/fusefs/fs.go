@@ -688,6 +688,7 @@ func (d *dirNode) Create(ctx context.Context, name string, flags uint32, _ uint3
 		child = d.newChild(ctx, name, false)
 	}
 	fillAttr(&out.Attr, key, false, 0, time.Now().Unix())
+	log.Printf("fusefs: CREATE key=%q staging=%s", key, staging)
 	return child, &fileHandle{fs: f, key: key, stagingPath: staging, local: fh}, 0, 0
 }
 
@@ -749,6 +750,7 @@ func (h *fileHandle) Write(_ context.Context, data []byte, off int64) (uint32, s
 // dirty=1 in the index, then the prompt-upload hook. NEVER loses local
 // bytes: the rename is atomic and errors keep the staging file.
 func (h *fileHandle) Flush(ctx context.Context) syscall.Errno {
+	log.Printf("fusefs: FLUSH key=%q direct=%v committed=%v", h.key, h.direct, h.committed)
 	if h.direct || h.committed {
 		return 0
 	}
