@@ -4,30 +4,47 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 )
 
 // region.go — SigV4 verification region accessor (region-config-2026-10
 // leaf 01, Contract 1). The region comes from the server `region` config
 // key, wired at startup by the config loader; tests set it via SetRegion.
 
-// region returns the SigV4 region this server verifies against.
-// Wires from the server config at startup; tests set it via
-// SetRegion. Default "us-east-1".
+// regionOf returns the SigV4 region this server verifies against.
+// Wires from the server config; tests set it via SetRegion. Default
+// "us-east-1" when unset (nil pointer or empty string).
 func regionOf() string {
-	if region == "" {
+	r := region.Load()
+	if r == nil || *r == "" {
 		return defaultRegion
 	}
-	return region
+	return *r
 }
 
-// SetRegion sets the verification region (config wiring entry;
-// empty restores the default). Not safe for concurrent use with
-// in-flight requests: call at startup only.
+// SetRegion sets the verification region (config wiring entry; empty
+// restores the default).
+//
+// SAFE FOR CONCURRENT USE. The region became a HOT seam in the 2026-10-05
+// wave: applyHotSeams (s3_wiring.go) calls this from the PUT /config admin
+// handler goroutine, while every S3 request reads the value through
+// regionOf/regionExplicit. As a plain `var region string` that write raced
+// those reads — `go test -race` reported
+//
+//	WARNING: DATA RACE
+//	  internal/frontend/s3.regionOf()  region.go:17
+//	  internal/frontend/s3.SetRegion() region.go:30
+//
+// and a torn string read can answer a correctly-signed us-east-1 request
+// with SignatureDoesNotMatch. The atomic pointer makes every reader see one
+// complete generation; a reader never observes a half-written string.
+// (bughunt 2026-10-06 H1.)
 func SetRegion(r string) {
 	// Belt and suspenders: config load already lowercases (SigV4
 	// regions are lowercase), but direct callers get the same
 	// normalization.
-	region = strings.ToLower(r)
+	lower := strings.ToLower(r)
+	region.Store(&lower)
 }
 
 // regionExplicit reports whether an explicit verification region was
@@ -36,7 +53,8 @@ func SetRegion(r string) {
 // itself - false in default mode (SetRegion never called, or called with
 // ""). Explicit = strict region compare; default = permissive.
 func regionExplicit() bool {
-	return region != ""
+	r := region.Load()
+	return r != nil && *r != ""
 }
 
 // validRegionToken reports whether s is a well-formed SigV4 region token
@@ -90,6 +108,9 @@ func checkRegionMatch(clientRegion string) *authFailureError {
 		"Region in credential scope ('" + clientRegion + "') is incorrect; expected '" + expected + "'.", http.StatusBadRequest}
 }
 
-// region is the package-level verification region. Startup-only: written
-// by SetRegion before request traffic, read-only afterwards.
-var region = ""
+// region is the package-level verification region, held behind an
+// atomic.Pointer so the hot-apply path (PUT /config) can swap it while
+// request goroutines read it. A nil pointer means "never set" (default
+// mode); a pointer to "" means "explicitly cleared", which regionOf and
+// regionExplicit both treat as default mode.
+var region atomic.Pointer[string]
