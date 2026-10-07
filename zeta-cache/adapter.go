@@ -43,7 +43,7 @@ func (a indexAdapter) CleanETag(key string) (string, error) {
 
 func (a indexAdapter) MarkDirty(key string, size, mtime int64) error {
 	r := index.Resource{Path: key, Size: size, Mtime: mtime, Dirty: true, Hydrated: true}
-	if err := a.store.PutPath(a.ctx, r, "fuse-flush", "dirty=1 at Flush"); err != nil {
+	if err := a.store.PutPath(a.ctx, r, index.OpLocalWrite, "dirty=1 at Flush"); err != nil {
 		return fmt.Errorf("MarkDirty %s: %w", key, err)
 	}
 	return nil
@@ -51,7 +51,7 @@ func (a indexAdapter) MarkDirty(key string, size, mtime int64) error {
 
 func (a indexAdapter) MarkClean(key string, etag string, size int64) error {
 	r := index.Resource{Path: key, ETag: etag, Size: size, Hydrated: true}
-	if err := a.store.PutPath(a.ctx, r, "upload-confirmed", "dirty=0 after verified PUT"); err != nil {
+	if err := a.store.PutPath(a.ctx, r, index.OpUploadOK, "dirty=0 after verified PUT"); err != nil {
 		return fmt.Errorf("MarkClean %s: %w", key, err)
 	}
 	return nil
@@ -59,7 +59,7 @@ func (a indexAdapter) MarkClean(key string, etag string, size int64) error {
 
 func (a indexAdapter) RecordHydrated(key, etag string, size, mtime int64) error {
 	r := index.Resource{Path: key, ETag: etag, Size: size, Mtime: mtime, Hydrated: true}
-	if err := a.store.PutPath(a.ctx, r, "hydrate", "full-file hydration"); err != nil {
+	if err := a.store.PutPath(a.ctx, r, index.OpHydrate, "full-file hydration"); err != nil {
 		return fmt.Errorf("RecordHydrated %s: %w", key, err)
 	}
 	return nil
@@ -127,7 +127,7 @@ func (a indexAdapter) MoveKey(oldKey, newKey string) error {
 		return fmt.Errorf("MoveKey get %s: %w", oldKey, err)
 	}
 	r.Path = newKey
-	if err := a.store.PutPath(a.ctx, r, "fuse-rename", "index row re-pointed"); err != nil {
+	if err := a.store.PutPath(a.ctx, r, index.OpLocalWrite, "index row re-pointed after MOVE"); err != nil {
 		return fmt.Errorf("MoveKey put %s: %w", newKey, err)
 	}
 	if err := a.store.DeletePath(a.ctx, oldKey, "fuse-rename"); err != nil {
