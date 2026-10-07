@@ -311,6 +311,10 @@ EOF
 			kill -TERM "$ZC_FUSE_PID" 2>/dev/null
 			echo '  (SKIP: transport pending - leaf 06 lands the real client; mount section activates then)'
 			e2e_finish
+			# The case is SOURCED by the runner: `return` ends it without
+			# killing the shared server (exit would). umount + cleanup ran
+			# above; the trap handles the rest.
+			return 0
 		fi
 	fi
 	assert_eq 'daemon mounts the bucket namespace' 1 "$ZC_FUSE_OK"
