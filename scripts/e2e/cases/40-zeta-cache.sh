@@ -340,9 +340,14 @@ EOF
 	if [ "$ZC_FUSE_OK" -eq 1 ]; then
 		# create via mount -> server-side PROPFIND
 		echo 'e2e via fuse' > "$ZC_MNT/fuse-roundtrip.txt"
-		sleep 2 # prompt-upload debounce budget (leaf 07 tightens)
+		sleep 4 # prompt-upload debounce budget (leaf 07 tightens)
 		W40_BODY=$(curl -sk --user "$ZC_USER:$ZC_PASS" \
 			-X PROPFIND -H 'Depth: 1' "$ZC_ENDPOINT/$ZC_BKT/" 2>/dev/null)
+		if ! printf '%s' "$W40_BODY" | grep -q 'fuse-roundtrip.txt'; then
+			echo '  (diag: file not server-side after 4s - daemon log:)'
+			tail -25 "$ZC_WORK/fuse.log" 2>/dev/null || echo '  (no fuse.log)'
+			echo "  (diag: cache files dir:)" ; ls -R "$ZC_ROOT/cache-manual" 2>/dev/null | head -20
+		fi
 		assert_contains 'file written via mount appears server-side' "$W40_BODY" 'fuse-roundtrip.txt'
 		# server-side write -> visible in the mount (PROPFIND-driven)
 		echo 'server wrote me' | curl -sk --user "$ZC_USER:$ZC_PASS" \
