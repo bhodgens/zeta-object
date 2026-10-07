@@ -171,10 +171,10 @@ makes this legal). Do not gate v1 on the cursor.
 
 | Leaf | Title | Status | Commit | Gate evidence |
 |---|---|---|---|---|
-| 01 | Module skeleton + daemon lifecycle | PENDING | - | - |
-| 02 | FUSE filesystem layer | PENDING | - | - |
-| 03 | Index DB + sync journal | PENDING | - | - |
-| 04 | Sync engine (scan path) | PENDING | - | - |
+| 01 | Module skeleton + daemon lifecycle | DONE | bda8c8e | e2e 40: 19 asserts; make e2e 900/0; race green; lint 0 |
+| 02 | FUSE filesystem layer | DONE | 84b21fb | race green; lint 0; case 40 mount skip on FUSE-less hosts; live-mount activates with leaf 06 |
+| 03 | Index DB + sync journal | DONE | 84b21fb | race green (WAL concurrency, reconcile, crash-sim); lint 0 |
+| 04 | Sync engine (scan path) | DISPATCHED | - | - |
 | 05 | Event cursor (CONDITIONAL on #15) | PARKED-PREREQ | - | - |
 | 06 | Transport + auth | PENDING | - | - |
 | 07 | Scheduler + quota + eviction | PENDING | - | - |
