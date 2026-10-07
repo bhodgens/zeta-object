@@ -183,10 +183,12 @@ jobs:
 
       # The e2e suite drives the real AWS CLI. getfattr is the xattr
       # reader case 28 (xattr audit) uses on Linux; the ubuntu-latest
-      # image does not ship it (attr package).
-      - name: Install AWS CLI v2 + attr
+      # image does not ship it (attr package). fuse3 is the mount
+      # helper case 40's live FUSE section needs (the device node alone
+      # is not enough for an unprivileged fusermount).
+      - name: Install AWS CLI v2 + attr + fuse3
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq attr
+          sudo apt-get update -qq && sudo apt-get install -y -qq attr fuse3
           curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
           unzip -q /tmp/awscliv2.zip -d /tmp
           sudo /tmp/aws/install --update

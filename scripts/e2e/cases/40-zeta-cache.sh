@@ -256,10 +256,13 @@ fi
 
 # --- 40e: mount section (leaf 02) -------------------------------------
 # FUSE availability probe: /dev/fuse on Linux, mount_osxfuse/mount_macfuse
-# on macOS. Absent -> graceful skip with the documented message (this is
-# the path CI linux runners exercise; leaf 02 acceptance item 2).
+# on macOS. Absent -> graceful skip with the documented message.
+# /dev/fuse existing is NOT sufficient on Linux: an unprivileged mount
+# also needs fusermount3 (or fusermount) setuid - CI runners have the
+# device but no fuse3 package, and the mount then fails with permission
+# denied. Probe the actual mount helper, not just the device node.
 ZC_FUSE=0
-if [ -e /dev/fuse ]; then
+if [ -e /dev/fuse ] && { command -v fusermount3 >/dev/null 2>&1 || command -v fusermount >/dev/null 2>&1; }; then
 	ZC_FUSE=1
 elif command -v mount_osxfuse >/dev/null 2>&1 || command -v mount_macfuse >/dev/null 2>&1; then
 	ZC_FUSE=1

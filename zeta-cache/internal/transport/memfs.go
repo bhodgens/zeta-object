@@ -135,11 +135,11 @@ func md5hex(b []byte) string {
 
 // parentOf splits "a/b/c" -> ("a/b", "c"); "" parent for top level.
 func parentOf(key string) (string, string) {
-	i := strings.LastIndexByte(key, '/')
-	if i < 0 {
+	parent, leaf, found := strings.CutLast(key, "/")
+	if !found {
 		return "", key
 	}
-	return key[:i], key[i+1:]
+	return parent, leaf
 }
 
 // ensureDirs creates every missing collection along key's parent chain.

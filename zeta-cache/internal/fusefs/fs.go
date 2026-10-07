@@ -314,11 +314,11 @@ func (f *FS) statKey(ctx context.Context, key string) (isDir bool, size, mtime i
 }
 
 func parentKey(key string) string {
-	i := strings.LastIndexByte(key, '/')
-	if i < 0 {
+	_, parent, found := strings.CutLast(key, "/")
+	if !found {
 		return ""
 	}
-	return key[:i]
+	return parent
 }
 
 // inoHash is the FNV-1a basis for stable inode numbers.
