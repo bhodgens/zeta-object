@@ -184,10 +184,12 @@ tracking table). Scan-only remains the behavior on plain-dir buckets
 Dispatch order: 1 -> (2 + 3) -> 4 -> 5/6/7 -> 8. Leaf 05 stays parked
 until zeta-object#15 lands; v1 ships scan-only.
 
-## Tree closure (2026-10-08)
+## Tree closure (2026-10-08, updated same day)
 
-- All leaves except 05 are DONE; 05 stays PARKED-PREREQ by decision 7
-  (the cursor unblocks when gateway issue #15 lands).
+- ALL 8 LEAVES DONE. #15 (the gateway cursor) landed 6478b1d; leaf 05's
+  CursorFeed wired into both engine sites 31c3540. Non-ZFS buckets stay
+  scan-only by the self-degrade contract (verified live: events 404 ->
+  full scan -> clean sync).
 - Final CI: run for 27595d0 - all jobs green (build incl. the
   zeta-cache module step, lint incl. the module's golangci-lint, e2e
   900+/0 with case 40's LIVE FUSE mount round-trip on the CI runner,
