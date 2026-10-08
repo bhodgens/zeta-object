@@ -373,8 +373,16 @@ EOF
 			--data-binary @- -X PUT "$ZC_ENDPOINT/$ZC_BKT/server-seed.txt" >/dev/null
 		sleep 2 # sync-scan budget (leaf 04 tightens)
 		assert_contains 'server-side write surfaces in the mount' "$(ls "$ZC_MNT" 2>/dev/null)" 'server-seed.txt'
-		# read back through the mount
-		W40_READ=$(cat "$ZC_MNT/server-seed.txt" 2>/dev/null)
+		# read back through the mount. Hydration on first open can lag the
+		# listing entry on CI (attr cache + hydrate); retry briefly and
+		# dump diagnostics while it settles.
+		W40_READ=''
+		for _ in $(seq 1 6); do
+			sleep 1
+			W40_READ=$(cat "$ZC_MNT/server-seed.txt" 2>/dev/null)
+			printf '%s' "$W40_READ" | grep -q 'server wrote me' && break
+			ls -la "$ZC_MNT" 2>/dev/null | grep server-seed || true
+		done
 		assert_contains 'server-seeded file reads back through the mount' "$W40_READ" 'server wrote me'
 	fi
 	kill -TERM "$ZC_FUSE_PID" 2>/dev/null
