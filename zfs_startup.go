@@ -85,6 +85,35 @@ func validateZfsBucketDatasets(ctx context.Context, cfg *ServerConfig) (string, 
 	return parent, nil
 }
 
+// validateZfsNativeTags is the fail-loud startup check for zfs_native_tags
+// (the ZFS-native object-tag store, zfs-metadata#13 / DB layout 9).
+// Feature off: no-op. Feature on: zfs_bucket_datasets must be enabled and
+// its validation must have resolved a parent dataset (the tag store only
+// ever targets <parent>/<bucket> datasets), the zmetad binary must
+// resolve on PATH (the tag CLI is the store's ONLY write/read path —
+// a missing binary would make every ?tagging request a lazy 500), and the
+// zmetad database path must be non-empty (it is config-defaulted, so an
+// empty value is a wiring bug, not a user error). Any failure returns an
+// error naming the failed check; main aborts startup on it.
+func validateZfsNativeTags(cfg *ServerConfig) error {
+	if !cfg.ZfsNativeTags {
+		return nil
+	}
+	if !cfg.ZfsBucketDatasets {
+		return fmt.Errorf("zfs_native_tags: zfs_bucket_datasets must be enabled (the tag store targets bucket datasets)")
+	}
+	if zfsBucketsParentDataset == "" {
+		return fmt.Errorf("zfs_native_tags: no parent dataset resolved (zfs_bucket_datasets validation did not run or failed)")
+	}
+	if _, err := lookPathFn(cfg.ZmetadBinary); err != nil {
+		return fmt.Errorf("zfs_native_tags: zmetad binary %q not found on PATH: %w", cfg.ZmetadBinary, err)
+	}
+	if cfg.ZmetadDBPath == "" {
+		return fmt.Errorf("zfs_native_tags: zmetad_db_path is empty")
+	}
+	return nil
+}
+
 // zfsDatasetForMount resolves the ZFS dataset name backing path by
 // execing the zfs CLI (argv-only, never a shell string — binary is
 // config-controlled, path is abs(dataDir)): `zfs list -H -o name -t

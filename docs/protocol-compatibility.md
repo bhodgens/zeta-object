@@ -50,7 +50,7 @@ Reading the columns:
 | Presigned URLs | Implemented | query-form SigV4, expiry honored, region-aware. e2e 07, 30 |
 | SigV4 (header + `aws-chunked` streaming) | Implemented | trailers skipped (not checksum-verified - see Absent). e2e 09 |
 | SigV4 region | Configurable | `region` config key, default `us-east-1`; explicit = strict compare (mismatch fails `SignatureDoesNotMatch` naming the expected region); default = permissive-unset is a test-only mode, a launched server is always strict. GetBucketLocation reports it. e2e 30 |
-| Object tagging | Implemented | `x-amz-tagging` on PUT/COPY (COPY/REPLACE directives), `?tagging` GET/PUT/DELETE, `TagCount` on GET/HEAD; S3 limits enforced (10 tags, 128B keys, 256B values, reserved `aws:` -> `InvalidTag`). e2e 30, boto3 interop e2e 12 |
+| Object tagging | Implemented | `x-amz-tagging` on PUT/COPY (COPY/REPLACE directives), `?tagging` GET/PUT/DELETE, `TagCount` on GET/HEAD; S3 limits enforced (10 tags, 128B keys, 256B values, reserved `aws:` -> `InvalidTag`). Storage: plain-dir buckets use the per-object sidecar; dataset-backed buckets with `zfs_native_tags` + `zfs_bucket_datasets` store tags in the zmetad database (DB layout 9), rename-stable and REMOVE-exact. e2e 30 (43 asserts; ZFS-gated ztags section), boto3 interop e2e 12 |
 | Versioning | Implemented, per mechanism | see the versioning table below. e2e 32, zfs-validate section 10 |
 | `?versions` listing | Implemented | versioned buckets: per-key versions + delete markers, newest-first, `IsLatest`, mid-key `version-id-marker` resume. Never-versioned buckets keep the legacy listing. e2e 32 |
 | GetBucketLocation | Implemented | reports the configured region. e2e 30 |

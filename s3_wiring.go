@@ -235,6 +235,14 @@ func applyHotSeams(cfg *ServerConfig) error {
 		s3.UninstallZfsDatasetProvisioner()
 		s3.ClearZfsBucketDatasetParent()
 	}
+
+	// ZFS-native tags (zfs-metadata#13 consumer): installed LAST so a
+	// rejected tag install leaves the provisioner exactly as this apply
+	// found it. On = the zmetad-backed tag store for dataset-backed
+	// buckets; off = the sidecar store everywhere (uninstall).
+	if err := installZfsNativeTagsFor(cfg); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -340,4 +348,29 @@ func installZfsDatasetProvisionerFor(cfg *ServerConfig) error {
 	}
 	s3.SetZfsBucketDatasetParent(zfsBucketsParentDataset)
 	return nil
+}
+
+// installZfsNativeTagsFor installs (or clears) the zfs-native-tags gate
+// (zfs_native_tags), mirroring the provisioner's hot-apply shape: on =
+// install from the startup-resolved parent + config values; off =
+// uninstall so the sidecar store serves every bucket again. The gate is
+// installed as the LAST hot step only when the tag validation passed at
+// startup; a hot patch toggling it on without zmetad fails the pre-check
+// and nothing moves.
+func installZfsNativeTagsFor(cfg *ServerConfig) error {
+	if !cfg.ZfsNativeTags {
+		s3.UninstallZmetadTagStore()
+		return nil
+	}
+	if err := validateZfsNativeTags(cfg); err != nil {
+		return err
+	}
+	return s3.InstallZmetadTagStore(
+		zfsBucketsParentDataset,
+		cfg.ZfsBinary,
+		cfg.ZmetadBinary,
+		cfg.ZmetadDBPath,
+		cfg.DataDir,
+		s3.InstallZfsTagDatasetProbe(cfg.ZfsBinary),
+	)
 }

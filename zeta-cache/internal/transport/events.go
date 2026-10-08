@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 )
 
 // EventsNotAvailableError marks the contracted 503: the bucket has no
@@ -57,15 +58,28 @@ type EventHistory struct {
 // sinceID < 0 means "no cursor" (the plain ?events probe). maxEvents <= 0
 // takes the server default. A 503 answers (nil, EventsNotAvailable); any
 // other non-200 is a hard error.
+//
+// The query rides RawQuery, NEVER the resourceURL key: the key form
+// "?events&..." is path-escaped (%3F) by resourceURL and the gateway then
+// routes a literal key named "?events&..." — a live-validated 404 on
+// zfs-meta. RawQuery keeps the request in the bucket-collection form the
+// gateway's zfssurface dispatch expects.
 func (c *Client) Events(ctx context.Context, sinceID int64, maxEvents int) (*EventHistory, error) {
-	q := "?events"
+	req, err := c.newRequest(ctx, http.MethodGet, "", nil)
+	if err != nil {
+		return nil, err
+	}
+	q := req.URL.Query()
+	q.Set("events", "")
 	if sinceID >= 0 {
-		q = fmt.Sprintf("%s&since-id=%d", q, sinceID)
+		q.Set("since-id", strconv.FormatInt(sinceID, 10))
 	}
 	if maxEvents > 0 {
-		q = fmt.Sprintf("%s&max-events=%d", q, maxEvents)
+		q.Set("max-events", strconv.Itoa(maxEvents))
 	}
-	resp, err := c.do(ctx, http.MethodGet, q, nil, -1, nil)
+	req.URL.RawQuery = q.Encode()
+	c.doAuth(req)
+	resp, err := c.roundTrip(ctx, req)
 	if err != nil {
 		return nil, err
 	}

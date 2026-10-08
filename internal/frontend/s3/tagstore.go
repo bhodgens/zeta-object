@@ -1,14 +1,27 @@
-// tagstore.go — the S3 object-tagging storage seam (tagging tree leaf 03).
+// tagstore.go — the S3 object-tagging storage seam (tagging tree leaf 03;
+// ZFS-native store added with the zfs-metadata#13 consumer leaf).
 //
-// Charter compliance: tags are stored in the object's OWN sidecar file
-// (<bucket>/.metadata/<key>.meta, optional "tags" JSON field, leaf 02) —
-// no server-owned tagging state exists. The seam exists so the ZFS-native
-// store (upstream zfs-metadata#13) slots in later without re-touching
-// handlers; in v1 ZFS buckets use the same sidecar path (documented in
-// README — parity is trivial because there is exactly one path).
+// Two implementations, selected by tagStoreFor:
+//   - sidecarTagStore: tags live in the object's OWN sidecar file
+//     (<bucket>/.metadata/<key>.meta, optional "tags" JSON field, leaf
+//     02) — the plain-dir bucket path (and the ONLY path for tests and
+//     hosts without zmetad).
+//   - zmetadTagStore (zmetadtagstore.go): tags live in the zmetad
+//     database's tags table (upstream layout 9), keyed
+//     (dataset, object_id, key) — the ZFS-backed bucket path, active
+//     only when BOTH the zfs_bucket_datasets feature is on (the bucket
+//     is a real dataset) AND the zfs_native_tags gate installed a
+//     resolver (zfstagseam.go). Charter compliance: per-directory
+//     sidecars are sanctioned ONLY when the backing storage is not ZFS,
+//     so ZFS-backed buckets moving to the dataset-owned tag store is
+//     the charter-correct direction, not a new server-owned store.
+//
+// The seam exists so handlers never branch on storage kind; wire shapes
+// are identical across both stores.
 package s3
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,10 +46,67 @@ type tagStore interface {
 }
 
 // tagStoreFor resolves the tag store for a bucket's filesystem root.
-// v1: sidecarTagStore only; the zmetad-backed implementation lands when
-// upstream zfs-metadata#13 ships.
+// A dataset-backed bucket (zfs_bucket_datasets on AND the zfs_native_tags
+// gate installed) gets the zmetad-backed store: the bucket's dataset name
+// is the DETERMINISTIC <zfsBucketDatasetParent>/<bucket> derivation (never
+// path-resolved — `zfs list` on a plain dir returns the PARENT). A plain
+// dir gets the sidecar store. Selection consults the hooks at call time so
+// tests and hot config changes are observed (the dataset_provisioner.go
+// pattern). An exists-probe that FAILED (never completed — timeout,
+// cancellation, runner error) returns failingTagStore: every operation
+// errors, so the request fails loudly and NEVER silently degrades to the
+// sidecar store (the zfsDatasetExists fail-loud rule).
 func tagStoreFor(bucketPath string) tagStore {
-	return sidecarTagStore{bucketPath: bucketPath}
+	store, managed, probeErr := zmetadTagStoreForBucket(context.Background(), bucketPath)
+	switch {
+	case probeErr != nil:
+		return failingTagStore{cause: probeErr}
+	case managed:
+		return store
+	default:
+		return sidecarTagStore{bucketPath: bucketPath}
+	}
+}
+
+// failingTagStore is the store selected when the dataset-exists probe
+// could not complete: every operation returns a zmetadTagUnavailableError
+// (500-class on the wire) so an honest failure replaces the request's
+// tagging answer instead of a wrong-store fallback.
+type failingTagStore struct{ cause error }
+
+func (s failingTagStore) Get(string) (map[string]string, error) {
+	return nil, &zmetadTagUnavailableError{cause: s.cause}
+}
+
+func (s failingTagStore) Put(string, map[string]string) error {
+	return &zmetadTagUnavailableError{cause: s.cause}
+}
+
+func (s failingTagStore) Delete(string) error {
+	return &zmetadTagUnavailableError{cause: s.cause}
+}
+
+// zmetadTagStoreForBucket resolves the zmetad-backed store for a bucket.
+// The bool distinguishes the three selection answers: (nil, false, nil) =
+// not zmetad-managed (feature off, parent unset, plain-dir bucket —
+// sidecar); (store, true, nil) = the zmetad-backed store; (nil, false,
+// err) = the exists probe FAILED (never completed — timeout,
+// cancellation, runner error): tagStoreFor turns this into failingTagStore
+// so the request fails loudly instead of silently choosing the sidecar
+// store (the same fail-loud rule zfsDatasetExists documents).
+func zmetadTagStoreForBucket(ctx context.Context, bucketPath string) (store tagStore, managed bool, probeErr error) {
+	cfg, resolver := zmetadTagSnapshot()
+	if resolver == nil {
+		return nil, false, nil // feature gate off: sidecar, unchanged
+	}
+	dataset, err := resolver(ctx, bucketPath)
+	if err != nil {
+		return nil, false, err
+	}
+	if dataset == "" {
+		return nil, false, nil // not a dataset-backed bucket: sidecar
+	}
+	return newZmetadTagStore(cfg.dbPath, cfg.binary, dataset), true, nil
 }
 
 // sidecarTagStore implements tagStore over the per-object .meta sidecar

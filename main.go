@@ -75,6 +75,12 @@ func main() {
 	if _, err := validateZfsBucketDatasets(context.Background(), serverConfig()); err != nil {
 		log.Fatalf("ZFS bucket datasets validation failed: %v", err)
 	}
+	// ZFS-native tags (zfs-metadata#13 consumer): fail-loud for the same
+	// reason — a gate that passes validation but cannot exec zmetad would
+	// turn every ?tagging request into a lazy 500.
+	if err := validateZfsNativeTags(serverConfig()); err != nil {
+		log.Fatalf("ZFS native tags validation failed: %v", err)
+	}
 	// Explicitly load credentials from environment (warn on empty values)
 	loadCredentials()
 

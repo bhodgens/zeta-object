@@ -30,12 +30,14 @@ const zmetadMinDBSchemaVersion = 5
 // ADDITIVELY only (new columns/tables, no renames), so every version in
 // [min, max] is readable: layout 6 adds sync_state.last_lost and
 // meta.purge_epoch; layout 7 adds sync_state.root_id; layout 8 adds
-// events.principal — none of which this consumer requires to answer a
+// events.principal; layout 9 adds the tags table (zfs-metadata#13,
+// stamp-only bump — no events column changes, every existing read is
+// untouched) — none of which this consumer requires to answer a
 // read (principal is surfaced opportunistically when present). Pinning an
 // EXACT version instead would break the consumer on every additive
 // upstream bump (observed live: zmetad 276fe5085 shipped layout 6 and an
 // exact-5 gate 503'd every ?events request).
-const zmetadMaxDBSchemaVersion = 8
+const zmetadMaxDBSchemaVersion = 9
 
 // zmetadEventsSchemaVersions are the accepted meta.events_schema_version
 // values. The wire version moves IN LOCKSTEP with the DB layout upstream

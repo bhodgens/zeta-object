@@ -156,6 +156,19 @@ type ServerConfig struct {
 	// defaultZfsBinary ("zfs") at config load - one place owns it.
 	ZfsBinary string `json:"zfs_binary"`
 
+	// ZfsNativeTags routes object tagging for dataset-backed buckets to
+	// the zmetad tag store (zfs-metadata#13, DB layout 9) instead of the
+	// per-object sidecar: tags live in the dataset's zmetad database
+	// keyed (dataset, object_id), rename-stable and REMOVE-exact.
+	// Requires zfs_bucket_datasets (the parent dataset is where bucket
+	// datasets live) and a zmetad binary; startup ABORTS when enabled
+	// without them (validateZfsNativeTags, zfs_startup.go). Absent =>
+	// false (sidecar tagging everywhere, exact pre-feature behavior).
+	// Migration note: tags already in sidecars are NOT migrated
+	// automatically; the zmetad store is authoritative for a
+	// dataset-backed bucket once this is on (see README).
+	ZfsNativeTags bool `json:"zfs_native_tags"`
+
 	// AuditLog configures the append-only request audit log (charter
 	// exception, decided 2026-10-02). nil/absent = disabled (default off).
 	AuditLog *AuditLogConfig `json:"auditLog,omitempty"`
@@ -533,6 +546,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 		ZfsVersioningReflinkRetention int                   `json:"zfs_versioning_reflink_retention"`
 		ZfsBucketDatasets             bool                  `json:"zfs_bucket_datasets"`
 		ZfsBinary                     string                `json:"zfs_binary"`
+		ZfsNativeTags                 bool                  `json:"zfs_native_tags"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
@@ -555,6 +569,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	c.ZfsVersioningReflinkRetention = a.ZfsVersioningReflinkRetention
 	c.ZfsBucketDatasets = a.ZfsBucketDatasets
 	c.ZfsBinary = a.ZfsBinary
+	c.ZfsNativeTags = a.ZfsNativeTags
 	c.AuditLog = a.AuditLog
 	a.Buckets.apply(c)
 	return c.bucketsErr
