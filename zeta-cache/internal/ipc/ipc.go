@@ -21,6 +21,13 @@ type Request struct {
 	Net  string `json:"net,omitempty"` // reserved for leaf 08
 	Path string `json:"path,omitempty"`
 	Pin  *bool  `json:"pin,omitempty"`
+	// Leaf-08 additions (additive optional fields; leaf-01/07 clients
+	// never set them and unaffected handlers ignore them):
+	// Mode selects the conflicts.resolve resolution.
+	Mode string `json:"mode,omitempty"`
+	// Confirm is the explicit user flag: only a resolve request carrying
+	// confirm=true may DELETE the conflicted-copy file.
+	Confirm bool `json:"confirm,omitempty"`
 }
 
 // StatusData is the payload of a successful status response.
@@ -94,6 +101,14 @@ type Handler interface {
 	Tombstones() ([]Tombstone, error)
 }
 
+// DeletedLister is the additive capability behind deleted.list (the
+// tombstones LIST already exists via Handler; the GUI's recently-deleted
+// view uses deleted.list so the request names match the response shape).
+type DeletedLister interface {
+	// DeletedPaths lists the tombstoned rows (path + deletion window).
+	DeletedPaths() ([]Tombstone, error)
+}
+
 // StatusSource supplies the live status values for the status response.
 // Implementations must be safe for concurrent use and must not block on
 // the network.
@@ -107,9 +122,22 @@ type StatusSource interface {
 type Server struct {
 	ln         net.Listener
 	socketPath string
+	mu         sync.Mutex // guards status+handler: ReplaceHandler swaps them live
 	status     StatusSource
 	handler    Handler
 	wg         *sync.WaitGroup
+}
+
+// ReplaceHandler swaps the status source and handler on the LIVE listener:
+// the socket file, its 0600 mode, and connected clients are untouched.
+// Used by main.go's two-phase startup (leaf-01 shape answers first, the
+// full GUI surface replaces it once the engine/scheduler exist) without
+// the teardown window that deleted the live socket.
+func (s *Server) ReplaceHandler(status StatusSource, handler Handler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status = status
+	s.handler = handler
 }
 
 // Serve listens on socketPath (0600, stale socket file removed first) and
@@ -158,7 +186,13 @@ func ServeWithHandler(socketPath string, serverURL, bucket string, status Status
 			if err != nil {
 				return // listener closed: Stop was called
 			}
-			handleConn(conn, serverURL, bucket, status, handler)
+			// Read status/handler under the server mutex: main.go's
+			// two-phase startup swaps in the full GUI handler on this
+			// live listener (ReplaceHandler) without socket teardown.
+			srv.mu.Lock()
+			st, h := srv.status, srv.handler
+			srv.mu.Unlock()
+			handleConn(conn, serverURL, bucket, st, h)
 		}
 	})
 	return srv, nil
@@ -270,8 +304,69 @@ func handleConn(conn net.Conn, serverURL, bucket string, status StatusSource, ha
 		}
 		writeResponse(conn, Response{V: Version, OK: true, Extra: TombstoneData{Tombstones: tombs}})
 	default:
+		// Leaf-08 types dispatch through the additive ConflictResolver
+		// capability: a handler that does not implement it (and no
+		// handler at all) answers the capability error, keeping the
+		// unknown-type rejection and the leaf-01/07 surfaces unchanged.
+		if req.Type == "conflicts.list" || req.Type == "conflicts.resolve" ||
+			req.Type == "deleted.list" || req.Type == "deleted.restore" || req.Type == "evict" {
+			writeResponse(conn, handleLeaf08(req, handler))
+			return
+		}
 		writeResponse(conn, Response{V: Version, OK: false, Error: "unknown request type"})
 	}
+}
+
+// handleLeaf08 serves the leaf-08 request types against the additive
+// ConflictResolver capability. handler may be nil or lack the capability;
+// both answer the capability error.
+func handleLeaf08(req Request, handler Handler) Response {
+	resolver, ok := handler.(ConflictResolver)
+	if handler == nil || !ok {
+		return Response{V: Version, OK: false, Error: "not supported: no conflict handler"}
+	}
+	switch req.Type {
+	case "conflicts.list":
+		items, err := resolver.Conflicts()
+		if err != nil {
+			return Response{V: Version, OK: false, Error: err.Error()}
+		}
+		return Response{V: Version, OK: true, Extra: ConflictData{Conflicts: items}}
+	case "conflicts.resolve":
+		if req.Path == "" || !resolveModeValid(req.Mode) {
+			return Response{V: Version, OK: false, Error: "conflicts.resolve requires path and mode (keep-local|keep-remote)"}
+		}
+		if err := resolver.ResolveConflict(req.Path, req.Mode, req.Confirm); err != nil {
+			return Response{V: Version, OK: false, Error: err.Error()}
+		}
+		return Response{V: Version, OK: true, Extra: ResolveData{
+			Path: req.Path, Mode: req.Mode, CopyRemoved: req.Confirm,
+		}}
+	case "deleted.list":
+		tombs, err := resolver.DeletedPaths()
+		if err != nil {
+			return Response{V: Version, OK: false, Error: err.Error()}
+		}
+		return Response{V: Version, OK: true, Extra: TombstoneData{Tombstones: tombs}}
+	case "deleted.restore":
+		if req.Path == "" {
+			return Response{V: Version, OK: false, Error: "deleted.restore requires path"}
+		}
+		if err := resolver.RestoreDeleted(req.Path); err != nil {
+			return Response{V: Version, OK: false, Error: err.Error()}
+		}
+		return Response{V: Version, OK: true, Extra: RestoreData{Path: req.Path}}
+	case "evict":
+		if req.Path == "" {
+			return Response{V: Version, OK: false, Error: "evict requires path"}
+		}
+		if err := resolver.EvictPath(req.Path); err != nil {
+			return Response{V: Version, OK: false, Error: err.Error()}
+		}
+		return Response{V: Version, OK: true, Extra: EvictData{Path: req.Path}}
+	}
+	// Unreachable: the caller only routes the five leaf-08 types here.
+	return Response{V: Version, OK: false, Error: "unknown request type"}
 }
 
 func statusOrDefault(status StatusSource, serverURL, bucket string) StatusData {

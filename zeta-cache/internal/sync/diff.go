@@ -128,6 +128,11 @@ func (e *Engine) diffAndApply(ctx context.Context, key string, listed *transport
 			// Matrix 5: remote deleted + dirty local (uploaded before,
 			// server row gone) -> KEEP local, surface the conflict.
 			rep.RemoteDeleteKept++
+			// Leaf 08: persist the conflict record for the GUI's resolve
+			// view (no copy file exists to preserve).
+			e.recordConflict(ctx, ConflictRecord{
+				Path: key, Kind: "kept-local", DetectedAt: e.nowFn().Unix(),
+			})
 			e.log.Printf("sync: conflict: %s deleted remotely but has local edits - kept local", key)
 			return nil
 		}
@@ -325,6 +330,11 @@ func (e *Engine) conflictCopy(ctx context.Context, key, serverETag string, row i
 		return err
 	}
 	rep.ConflictCopies++
+	// Leaf 08: persist the conflict record for the GUI's resolve view.
+	e.recordConflict(ctx, ConflictRecord{
+		Path: key, Kind: "conflict-copy", CopyPath: copyKey,
+		DetectedAt: e.nowFn().Unix(),
+	})
 	e.log.Printf("sync: conflict on %s: local preserved as %s, remote applied", key, copyKey)
 	return nil
 }

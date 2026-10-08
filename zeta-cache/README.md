@@ -6,10 +6,12 @@ keeps a local cache of file contents, and syncs changes both ways. All
 cache, eviction, and sync state lives on the client - the gateway stores
 nothing about who cached what (charter).
 
-Implementation status: this is the leaf 01 skeleton. The daemon starts,
-reads config, opens its index DB, answers `status` on a local IPC socket,
-and shuts down cleanly. The FUSE mount (leaf 02), sync engine (leaf 04),
-quota and eviction (leaf 07), and menu-bar GUI (leaf 08) are not here yet.
+Implementation status: leaf 08 (GUI + IPC). The daemon mounts (FUSE),
+syncs both ways (ETag-diff scan + conflict copies), runs the three
+scheduler loops (prompt upload / periodic sync / quota eviction), serves
+the full v1 IPC protocol, and ships with the macOS menu-bar app
+(`gui/macos/`, below). The event-cursor optimization (leaf 05) is
+parked pending zeta-object#15; v1 ships scan-only.
 
 
 ## Build
@@ -79,6 +81,116 @@ startup naming the key. See `config.example.json` (Basic auth) and
 | `quota.policy` | string | no | - | `lru`, `lifo`, or `pinned-first`. Validated now; used by leaf 07. |
 | `logLevel` | string | no | `info` | `debug`, `info`, `warn`, or `error`. |
 | `pins` | []string | no | `[]` | Paths that eviction must never remove. Parsed now; honored by leaf 07. |
+
+## IPC protocol (v1, full reference)
+
+JSON over a Unix domain socket (mode 0600, default
+`<runtime dir>/zeta-cache.ipc`; the macOS runtime dir is `/tmp` — see
+`ipcSocket` in the config table). One request per connection, one JSON
+object each way, newline-terminated on the response. Every message
+carries `v` (protocol version, currently `1`).
+
+Response envelope — success:
+
+    {"v":1,"ok":true,"data":{...}}     // status, pause, resume
+    {"v":1,"ok":true,"extra":{...}}    // everything else
+
+failure:
+
+    {"v":1,"ok":false,"error":"<human-readable reason>"}
+
+An unsupported `v` and an unknown `type` both answer
+`{"v":1,"ok":false,"error":"unknown request type"}`-style errors
+(forward compatibility: a newer client must never crash an older
+daemon, and vice versa). A daemon started without the sync engine
+(mount/scheduler construction failed) answers the state-changing types
+with `not supported: ...` capability errors instead of hanging.
+
+### Request reference
+
+| Type | Extra fields | Effect | Success payload |
+|---|---|---|---|
+| `status` | - | Live snapshot of daemon state. | `data`: `state` (`idle`/`syncing`/`error`), `server`, `bucket`, `lastSync` (unix secs or null), `dirty`, `cached`, `conflicts`, `paused`, `usageBytes`, `capBytes`, `overflow`, `evicted`, `lastEvictAt` (unix secs or null), `lastError` (omitted when empty). |
+| `pause` | - | Suspend all three scheduler loops. An in-flight single-file upload FINISHES; the running sync pass finishes at whole-path boundaries; the next passes hold. A paused daemon still serves FUSE reads from cache. | `data`: full status with `paused: true`. |
+| `resume` | - | Restart the loops. | `data`: full status with `paused: false`. |
+| `pin` | `path`, `pin` (bool) | Toggle the pinned flag; pinned paths are hard-filtered from eviction. | `extra`: `{"pins":[...]}` (list after the change). |
+| `pins` | - | List pinned paths. | `extra`: `{"pins":["a","b"]}`. |
+| `tombstones` | - | List the deletion-grace rows (leaf-07 name for the deleted view). | `extra`: `{"tombstones":[{"path","deletedAt","expiresAt"}]}` (unix secs). |
+| `conflicts.list` | - | List pending conflict records (matrix-3 conflict copies and matrix-5 kept-dirty-on-remote-delete). | `extra`: `{"conflicts":[{"path","kind","copyPath"?}]}`; `kind` is `conflict-copy` or `kept-local`; `copyPath` is the preserved local file (absent for `kept-local`). |
+| `conflicts.resolve` | `path`, `mode`, `confirm` (bool) | Resolve one conflict. `keep-local` = the local version wins (its bytes are uploaded, overwriting the server copy). `keep-remote` = the server version wins (downloaded over the local path). The preserved conflicted-copy FILE is deleted ONLY when `confirm` is true (explicit user action; never implicit). | `extra`: `{"path","mode","copyRemoved"}`. |
+| `deleted.list` | - | List tombstoned paths within the deletion-grace window. | `extra`: same shape as `tombstones`. |
+| `deleted.restore` | `path` | Re-download a deleted path if the server still serves it (tombstone flips back to a clean hydrated row). An unrecoverable path is an HONEST error ("the server no longer serves the path"), never a silent ok. | `extra`: `{"path"}`. |
+| `evict` | `path` | Evict ONE clean file from the cache now (admin-ish). Refusals (surfaced as errors): dirty (unsynced local edits), pinned, tombstoned, not hydrated, unknown path. | `extra`: `{"path"}`. |
+| anything else | - | Unknown type. | `{"v":1,"ok":false,"error":"unknown request type"}`. |
+
+### Golden fixtures (protocol conformance)
+
+The byte-exact Go encoder responses for every request type are pinned in
+`internal/ipc/testdata/golden/*.json`. The Swift app decodes the SAME
+files in its test suite (`gui/macos/Tests`), so a fixture change that
+breaks the GUI fails a test instead of shipping:
+
+    cd zeta-cache && go test ./internal/ipc -run TestGoldenFixtures -update   # regenerate
+    cd zeta-cache/gui/macos && swift test                                    # Swift side
+
+## GUI: macOS menu-bar app
+
+`gui/macos/` is a Swift/SwiftUI SPM package (`swift-tools-version 5.9`,
+macOS 13+). It is a pure view over the IPC socket: NO network access,
+NO credentials, NO config write access — every network operation and
+every decision lives in the daemon (one network-attached process; the
+socket is mode 0600 in the user's runtime dir).
+
+Menu items: state line (synced / syncing / error + last sync), usage vs
+quota (with a bar when capped), pause/resume toggle, Conflicts submenu
+(count → per-file resolve actions: keep mine / keep server's, plus
+explicit "and delete my copy"), Pins submenu (unpin actions), Recently
+Deleted submenu (restore actions), and Quit — which disconnects the GUI
+ONLY; the daemon keeps running (as a login item, below).
+
+Build and run:
+
+    cd zeta-cache/gui/macos
+    swift build
+    .build/debug/ZetaCacheMenu &
+
+The app reads the socket path from `ZETA_CACHE_IPC` (defaults to
+`/tmp/zeta-cache.ipc`, the macOS default `ipcSocket`). Protocol
+conformance runs with `swift test` (11 tests over the golden fixtures).
+
+Packaging note (v1): an unsigned local build is fine for personal use;
+signed/notarized distribution is future work.
+
+## Run the daemon at login (LaunchAgent)
+
+`gui/macos/com.zeta-object.zeta-cache.plist` is a minimal LaunchAgent.
+It is NOT installed automatically. One-time setup:
+
+    # 1. put the binary somewhere stable
+    cp zeta-cache-bin /usr/local/bin/            # or any PATH-free location
+
+    # 2. edit the plist: fix BOTH absolute paths
+    #    (binary + your zeta-cache.json), then:
+    cp gui/macos/com.zeta-object.zeta-cache.plist \
+       ~/Library/LaunchAgents/
+
+    # 3. load it
+    launchctl load ~/Library/LaunchAgents/com.zeta-object.zeta-cache.plist
+
+    # stop / unload:
+    launchctl unload ~/Library/LaunchAgents/com.zeta-object.zeta-cache.plist
+
+The agent runs at login (`RunAtLoad`), restarts the daemon if it exits
+(`KeepAlive`, 10 s throttle), and is scoped to the Aqua session (the
+FUSE mount and IPC socket are per-user). The menu-bar app can quit and
+relaunch freely; the daemon outlives it.
+
+## Linux tray app
+
+DEFERRED (plan-tree decision): the Linux tray app lands after the
+daemon stabilizes. The IPC protocol is deliberately platform-neutral
+(no macOS-only fields), so the future Linux app speaks the exact same
+v1 protocol documented above.
 
 ## Startup connectivity probe
 

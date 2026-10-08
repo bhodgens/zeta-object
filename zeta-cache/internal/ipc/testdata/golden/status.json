@@ -1,0 +1,1 @@
+{"v":1,"ok":true,"data":{"state":"idle","server":"https://cache.example","bucket":"bkt","lastSync":null,"dirty":0,"cached":0,"conflicts":0,"paused":false,"usageBytes":0,"capBytes":0,"overflow":0,"evicted":0,"lastEvictAt":null}}

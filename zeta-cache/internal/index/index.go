@@ -598,6 +598,30 @@ func (s *Store) MetaSet(ctx context.Context, key, value string) error {
 	return nil
 }
 
+// MetaListPrefix returns the VALUES of every meta key starting with
+// prefix, in key order. Leaf-08 addition (additive read API): the sync
+// engine's persistent conflict records are meta rows under a fixed
+// prefix, and the conflict list needs exactly this scan. The prefix is
+// used inside a LIKE pattern, so callers must pass one without % or _.
+func (s *Store) MetaListPrefix(ctx context.Context, prefix string) ([]string, error) {
+	rows, err := s.read.QueryContext(ctx,
+		`SELECT value FROM meta WHERE key LIKE ? ORDER BY key`, prefix+"%")
+	if err != nil {
+		return nil, fmt.Errorf("index: meta list prefix %s: %w", prefix, err)
+	}
+	defer rows.Close()
+	return collectStrings(rows)
+}
+
+// MetaDelete removes one meta key (no-op when absent). Leaf-08 addition
+// (additive): clearing a resolved conflict record.
+func (s *Store) MetaDelete(ctx context.Context, key string) error {
+	if _, err := s.write.ExecContext(ctx, `DELETE FROM meta WHERE key = ?`, key); err != nil {
+		return fmt.Errorf("index: meta delete %s: %w", key, err)
+	}
+	return nil
+}
+
 // ExpiredTombstones is the tombstone-retention groundwork (leaf 07 owns the
 // pruning command): the query shape that lists tombstones older than the
 // retention window. Leaf 07 turns this into `DELETE ... RETURNING path`.

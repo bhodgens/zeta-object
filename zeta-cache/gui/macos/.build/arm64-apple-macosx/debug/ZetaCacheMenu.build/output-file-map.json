@@ -1,0 +1,19 @@
+{
+  "": {
+    "swift-dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/ZetaCacheMenu.build/master.swiftdeps"
+  },
+  "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/Sources/ZetaCacheMenu/IPC.swift": {
+    "dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/ZetaCacheMenu.build/IPC.d",
+    "object": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/ZetaCacheMenu.build/IPC.swift.o",
+    "swiftmodule": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/ZetaCacheMenu.build/IPC~partial.swiftmodule",
+    "swift-dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/ZetaCacheMenu.build/IPC.swiftdeps",
+    "diagnostics": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/ZetaCacheMenu.build/IPC.dia"
+  },
+  "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/Sources/ZetaCacheMenu/ZetaCacheMenuApp.swift": {
+    "dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/ZetaCacheMenu.build/ZetaCacheMenuApp.d",
+    "object": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/ZetaCacheMenu.build/ZetaCacheMenuApp.swift.o",
+    "swiftmodule": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/ZetaCacheMenu.build/ZetaCacheMenuApp~partial.swiftmodule",
+    "swift-dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/ZetaCacheMenu.build/ZetaCacheMenuApp.swiftdeps",
+    "diagnostics": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/ZetaCacheMenu.build/ZetaCacheMenuApp.dia"
+  }
+}

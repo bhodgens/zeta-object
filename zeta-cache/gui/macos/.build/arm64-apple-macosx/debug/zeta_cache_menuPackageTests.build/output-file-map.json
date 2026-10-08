@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/zeta_cache_menuPackageTests.build/master.swiftdeps"
+  },
+  "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/zeta-cache-menuPackageTests.derived/runner.swift": {
+    "dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/zeta_cache_menuPackageTests.build/runner.d",
+    "object": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/zeta_cache_menuPackageTests.build/runner.swift.o",
+    "swiftmodule": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/zeta_cache_menuPackageTests.build/runner~partial.swiftmodule",
+    "swift-dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/zeta_cache_menuPackageTests.build/runner.swiftdeps",
+    "diagnostics": "/Users/caimlas/git/mini-s3/zeta-cache/gui/macos/.build/arm64-apple-macosx/debug/zeta_cache_menuPackageTests.build/runner.dia"
+  }
+}

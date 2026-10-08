@@ -100,6 +100,18 @@ func main() {
 	}
 	log.Printf("zeta-cache: IPC listening on %s", cfg.IPCSocket)
 
+	// Leaf 08: the daemon handler and the live status source. The IPC
+	// server is REBOUND below once the engine/scheduler exist so the
+	// GUI sees the full surface (status, pause/resume, conflicts,
+	// deleted, evict); until then the leaf-01 shape answers.
+	var handler *guiHandler
+	liveStatus := guiStatusSource{db: db, cfg: cfg}
+	handler = newGUIHandler(cfg, db, nil, nil)
+	// Leaf 08: swap in the full GUI surface on the LIVE listener - no
+	// socket teardown (the old re-Serve deleted the live socket file,
+	// racing every early client).
+	srv.ReplaceHandler(liveStatus, handler)
+
 	// Leaf 02: mount the bucket namespace. The transport is still the
 	// leaf-01-shaped seam - leaf 06 fills internal/transport's real HTTP
 	// implementation; until then an in-memory backing would serve nothing,
@@ -138,6 +150,14 @@ func main() {
 		} else {
 			go sched.Start(mainCtx)
 		}
+		// Leaf 08: the full daemon handler is live - swap it in on the
+		// SAME listener (ReplaceHandler: no socket teardown racing early
+		// clients) so conflicts/deleted/evict/pause answer over the
+		// socket, and the status reports the live engine state.
+		handler = newGUIHandler(cfg, db, engine, sched)
+		liveStatus.engine = engine
+		liveStatus.sched = sched
+		srv.ReplaceHandler(liveStatus, handler)
 	}
 
 	sig := make(chan os.Signal, 1)
