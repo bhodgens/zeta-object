@@ -206,7 +206,7 @@ func TestShutdownLatencyUnder2s(t *testing.T) {
 	t.Cleanup(func() { store.Close() })
 	cfg := &config.Config{
 		CacheDir: dir,
-		Quota: config.Quota{MaxCacheBytes: 1000, Policy: "lru", HighWaterPct: 90, LowWaterPct: 70, TombstoneDays: 30},
+		Quota:    config.Quota{MaxCacheBytes: 1000, Policy: "lru", HighWaterPct: 90, LowWaterPct: 70, TombstoneDays: 30},
 	}
 	// REAL clock: the assertion is wall-clock shutdown latency.
 	clock := ClockFunc(time.Now)
@@ -221,15 +221,21 @@ func TestShutdownLatencyUnder2s(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(3)
 	go func() { defer wg.Done(); runSyncLoop(ctx, run, clock, neverPaused, never, nil) }()
-	go func() { defer wg.Done(); runWatcher(ctx, watcher{
-		store:    store,
-		cacheDir: dir,
-		up:       UploadFunc(func(context.Context, string) error { return nil }),
-		clock:    clock,
-		log:      discardLogger{},
-		watchDir: watchAll,
-	}, neverPaused, never) }()
-	go func() { defer wg.Done(); runEvictionLoop(ctx, evictionLoopState{clock: clock, quota: eng, log: discardLogger{}, paused: neverPaused, wake: never}) }()
+	go func() {
+		defer wg.Done()
+		runWatcher(ctx, watcher{
+			store:    store,
+			cacheDir: dir,
+			up:       UploadFunc(func(context.Context, string) error { return nil }),
+			clock:    clock,
+			log:      discardLogger{},
+			watchDir: watchAll,
+		}, neverPaused, never)
+	}()
+	go func() {
+		defer wg.Done()
+		runEvictionLoop(ctx, evictionLoopState{clock: clock, quota: eng, log: discardLogger{}, paused: neverPaused, wake: never})
+	}()
 
 	// Give the loops a beat to reach their waits, then cancel and time.
 	time.Sleep(50 * time.Millisecond)

@@ -19,10 +19,10 @@ import (
 // handlerFixture builds a Scheduler over a real store + a memfs-backed
 // sync engine (the same stub internal/sync's tests use) and serves IPC.
 type handlerFixture struct {
-	t      *testing.T
-	sched  *Scheduler
-	store  *index.Store
-	path   string // temp dir
+	t     *testing.T
+	sched *Scheduler
+	store *index.Store
+	path  string // temp dir
 }
 
 func newHandlerFixture(t *testing.T) *handlerFixture {

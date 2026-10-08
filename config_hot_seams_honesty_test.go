@@ -30,7 +30,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"context"
 	"github.com/bhodgens/zeta-object/internal/frontend/s3"
+	"strings"
 )
 
 // hotSeamEnv builds a config store over a temp dataDir with the s3 seams
@@ -193,3 +195,120 @@ func TestCustomBucketGateAndResolverAgree(t *testing.T) {
 			"but the data plane resolves it to %q", customPath, got)
 	}
 }
+
+// TestHotPatchKeepsRestartRequiredZfsBinaryOutOfTheProvisioner is the H2 pin.
+//
+// THE BUG (bughunt 2026-10-06 H2): `zfs_binary` is in configUpdateKeys but
+// NOT in hotApplyKeys, so classifyPatchKeys reports it restart-required and
+// GET /config correctly keeps advertising the running value. But applyHotSeams
+// used to receive the raw CANDIDATE, and installZfsDatasetProvisionerFor
+// captures cfg.ZfsBinary into the live zfsBucketCreate/Destroy/Exists closures
+// that then `exec` it. Patching zfs_bucket_datasets=true (a HOT key that turns
+// the feature ON) together with zfs_binary=<new> therefore installed the
+// restart-required binary into a RUNNING server.
+//
+// MECHANISM: two fake zfs executables, each appending its own marker to a
+// shared file, stand in for the running (A) and candidate (B) binaries. The
+// test patches, makes the INSTALLED provisioner create a dataset, and reads
+// which marker the exec wrote.
+//
+// The feature must be OFF at startup: that is the ordinary deployment shape and
+// the only one where the hot key installs the provisioner at all. With the
+// feature already ON, applyHotSeams' re-install masks the bug - a probe written
+// the other way passed on the broken code.
+//
+// REVERT PROOF: with applyHotSeams(&candidate) restored this FAILS with
+// MARKER-B (the restart-required binary ran); with the live+applied merge it
+// PASSES with MARKER-A.
+//
+// Original header: patch zfs_bucket_datasets=true (a HOT
+// key that turns the feature ON) together with zfs_binary=<new> (a
+// RESTART-REQUIRED key). The live provisioner must keep exec'ing the RUNNING
+// binary, because GET /config keeps advertising the old one. Two fake zfs
+// executables each record their own invocation.
+func TestHotPatchKeepsRestartRequiredZfsBinaryOutOfTheProvisioner(t *testing.T) {
+	dir := t.TempDir()
+	liveRoot := filepath.Join(dir, "live")
+	if err := os.MkdirAll(liveRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Build the two stand-in binaries HERE, in the test's own temp dir, so the
+	// pin is self-contained and needs no pre-seeded /tmp state.
+	binDir := t.TempDir()
+	ranPath := filepath.Join(binDir, "ran.txt")
+	oldA := filepath.Join(binDir, "zfs-A")
+	oldB := filepath.Join(binDir, "zfs-B")
+	for path, marker := range map[string]string{oldA: "MARKER-A", oldB: "MARKER-B"} {
+		script := "#!/bin/sh\necho \"" + marker + " $*\" >> " + shellescapeProbe(ranPath) + "\nexit 1\n"
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatalf("writing the stand-in %s: %v", marker, err)
+		}
+	}
+
+	prevCfg := *serverConfig()
+	prevStore := configStore
+	prevParent := zfsBucketsParentDataset
+	t.Cleanup(func() {
+		setServerConfig(prevCfg)
+		configStore = prevStore
+		zfsBucketsParentDataset = prevParent
+		s3.UninstallZfsDatasetProvisioner()
+		s3.ClearZfsBucketDatasetParent()
+	})
+
+	// START with the feature OFF (the ordinary deployment) and the OLD binary.
+	base := defaultServerConfig()
+	base.DataDir = liveRoot
+	base.ZfsBucketDatasets = false
+	base.ZfsBinary = oldA
+	setServerConfig(base)
+	zfsBucketsParentDataset = "testpool/zzh2"
+	if initConfigStore() == nil {
+		t.Fatal("initConfigStore returned nil")
+	}
+	installS3Seams(&base)
+	if s3.ZfsDatasetProvisionerInstalled() {
+		t.Fatal("probe premise: the provisioner must be OFF at startup")
+	}
+
+	// The patch: turn the feature ON (hot) while swapping the binary
+	// (restart-required).
+	applied, restart, err := configStore.Apply(ConfigPatch{JSON: []byte(
+		`{"zfs_bucket_datasets":true,"zfs_binary":"` + oldB + `"}`)})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	t.Logf("applied=%v restartRequired=%v", applied, restart)
+	if len(restart) == 0 {
+		t.Fatalf("probe premise: zfs_binary was not classified restart-required")
+	}
+
+	snap := configStore.Snapshot()
+	t.Logf("GET /config zfs_binary = %q  datasets = %v", snap.ZfsBinary, snap.ZfsBucketDatasets)
+	if snap.ZfsBinary != oldA {
+		t.Fatalf("probe premise: GET /config moved zfs_binary to %q", snap.ZfsBinary)
+	}
+	if !s3.ZfsDatasetProvisionerInstalled() {
+		t.Fatal("probe premise: the hot key did not turn the feature on")
+	}
+
+	_, _ = s3.NewDatasetProvisioner().Create(context.Background(), "zzh2probe")
+	raw, readErr := os.ReadFile(ranPath)
+	if readErr != nil {
+		t.Fatalf("probe invalid: no fake zfs ran (%v)", readErr)
+	}
+	got := string(raw)
+	t.Logf("fake zfs invocations: %q", got)
+	switch {
+	case strings.Contains(got, "MARKER-B"):
+		t.Errorf("H2 REGRESSION: the live provisioner exec'd the RESTART-REQUIRED binary %q "+
+			"while GET /config advertised %q", oldB, oldA)
+	case strings.Contains(got, "MARKER-A"):
+		t.Logf("CORRECT: the live provisioner exec'd the RUNNING binary %q", oldA)
+	default:
+		t.Errorf("unrecognised marker output: %q", got)
+	}
+}
+
+// shellescapeProbe single-quotes a path for a /bin/sh script body.
+func shellescapeProbe(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }

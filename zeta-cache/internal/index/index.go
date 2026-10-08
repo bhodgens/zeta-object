@@ -215,9 +215,9 @@ type Resource struct {
 	Size       int64
 	Hydrated   bool
 	Dirty      bool
-	Deleted    bool // tombstone feeding the deletion-grace table (leaf 07)
+	Deleted    bool  // tombstone feeding the deletion-grace table (leaf 07)
 	LastAccess int64 // unix seconds of the last hydrate/read (LRU policy; 0 = never)
-	Pinned     bool // hard eviction filter (config pins + IPC toggle)
+	Pinned     bool  // hard eviction filter (config pins + IPC toggle)
 }
 
 // fullColumns is the SELECT column list every resources read shares

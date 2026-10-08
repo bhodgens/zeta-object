@@ -25,9 +25,9 @@ func TestKeyOf(t *testing.T) {
 	}{
 		{filepath.Join(dir, "files", "a.txt"), "a.txt"},
 		{filepath.Join(dir, "files", "d", "b.txt"), "d/b.txt"},
-		{filepath.Join(dir, "staging", "uuid"), ""},     // staging: not a key
-		{filepath.Join(dir, "index.db"), ""},            // outside files/
-		{filepath.Join(dir, "files"), ""},               // the root itself
+		{filepath.Join(dir, "staging", "uuid"), ""}, // staging: not a key
+		{filepath.Join(dir, "index.db"), ""},        // outside files/
+		{filepath.Join(dir, "files"), ""},           // the root itself
 	}
 	for _, tc := range cases {
 		if got := keyOf(dir, tc.path); got != tc.want {

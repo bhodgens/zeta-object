@@ -52,7 +52,7 @@ type QuotaEngine struct {
 	mu           sync.Mutex
 	evictedTotal int64
 	lastEvictAt  time.Time
-	overflow     int // candidates needed but unpinnable/unqualifying
+	overflow     int  // candidates needed but unpinnable/unqualifying
 	writeBlocked bool // min-free hard stop state (surfaced via status)
 }
 
@@ -63,10 +63,10 @@ func NewQuotaEngine(store *index.Store, cfg *config.Config, clock Clock, logger 
 		logger = discardLog()
 	}
 	q := &QuotaEngine{
-		store:    store,
-		cfg:      cfg,
-		clock:    clock,
-		log:      logger,
+		store:     store,
+		cfg:       cfg,
+		clock:     clock,
+		log:       logger,
 		freeBytes: statfsDeviceFree,
 	}
 	if runtime.GOOS == "darwin" {

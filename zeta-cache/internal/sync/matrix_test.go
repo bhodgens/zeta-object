@@ -24,9 +24,9 @@ type matrixCase struct {
 	// arrange
 	server    string // remote body; "" + serverAbsent = no remote row
 	hasServer bool
-	indexETag string // known-good etag in the index row ("" = none)
+	indexETag string                 // known-good etag in the index row ("" = none)
 	seed      func(*harness, string) // extra index state (dirty/tombstone/clean)
-	local     string // local cache body ("" + localAbsent = no file)
+	local     string                 // local cache body ("" + localAbsent = no file)
 	hasLocal  bool
 	// expect
 	wantAction func(*harness, string) string // human-readable outcome probe
@@ -41,11 +41,11 @@ func TestConflictMatrix(t *testing.T) {
 	cases := []matrixCase{
 		{
 			// Matrix 1: clean local + changed remote -> download.
-			name:      "1-clean-local-changed-remote-download",
-			server:    "v2", hasServer: true,
+			name:   "1-clean-local-changed-remote-download",
+			server: "v2", hasServer: true,
 			indexETag: etagV1,
-			seed: func(h *harness, k string) { h.seedClean(k, etagV1) },
-			local:    "v1", hasLocal: true,
+			seed:      func(h *harness, k string) { h.seedClean(k, etagV1) },
+			local:     "v1", hasLocal: true,
 			wantAction: func(h *harness, k string) string {
 				return "local=" + h.localBody(k) + " etag=" + h.row(k).ETag + " dirty=" + b2s(h.row(k).Dirty)
 			},
@@ -53,11 +53,11 @@ func TestConflictMatrix(t *testing.T) {
 		},
 		{
 			// Matrix 2: dirty local + unchanged remote -> upload If-Match.
-			name:      "2-dirty-local-unchanged-remote-upload",
-			server:    "v1", hasServer: true,
+			name:   "2-dirty-local-unchanged-remote-upload",
+			server: "v1", hasServer: true,
 			indexETag: etagV1,
-			seed: func(h *harness, k string) { h.seedDirty(k, etagV1) },
-			local:    "local edit", hasLocal: true,
+			seed:      func(h *harness, k string) { h.seedDirty(k, etagV1) },
+			local:     "local edit", hasLocal: true,
 			wantAction: func(h *harness, k string) string {
 				return "server=" + h.fs.ServerBodyOrEmpty(k) + " dirty=" + b2s(h.row(k).Dirty)
 			},
@@ -66,11 +66,11 @@ func TestConflictMatrix(t *testing.T) {
 		{
 			// Matrix 3: dirty local + changed remote -> CONFLICT COPY
 			// (remote wins locally; local preserved under the dated name).
-			name:      "3-dirty-local-changed-remote-conflict-copy",
-			server:    "v2", hasServer: true,
+			name:   "3-dirty-local-changed-remote-conflict-copy",
+			server: "v2", hasServer: true,
 			indexETag: etagV1,
-			seed: func(h *harness, k string) { h.seedDirty(k, etagV1) },
-			local:    "local edit", hasLocal: true,
+			seed:      func(h *harness, k string) { h.seedDirty(k, etagV1) },
+			local:     "local edit", hasLocal: true,
 			wantAction: func(h *harness, k string) string {
 				got := h.localBody(k)
 				preserved := h.localBody("doc (conflicted copy 2026-10-06).txt")
@@ -86,8 +86,8 @@ func TestConflictMatrix(t *testing.T) {
 			name:      "4-remote-deleted-clean-local-tombstone",
 			hasServer: false,
 			indexETag: etagV1,
-			seed: func(h *harness, k string) { h.seedClean(k, etagV1) },
-			local:    "v1", hasLocal: true,
+			seed:      func(h *harness, k string) { h.seedClean(k, etagV1) },
+			local:     "v1", hasLocal: true,
 			wantAction: func(h *harness, k string) string {
 				return "local=" + h.localBody(k) + " tomb=" + b2s(h.row(k).Deleted)
 			},
@@ -99,8 +99,8 @@ func TestConflictMatrix(t *testing.T) {
 			name:      "5-remote-deleted-dirty-local-keep",
 			hasServer: false,
 			indexETag: etagV1,
-			seed: func(h *harness, k string) { h.seedDirty(k, etagV1) },
-			local:    "local edit", hasLocal: true,
+			seed:      func(h *harness, k string) { h.seedDirty(k, etagV1) },
+			local:     "local edit", hasLocal: true,
 			wantAction: func(h *harness, k string) string {
 				return "local=" + h.localBody(k) + " dirty=" + b2s(h.row(k).Dirty) + " tomb=" + b2s(h.row(k).Deleted)
 			},
@@ -109,8 +109,8 @@ func TestConflictMatrix(t *testing.T) {
 		{
 			// Matrix 6: local deleted (tombstone) + remote unchanged ->
 			// DELETE remote.
-			name:      "6-local-deleted-remote-unchanged-delete-remote",
-			server:    "v1", hasServer: true,
+			name:   "6-local-deleted-remote-unchanged-delete-remote",
+			server: "v1", hasServer: true,
 			indexETag: etagV1,
 			seed: func(h *harness, k string) {
 				if err := h.store.DeletePath(bg(), k, "user delete via mount"); err != nil {
@@ -126,8 +126,8 @@ func TestConflictMatrix(t *testing.T) {
 		},
 		{
 			// Matrix 7: new remote (no index row) -> download.
-			name:      "7-new-remote-download",
-			server:    "brand new", hasServer: true,
+			name:   "7-new-remote-download",
+			server: "brand new", hasServer: true,
 			hasLocal: false,
 			wantAction: func(h *harness, k string) string {
 				return "local=" + h.localBody(k) + " etag=" + h.row(k).ETag
