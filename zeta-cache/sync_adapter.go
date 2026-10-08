@@ -79,11 +79,21 @@ func runInitialSync(cfg *config.Config, db *index.Store, tr transport.Transport)
 		log.Printf("zeta-cache: WARNING creating staging dir: %v (initial sync skipped)", err)
 		return
 	}
+	// Leaf 05: the zmetad cursor feed (self-degrading - on a non-ZFS
+	// bucket its Delta answers fullScan, so scan-only is the permanent
+	// behavior here, exactly the locked decision). The EventsSource
+	// adapter narrows the client to the one method the feed needs.
+	eventsSrc := eventsSourceAdapter{tr}
+	feed, ferr := sync.NewCursorFeed(eventsSrc, db, cfg.Bucket, log.Default())
+	if ferr != nil {
+		log.Printf("zeta-cache: WARNING cursor feed construction: %v (scan-only)", ferr)
+	}
 	engine, err := sync.NewEngine(sync.Options{
 		Transport: tr,
 		Store:     db,
 		CacheDir:  cfg.CacheDir,
 		Logger:    log.Default(),
+		Feed:      feed,
 	})
 	if err != nil {
 		log.Printf("zeta-cache: WARNING sync engine construction: %v", err)
@@ -96,4 +106,19 @@ func runInitialSync(cfg *config.Config, db *index.Store, tr transport.Transport)
 	rep := engine.LastReport()
 	log.Printf("zeta-cache: initial sync complete: scanned=%d downloads=%d uploads=%d conflicts=%d (token-skips=%d fullscans=%d)",
 		rep.Scanned, rep.Downloads, rep.Uploads, rep.ConflictCopies, rep.TokenVerified, rep.FullscanVerified)
+}
+
+// eventsSourceAdapter narrows a Transport (whose concrete client
+// implements Events since gateway #15) to the sync.EventsSource seam.
+type eventsSourceAdapter struct {
+	tr transport.Transport
+}
+
+func (a eventsSourceAdapter) Events(ctx context.Context, sinceID int64, maxEvents int) (*transport.EventHistory, error) {
+	if c, ok := a.tr.(*transport.Client); ok {
+		return c.Events(ctx, sinceID, maxEvents)
+	}
+	// Non-client transports (tests, stubs) have no events surface:
+	// full scan is the honest answer and CursorFeed degrades to it.
+	return nil, transport.ErrNotExist
 }

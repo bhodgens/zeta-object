@@ -130,11 +130,16 @@ func main() {
 	// eviction). MountedFS is the per-file uploader (nil when the mount
 	// failed - prompt-upload then falls back to engine.SyncOnce). One
 	// Engine shared with the initial sync keeps index state consistent.
+	feed, ferr := sync.NewCursorFeed(eventsSourceAdapter{tr}, db, cfg.Bucket, log.Default())
+	if ferr != nil {
+		feed = nil // scan-only fallback; Delta absence = full scan
+	}
 	engine, err := sync.NewEngine(sync.Options{
 		Transport: tr,
 		Store:     db,
 		CacheDir:  cfg.CacheDir,
 		Logger:    log.Default(),
+		Feed:      feed,
 	})
 	if err != nil {
 		log.Printf("zeta-cache: WARNING sync engine construction: %v (scheduler disabled)", err)
