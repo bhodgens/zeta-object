@@ -35,8 +35,60 @@ e2e_mtime() {
 
 # e2e_sweep_stale removes stale temp state and orphaned servers.
 # REPO_ROOT must be set by the caller; E2E_SWEEP_MIN_AGE is honored if set.
+# e2e_proc_age prints a process's age in seconds, or nothing when ps cannot
+# answer. Portability note: `ps -o etimes=` is GNU-only; on macOS/BSD it prints
+# the ENTIRE field keyword list instead of a value, which is a silent failure
+# that made the sweeper's age gate never fire (every orphan looked like it had
+# no age at all, so it was skipped). BSD's `-o etime=` gives [[DD-]HH:]MM:SS,
+# which is parsed here.
+e2e_proc_age() {
+	local pid="$1" raw days h m sec
+	# Try GNU's seconds field first, but VALIDATE it: macOS answers that
+	# request by printing the whole ps keyword list, which is a long string
+	# that is not purely numeric. A `*[!0-9]*` test alone is not enough - the
+	# keyword list contains digits - so the value is accepted only when the
+	# output is a SINGLE line of digits.
+	raw=$(ps -o etimes= -p "$pid" 2>/dev/null | head -1 | tr -d ' ')
+	case "$raw" in
+	'' | *[!0-9]*)
+		raw=$(ps -o etime= -p "$pid" 2>/dev/null | head -1 | tr -d ' ')
+		;;
+	*)
+		printf '%s' "$raw"
+		return 0
+		;;
+	esac
+	case "$raw" in
+	*-*) days=${raw%%-*}; raw=${raw#*-} ;;
+	*) days=0 ;;
+	esac
+	# normalise to HH:MM:SS
+	case $(printf '%s' "$raw" | tr -cd ':' | wc -c | tr -d ' ') in
+	1) raw="0:$raw" ;;
+	esac
+	# 10# prefixes are load-bearing: bash evaluates a leading-zero token as
+	# OCTAL, so an etime of "09:18:21" failed with "value too great for base".
+	#
+	# The read MUST NOT run inside a subshell: a command-substitution group
+	# scopes the assignments away, h/m/sec come back empty, and every age
+	# silently parses as 0 - which is what made the sweeper skip every orphan.
+	local IFS=:
+	read -r h m sec <<<"$raw"
+	IFS=$' 	\n'
+	h=${h#0}; h=${h:-0}
+	m=${m#0}; m=${m:-0}
+	sec=${sec#0}; sec=${sec:-0}
+	case "$days$h$m$sec" in
+	'' | *[!0-9]*)
+		printf ''
+		return 0
+		;;
+	esac
+	printf '%s' $(( 10#$days * 86400 + 10#$h * 3600 + 10#$m * 60 + 10#$sec ))
+}
+
 e2e_sweep_stale() {
-	local age_cutoff="${E2E_SWEEP_MIN_AGE:-30}" now path mtime pid cmd started
+	local age_cutoff="${E2E_SWEEP_MIN_AGE:-30}" now path mtime pid cmd ppid age
 	now=$(date +%s)
 
 	for path in /tmp/e2e[0-9]* /tmp/zetaobject-e2e.* /tmp/zeta-one.*; do
@@ -50,8 +102,14 @@ e2e_sweep_stale() {
 	# Three gates, all of which must pass before a process is reaped:
 	#   a. the command line names THIS repo or the suite's own relative
 	#      invocation (a stranger's server never matches);
-	#   b. it is listening on NOTHING right now - a live suite's server has a
-	#      listener, and an orphan from a killed run does not;
+	#   b. it is ORPHANED - PPID 1, meaning the shell that launched it (a case's
+	#      `bash -c`, or run-e2e.sh itself) is gone. A server belonging to a
+	#      suite that is STILL RUNNING has a live parent shell and never
+	#      matches.
+	#      This replaced an earlier "has no LISTENing socket" gate, which was
+	#      wrong in the exact case it was meant to catch: an orphaned server
+	#      KEEPS its listener, so the gate never fired and 9-hour-old orphans
+	#      survived every sweep.
 	#   c. it is older than the cutoff, so a suite that started moments ago is
 	#      never a candidate even if (b) is briefly untrue during startup.
 	for pid in $(pgrep -f 'zeta-object-server' 2>/dev/null); do
@@ -61,12 +119,14 @@ e2e_sweep_stale() {
 		*"$REPO_ROOT"* | *"./zeta-object-server"*) ;;
 		*) continue ;;
 		esac
-		started=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
-		case "$started" in '' | *[!0-9]*) continue ;; esac
-		[ "$started" -ge "$age_cutoff" ] || continue
-		if lsof -Pan -p "$pid" -i 2>/dev/null | grep -q LISTEN; then
-			continue
-		fi
+		ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+		case "$ppid" in
+		1) ;; # orphaned - eligible
+		*) continue ;; # still owned by a live shell
+		esac
+		age=$(e2e_proc_age "$pid")
+		[ -n "$age" ] || continue
+		[ "$age" -ge "$age_cutoff" ] || continue
 		kill -TERM "$pid" 2>/dev/null || true
 	done
 }
