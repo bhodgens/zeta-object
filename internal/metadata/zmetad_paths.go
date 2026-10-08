@@ -126,6 +126,11 @@ func rowsToEvents(rows []EventRow) *rowEventSet {
 			e.Principal = r.Principal
 		}
 
+		// Cursor id: the row's monotonic events.id (gateway issue #15).
+		// Every mapped event carries its row id; the wire layer omits
+		// the field when it is 0 (legacy rows with no id).
+		e.ID = r.ID
+
 		set.events = append(set.events, e)
 	}
 	return set

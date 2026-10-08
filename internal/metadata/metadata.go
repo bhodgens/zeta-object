@@ -30,6 +30,14 @@ type ProbeResult struct {
 type HistoryQuery struct {
 	MaxEvents int
 	Since     time.Time
+	// SinceID is the event-cursor pass-through (gateway issue #15):
+	// only events with a row id STRICTLY GREATER than SinceID are
+	// returned. 0 (the zero value) = no cursor, the pre-#15 behavior
+	// byte-for-byte. The zmetad provider maps it to WHERE id > ? over
+	// the events table's monotonic INTEGER PRIMARY KEY; providers that
+	// have no cursor concept ignore it. Struct-field extension is
+	// seam-legal: the frozen MetadataProvider interface gains no methods.
+	SinceID int64
 }
 
 type ObjectEvent struct {
@@ -46,4 +54,11 @@ type ObjectEvent struct {
 	// value. Zero is an honest tag value; the pointer distinguishes
 	// present from absent.
 	Principal *uint64
+	// ID is the zmetad events-table row id (INTEGER PRIMARY KEY
+	// AUTOINCREMENT - strictly monotonic per database). This is the
+	// event-cursor value (gateway issue #15): the wire form carries it
+	// additively as JSON "id" so consumers can resume with since-id=N.
+	// 0 = the provider records no cursor id (never fabricated to a
+	// value); the wire field is omitted for such events.
+	ID int64
 }

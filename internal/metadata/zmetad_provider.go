@@ -323,6 +323,18 @@ func (p *zmetadEventsProvider) History(ctx context.Context, bucketPath, key stri
 		}
 		events = filtered
 	}
+	// Cursor filter (gateway issue #15): strictly-after semantics over
+	// the monotonic row id, applied AFTER the key/Since passes (same
+	// post-filter ordering as MaxEvents, which still caps last).
+	if q.SinceID > 0 {
+		filtered := make([]ObjectEvent, 0, len(events))
+		for _, e := range events {
+			if e.ID > q.SinceID {
+				filtered = append(filtered, e)
+			}
+		}
+		events = filtered
+	}
 	if q.MaxEvents > 0 && len(events) > q.MaxEvents {
 		events = events[:q.MaxEvents]
 	}

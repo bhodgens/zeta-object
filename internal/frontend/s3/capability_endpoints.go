@@ -156,6 +156,12 @@ type objectEventJSON struct {
 	SizeOld   int64  `json:"sizeOld,omitempty"`
 	SizeNew   int64  `json:"sizeNew,omitempty"`
 	Owner     string `json:"owner,omitempty"`
+	// ID is the event-cursor value (gateway issue #15): the zmetad
+	// events-table row id, strictly monotonic. Additive wire field —
+	// consumers resume with ?since-id=<last seen id>. Omitted (omitempty)
+	// when the provider records no id, so responses for providers without
+	// cursor support keep the exact pre-#15 shape.
+	ID int64 `json:"id,omitempty"`
 	// Principal is the ZFS_EV_PRINCIPAL application tag the WRITING
 	// PROCESS registered with the kernel for this event (issue #7; wire
 	// schema 3 / DB layout 8). Pointer-emitted: present ONLY when the
@@ -202,7 +208,10 @@ func handleObjectEvents(w http.ResponseWriter, r *http.Request, bucketName, obje
 		writeNoProviderError(w)
 		return
 	}
-	q := metadata.HistoryQuery{MaxEvents: maxEventsFromQuery(r)}
+	q, ok := historyQueryFromQuery(w, r)
+	if !ok {
+		return
+	}
 	events, err := p.History(r.Context(), getBucketPath(bucketName), objectName, q)
 	if err != nil {
 		// NO provider/exec detail reaches the client — server log only.
@@ -231,7 +240,10 @@ func handleBucketEvents(w http.ResponseWriter, r *http.Request, bucketName strin
 		writeNoProviderError(w)
 		return
 	}
-	q := metadata.HistoryQuery{MaxEvents: maxEventsFromQuery(r)}
+	q, ok := historyQueryFromQuery(w, r)
+	if !ok {
+		return
+	}
 	events, err := p.History(r.Context(), bucketPath, "", q)
 	if err != nil {
 		log.Printf("metadata: events for %s: %v", bucketName, err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
@@ -345,6 +357,9 @@ func toEventJSON(events []metadata.ObjectEvent, ownerOf func(key string) (string
 			p := *e.Principal
 			ev.Principal = &p
 		}
+		// Cursor id (gateway issue #15): copy verbatim; 0 (a provider
+		// that records no ids) omits the field — the pre-#15 shape.
+		ev.ID = e.ID
 		out = append(out, ev)
 	}
 	return out
@@ -421,4 +436,38 @@ func maxEventsFromQuery(r *http.Request) int {
 		return eventsMaxEventsLimit
 	}
 	return n
+}
+
+// sinceIDFromQuery parses the ?since-id cursor (gateway issue #15):
+// strictly-after resume over the events' monotonic row id. Returns
+// (0, nil) when the param is absent — the no-cursor pre-#15 behavior —
+// and (N, nil) for a valid non-negative integer. A malformed, negative,
+// or overflowing value returns a non-nil error: the caller answers 400
+// InvalidArgument (the cursor must FAIL LOUDLY — a silently-ignored
+// cursor would make a reconnecting client believe it saw every event
+// while silently redelivering or skipping).
+func sinceIDFromQuery(r *http.Request) (int64, error) {
+	s := r.URL.Query().Get("since-id")
+	if s == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("since-id must be a non-negative integer, got %q", s)
+	}
+	return n, nil
+}
+
+// historyQueryFromQuery builds the shared HistoryQuery for every ?events
+// surface (the s3 capability handlers AND all webdav bridge entry
+// points — one pipeline, both frontends). Write errors (invalid
+// since-id) go straight to the wire as 400 InvalidArgument and yield
+// ok=false. max-events semantics are unchanged.
+func historyQueryFromQuery(w http.ResponseWriter, r *http.Request) (metadata.HistoryQuery, bool) {
+	sinceID, err := sinceIDFromQuery(r)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), http.StatusBadRequest)
+		return metadata.HistoryQuery{}, false
+	}
+	return metadata.HistoryQuery{MaxEvents: maxEventsFromQuery(r), SinceID: sinceID}, true
 }

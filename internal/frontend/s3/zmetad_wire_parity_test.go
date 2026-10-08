@@ -107,15 +107,16 @@ func TestZmetadWireShapeContract5(t *testing.T) {
 		t.Fatalf("ringSwaps = %v, want 1", env["ringSwaps"])
 	}
 
-	// Per-event key discipline: every key must be one of the seven
-	// Contract 5 fields; the canned rename row (full_path + old_full_path
-	// resolved, no sizes) must carry EXACTLY op/key/oldKey/txg/timestamp.
+	// Per-event key discipline: every key must be one of the Contract 5
+	// fields PLUS the #15 cursor id (additive wire field); the canned
+	// rename row (full_path + old_full_path resolved, no sizes) must
+	// carry EXACTLY op/key/oldKey/txg/timestamp (+ id).
 	events, _ := env["events"].([]any)
 	if len(events) != 11 {
 		t.Fatalf("events = %d, want the 11 canned fixture rows", len(events))
 	}
 	allowed := map[string]bool{"op": true, "key": true, "oldKey": true, "txg": true,
-		"timestamp": true, "sizeOld": true, "sizeNew": true}
+		"timestamp": true, "sizeOld": true, "sizeNew": true, "id": true}
 	var sawRename bool
 	for _, raw := range events {
 		e, ok := raw.(map[string]any)

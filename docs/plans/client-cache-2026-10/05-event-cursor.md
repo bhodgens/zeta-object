@@ -1,12 +1,14 @@
-# Leaf 05 - event cursor (CONDITIONAL: blocked on zeta-object#15)
+# Leaf 05 - event cursor (UNBLOCKED: zeta-object#15 shipped)
 
 ## Status
 
-**CONDITIONAL LEAF.** Blocked on gateway issue zeta-object#15 (the
-`since-id` pass-through on `?events`, both frontends) being LANDED. If
-#15 is not merged when leaf 04 closes, PARK this leaf (mark it parked in
-the master tracking table with a one-line reason) and ship v1 scan-only
-- decision 7 makes the cursor an optimization; v1 is complete without it.
+**READY.** The gateway prerequisite zeta-object#15 (the `since-id`
+pass-through on `?events`, both frontends) has LANDED: the wire carries
+`?events&since-id=N` plus the per-event monotonic `id` field (the
+cursor), on the s3 AND webdav surfaces (h3 inherits by wrapping). The
+client-side implementation below is code-complete with stub-endpoint
+tests; scan-only remains the permanent behavior on non-ZFS buckets
+(decision 7).
 
 ## Goal
 

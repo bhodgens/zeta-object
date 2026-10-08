@@ -67,6 +67,18 @@ func (s *stubZFSProvider) History(_ context.Context, _, _ string, q metadata.His
 		return nil, s.err
 	}
 	events := s.events
+	// Gateway issue #15: the stub mirrors the real provider's cursor
+	// semantics (strictly-after over the monotonic id) so the since-id
+	// parity test exercises the exact resume shape.
+	if q.SinceID > 0 {
+		filtered := make([]metadata.ObjectEvent, 0, len(events))
+		for _, e := range events {
+			if e.ID > q.SinceID {
+				filtered = append(filtered, e)
+			}
+		}
+		events = filtered
+	}
 	if q.MaxEvents > 0 && len(events) > q.MaxEvents {
 		events = events[:q.MaxEvents]
 	}

@@ -1,8 +1,12 @@
 # Gateway: event cursor on the ?events surfaces (since-id pass-through)
 
-Status: PLANNED. Prerequisite for the zeta-cache sync engine's O(changes)
-reconnect (quic-h3-2026-10 decision 8: the cursor is an optimization, never
-a dependency - the client works, slower, without it).
+Status: **SHIPPED (2026-10-08 — gates green; the parent closes the issue
+after review).** What landed: `HistoryQuery.SinceID` (additive struct
+field, frozen interface untouched) → `WHERE id > ?`; `?since-id=N` on the
+s3 AND webdav `?events` surfaces (400 InvalidArgument on a bad cursor);
+per-event additive JSON `id`; plain-dir 503 untouched; e2e case 18
+extends with the exact-resume asserts; zeta-cache leaf 05 UNPARKED
+(`zeta-cache/internal/sync/cursor.go` + the transport `Events` seam).
 
 ## Summary
 

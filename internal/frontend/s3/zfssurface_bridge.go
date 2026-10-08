@@ -15,8 +15,6 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-
-	"github.com/bhodgens/zeta-object/internal/metadata"
 )
 
 // ObjectVersionsJSON is the file ?versions JSON envelope (webdav GET
@@ -73,7 +71,10 @@ func HandleBucketEventsForBucket(w http.ResponseWriter, r *http.Request, bucketN
 		writeNoProviderError(w)
 		return
 	}
-	q := metadata.HistoryQuery{MaxEvents: maxEventsFromQuery(r)}
+	q, ok := historyQueryFromQuery(w, r)
+	if !ok {
+		return
+	}
 	events, err := p.History(r.Context(), bucketPath, "", q)
 	if err != nil {
 		// NO provider/exec detail reaches the client — server log only.
@@ -132,7 +133,10 @@ func HandleCollectionEventsForBucket(w http.ResponseWriter, r *http.Request, buc
 		writeNoProviderError(w)
 		return
 	}
-	q := metadata.HistoryQuery{MaxEvents: maxEventsFromQuery(r)}
+	q, ok := historyQueryFromQuery(w, r)
+	if !ok {
+		return
+	}
 	if _, err := p.History(r.Context(), bucketPath, "", q); err != nil {
 		// NO provider/exec detail reaches the client — server log only.
 		log.Printf("metadata: events for collection %s: %v", strconv.Quote(bucketName), err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
@@ -160,7 +164,10 @@ func HandleObjectEventsForBucket(w http.ResponseWriter, r *http.Request, bucketN
 		writeNoProviderError(w)
 		return
 	}
-	q := metadata.HistoryQuery{MaxEvents: maxEventsFromQuery(r)}
+	q, ok := historyQueryFromQuery(w, r)
+	if !ok {
+		return
+	}
 	events, err := p.History(r.Context(), bucketPath, objectName, q)
 	if err != nil {
 		log.Printf("metadata: events for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
@@ -196,7 +203,10 @@ func HandleObjectVersionsForBucket(w http.ResponseWriter, r *http.Request, bucke
 		writeNoProviderError(w)
 		return
 	}
-	q := metadata.HistoryQuery{MaxEvents: maxEventsFromQuery(r)}
+	q, ok := historyQueryFromQuery(w, r)
+	if !ok {
+		return
+	}
 	events, err := p.History(r.Context(), bucketPath, "", q)
 	if err != nil {
 		log.Printf("metadata: versions for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), err) //nolint:gosec // G706: strconvQuote-sanitized / constant-only format
