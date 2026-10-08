@@ -62,6 +62,13 @@ func (m *mainDriver) GetSettings() (*ftpserver.Settings, error) {
 			End:   m.f.cfg.PassivePortMax,
 		}
 	}
+	// Data-connection accept deadline (see Config.DataConnTimeoutSeconds).
+	// Only set when configured: the library substitutes its own 30s default
+	// for 0 (server.go:176), so passing 0 through is equivalent and keeps the
+	// library's default in charge of the unset case.
+	if m.f.cfg.DataConnTimeoutSeconds > 0 {
+		s.ConnectionTimeout = m.f.cfg.DataConnTimeoutSeconds
+	}
 	if m.f.cfg.PublicIP != "" {
 		s.PublicHost = m.f.cfg.PublicIP
 	}

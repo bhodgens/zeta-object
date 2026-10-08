@@ -41,7 +41,7 @@ func TestZFSSurfaceSinceIDParity(t *testing.T) {
 		"?events&since-id=1",
 	}
 	for _, q := range queries {
-		s3Code, s3Hdr, s3Body := e.s3Get("/"+e.bucket+q)
+		s3Code, s3Hdr, s3Body := e.s3Get("/" + e.bucket + q)
 		if s3Code != http.StatusOK || s3Hdr.Get("Content-Type") != "application/json" {
 			t.Fatalf("s3 %s baseline: status %d (body %s)", q, s3Code, s3Body)
 		}
@@ -64,7 +64,7 @@ func TestZFSSurfaceSinceIDParity(t *testing.T) {
 	}
 
 	// File surface: key-scoped since-id is byte-identical too.
-	s3Code, _, s3Body := e.s3Get("/"+e.bucket+"/doc.txt?events&since-id=2")
+	s3Code, _, s3Body := e.s3Get("/" + e.bucket + "/doc.txt?events&since-id=2")
 	if s3Code != http.StatusOK {
 		t.Fatalf("s3 file since-id: status %d", s3Code)
 	}

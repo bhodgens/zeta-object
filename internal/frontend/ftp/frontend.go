@@ -45,6 +45,23 @@ type Config struct {
 	PassivePortMax int
 	// PublicIP is the address advertised in PASV replies ("" = listener IP).
 	PublicIP string
+	// DataConnTimeoutSeconds bounds how long the server waits for a client to
+	// open a passive data connection after a PASV/EPSV reply, in seconds.
+	// 0 means "library default" (30s).
+	//
+	// WHY THIS IS CONFIGURABLE (bughunt 2026-10-08): ftpserverlib applies this
+	// as a deadline on listener.Accept() (transfer_pasv.go:Open ->
+	// ConnectionWait). The client's connect is a normal scheduling race - on a
+	// loaded host (a CI runner, a parallel package suite, a machine also
+	// running something else) the control channel can be scheduled late enough
+	// that 30s elapses before the data connect is serviced, and the server
+	// answers 425 "failed to accept passive transfer connection" even though
+	// nothing is wrong with the server or the client. A real deployment on a
+	// saturated host hits the same wall; a site that terminates FTP through a
+	// proxy with a slow control-to-data handoff needs a longer window, and a
+	// test that wants to fail fast needs a shorter one. Hard-coding either
+	// value was the defect.
+	DataConnTimeoutSeconds int
 	// TLSConfig enables explicit FTPS (AUTH TLS). Nil = plain FTP only.
 	TLSConfig *tls.Config
 	// Verifier authenticates USER/PASS pairs to identities. Required.
@@ -79,6 +96,9 @@ func New(be backend.Backend, cfg Config) (*Frontend, error) {
 	}
 	if cfg.PassivePortMin < 0 || cfg.PassivePortMax < 0 {
 		return nil, errors.New("ftp: passive ports must not be negative")
+	}
+	if cfg.DataConnTimeoutSeconds < 0 {
+		return nil, errors.New("ftp: dataConnTimeoutSeconds must not be negative (0 = library default)")
 	}
 	if cfg.PassivePortMin != 0 || cfg.PassivePortMax != 0 {
 		if cfg.PassivePortMin == 0 || cfg.PassivePortMax == 0 {

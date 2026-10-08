@@ -648,6 +648,7 @@ zeta-object speaks FTP with explicit FTPS (AUTH TLS) so lftp, curl, WinSCP, and 
 *   `type` (required): `ftp`. `listenAddr` (REQUIRED): FTP is a raw-TCP protocol and cannot share the HTTPS mux — an entry without its own port aborts startup.
 *   `passivePortMin` / `passivePortMax`: the passive data-channel port range (default: kernel-assigned). Set a range when a firewall sits between client and server; open the same range there.
 *   `publicIP`: the address advertised in PASV replies (default: the listener's IP). Set it to the address clients can actually reach when behind NAT.
+*   `dataConnTimeoutSeconds`: how long the server waits for a client to open the passive data connection after a PASV/EPSV reply (default: 30). Raise it when a proxy or a loaded host makes the control-to-data handoff slow — otherwise a transfer fails with `425 failed to accept passive transfer connection: i/o timeout` even though both ends are correct. `0` keeps the default.
 *   **FTPS is explicit (AUTH TLS)**: the control channel upgrades on demand and the data channel follows `PROT P`. It reuses the top-level `certFile`/`keyFile` — no new config keys. Plain FTP keeps working on the same port; TLS 1.2 is the floor.
 
 ### Command mapping
