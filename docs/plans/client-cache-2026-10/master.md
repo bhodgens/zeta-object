@@ -176,9 +176,9 @@ makes this legal). Do not gate v1 on the cursor.
 | 03 | Index DB + sync journal | DONE | 84b21fb | race green (WAL concurrency, reconcile, crash-sim); lint 0 |
 | 04 | Sync engine (scan path) | DONE | b221669 (+a757d01 adapter) | race green all 5 pkgs; lint 0; 10 sync tests incl. full matrix |
 | 05 | Event cursor (CONDITIONAL on #15) | PARKED-PREREQ | - | - |
-| 06 | Transport + auth | DISPATCHED | - | - |
-| 07 | Scheduler + quota + eviction | DISPATCHED | - | - |
-| 08 | GUI + IPC | PENDING | - | - |
+| 06 | Transport + auth | DONE | ad9fd73 (+fixes) | race green; lint 0; case 40 23/23; h3 mTLS sync asserted |
+| 07 | Scheduler + quota + eviction | DONE | ad9fd73 (+fixes) | race green; watermark/pin/battery tests; lint 0 |
+| 08 | GUI + IPC | DISPATCHED | - | - |
 
 Dispatch order: 1 -> (2 + 3) -> 4 -> 5/6/7 -> 8. Leaf 05 stays parked
 until zeta-object#15 lands; v1 ships scan-only.
