@@ -52,6 +52,11 @@ v32_cleanup() {
 		done
 		kill -9 "$V32_PID" 2>/dev/null
 	fi
+	# The per-request temp FILES too: V32_HDRS/BODY/LIST are mktemp'd
+	# outside $V32_ROOT, so removing the root alone left one body file per
+	# signed request in /tmp forever (198 e2e32-* files accumulated on the
+	# dev machine). Every mktemp a case creates must be named in its cleanup.
+	rm -f "${V32_HDRS:-}" "${V32_BODY:-}" "${V32_LIST:-}"
 	rm -rf "$V32_ROOT" "$V32_CERT"
 }
 trap v32_cleanup EXIT

@@ -22,3 +22,11 @@ zeta-cache-bin
 
 # Local e2e scratch binary (scripts/e2e/h3probe built at the repo root by hand)
 h3probe
+
+# Swift Package Manager build output (zeta-cache's macOS menu-bar app).
+# Commit 27595d0 tracked 2486 files / 232 MB under gui/macos/.build - 77% of
+# every tracked file in the repo. Swift regenerates all of it; none of it is
+# source.
+zeta-cache/gui/macos/.build/
+.swiftpm/
+Package.resolved

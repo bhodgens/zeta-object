@@ -92,6 +92,32 @@ create/cleanup pairing, and use the assert helpers from `scripts/e2e/lib.sh`.
 Cases also exist for interop clients (`boto3`, `mc`, `rclone`, `owncloudcmd`) -
 extend those when the feature is client-visible there too.
 
+### Cleanup is a harness obligation (bughunt 2026-10-08)
+
+A case MUST leave the machine as it found it. Concretely:
+
+1. Every process the case starts gets an `EXIT` trap that stops it, and every
+   temp path the case creates - including any `mktemp /tmp/e2eNN-*` FILE, not
+   just the temp ROOT dir - is named in that trap's `rm`. A per-request body
+   file outside the root is the shape that leaks: cases 32/33 did it and left
+   450 files in `/tmp` before the audit caught it.
+2. To debug ONE case, use `scripts/e2e/run-one.sh <case-name-without-.sh>`,
+   not the full suite. It builds the server if missing, runs the case against
+   its own port and temp dataDir, prints the server log, and keeps the temp dir
+   on failure (or with `ZETAONE_KEEP=1`).
+3. `scripts/e2e/e2e-cleanup.sh` holds the shared contract: `e2e_sweep_stale`
+   removes stale `/tmp/e2e[0-9]*`, `/tmp/zetaobject-e2e.*` and `/tmp/zeta-one.*`
+   state plus orphaned `zeta-object-server` processes, and `e2e_reap_pid` is the
+   one TERM-then-KILL stop used by every cleanup. Both `run-e2e.sh` and
+   `make e2e-clean` source that file - do not re-implement the logic.
+4. Run `make e2e-clean` after a run that was interrupted, or whenever you are
+   unsure. `E2E_SWEEP_MIN_AGE` (seconds, default 30) is the safety cutoff: the
+   sweeper never touches younger state and never kills a server that is still
+   LISTENING, so a concurrent `make e2e` is safe. Pass `E2E_SWEEP_MIN_AGE=0`
+   only when you know nothing else is running.
+5. `run-e2e.sh` traps INT and TERM as well as EXIT, so Ctrl-C still reaps the
+   server and sweeps.
+
 ## Plan trees
 
 Multi-leaf work lives under `docs/plans/<tree>/master.md` (for example

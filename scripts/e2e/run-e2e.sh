@@ -154,18 +154,34 @@ EOF
 echo "== launching server on 127.0.0.1:$FREE_PORT =="
 ZETAOBJECT_CONFIG="$WORK/config.json" ./zeta-object-server >"$WORK/server.log" 2>&1 &
 SERVER_PID=$!
+# Cleanup is a HARNESS OBLIGATION, not a per-case courtesy (bughunt 2026-10-08).
+# Two real leaks justified it: cases 32/33 mktemp'd a body file per signed
+# request OUTSIDE their temp root and never removed them (448 files accumulated
+# in /tmp on the dev machine), and an INTERRUPTED run (Ctrl-C, a killed shell,
+# a CI timeout) skipped every per-case trap, leaving the suite server holding
+# its ports. The sweeper below is what makes "run the suite, walk away" safe.
+#
+# It only ever touches this suite's OWN namespace (the e2eNN-* / zetaobject-e2e-*
+# / zeta-one-* prefixes its cases use) and only processes whose command line
+# names this repo, so a concurrently running sibling suite or an unrelated
+# server is never killed.
+# Cleanup lives in e2e-cleanup.sh so the suite and `make e2e-clean` run the
+# SAME contract (bughunt 2026-10-08: extracting it with sed produced a
+# half-defined function that reported success while removing nothing).
+# shellcheck source=e2e-cleanup.sh
+. "$E2E_ROOT/e2e-cleanup.sh"
+
 cleanup() {
-	if kill -0 "$SERVER_PID" 2>/dev/null; then
-		kill -TERM "$SERVER_PID" 2>/dev/null
-		for _ in 1 2 3 4 5 6 7 8 9 10; do
-			kill -0 "$SERVER_PID" 2>/dev/null || break
-			sleep 0.5
-		done
-		kill -9 "$SERVER_PID" 2>/dev/null
-	fi
+	e2e_reap_pid "$SERVER_PID"
 	rm -rf "$WORK"
+	# Reap anything an interrupted earlier run left behind, so the NEXT run
+	# starts from a clean /tmp and free ports.
+	e2e_sweep_stale
 }
 trap cleanup EXIT
+# Interruptions (SIGINT/SIGTERM) must run the same cleanup, not just die.
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 # shellcheck source=lib.sh
 source "$E2E_ROOT/lib.sh"

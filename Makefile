@@ -54,6 +54,7 @@ help:
 	@echo "  vuln             govulncheck ./..."
 	@echo "  secrets          gitleaks detect (.gitleaks.toml)"
 	@echo "  e2e              Run scripts/e2e/run-e2e.sh (created by leaf 3.6)"
+	@echo "  e2e-clean        Sweep stale e2e temp files + orphaned servers (E2E_SWEEP_MIN_AGE=0 to include fresh)"
 	@echo "  conformance      Run ceph/s3-tests subset (leaf 5.1); ratchets vs scripts/conformance/baseline.txt"
 	@echo ""
 	@echo "Modules:"
@@ -276,6 +277,21 @@ e2e:
 		echo "The e2e suite is created by leaf 3.6 (hardening plan) and will exist by end of campaign."; \
 		exit 1; \
 	fi
+
+# Clean up after the e2e suite: stale temp files AND orphaned servers from a run
+# that was interrupted before its trap could fire (bughunt 2026-10-08). The
+# suite's own cleanup does this too; this target exists so an operator can sweep
+# WITHOUT running 40 cases, and so CI can assert the machine is clean.
+#
+# E2E_SWEEP_MIN_AGE is the safety cutoff in seconds. It is deliberately NOT 0
+# by default: a concurrently running `make e2e` must never be killed. Override
+# only when you know nothing else is running:
+#   make e2e-clean E2E_SWEEP_MIN_AGE=0
+e2e-clean:
+	@REPO_ROOT="$$(pwd)" E2E_SWEEP_MIN_AGE=$${E2E_SWEEP_MIN_AGE:-30} \
+		bash -c '. scripts/e2e/e2e-cleanup.sh; e2e_sweep_stale; \
+		echo "e2e-clean: swept /tmp e2e temp state and orphaned servers older than $${E2E_SWEEP_MIN_AGE:-30}s"' \
+		|| { echo "e2e-clean: FAILED - could not run scripts/e2e/e2e-cleanup.sh"; exit 1; }
 
 # =============================================================================
 # Conformance (leaf 5.1 — ceph/s3-tests baseline, informational, NOT in check)

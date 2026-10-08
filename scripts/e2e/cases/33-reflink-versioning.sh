@@ -53,8 +53,10 @@ v33_cleanup() {
 		done
 		kill -9 "$V33_PID" 2>/dev/null
 	fi
-	mkdir -p /tmp/e2e33-keep
-	cp "$V33_ROOT/server.log" /tmp/e2e33-keep/last-server.log 2>/dev/null || true
+	# The per-request temp FILES too (see case 32's cleanup): V33_HDRS/BODY/LIST
+	# live outside $V33_ROOT, so removing the root left one body file per
+	# signed request in /tmp forever (250 e2e33-* files accumulated).
+	rm -f "${V33_HDRS:-}" "${V33_BODY:-}" "${V33_LIST:-}"
 	rm -rf "$V33_ROOT" "$V33_CERT"
 }
 trap v33_cleanup EXIT
