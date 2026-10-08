@@ -316,7 +316,7 @@ Re-located by grep at HEAD `269c193`, not by trusting the reported line numbers.
 |---|---|---|
 | C1 traversal escape | **FIXED (fully pinned)** | 5 gate sites: `dispatch.go:374` (covers the whole object surface), `object_handlers.go:1766`, `object_handlers.go:886`, `versions_listing.go:63`, `multipart_handlers.go:777`, plus the pre-existing `bucket_handlers.go:233/216/262`, `versioning_handlers.go:83/137`, `batch_bridge.go:74` and `resolveEventsContext`. Parent ran the revert matrix on the 5 NEW sites: every one fails `TestBucketNameGate_TraversalNameNeverResolvesToTheParentDirectory` on production-only revert. A 20-name input matrix finds ZERO accepted-and-escapes (Z1). |
 | H1 hot-patch dishonesty | **STILL OPEN** | `GET /config DataDir` reports the live root while the installed view carries the candidate. Parent probe re-run at HEAD. |
-| H2 `zfs_binary` installed while reported restart-required | **STILL OPEN (UNVERIFIED live)** | `copyAppliedKeys` has a `case "zfs_binary"` (`config_store.go:255`) unreachable because `hotApplyKeys["zfs_binary"]` is false; `installZfsDatasetProvisionerFor` (`s3_wiring.go:320`) still reads `cfg.ZfsBinary`. The live provisioner path needs a ZFS host to execute, so I did not prove it by run - UNVERIFIED. |
+| H2 `zfs_binary` installed while reported restart-required | **FIXED (proven by revert)** | Closed by the live+applied merge fix (218b774) and pinned by `TestHotPatchKeepsRestartRequiredZfsBinaryOutOfTheProvisioner` (4e7a854). Executed: the pre-fix `applyHotSeams(&candidate)` shape makes the live provisioner exec the RESTART-REQUIRED binary while `GET /config` advertises the running one (probe markers A/B); the fixed shape execs the running one. The unreachable `copyAppliedKeys` case `zfs_binary` is dead code left as-is - the merge makes it unreachable by construction, so removing it is cosmetic. |
 | H3 region data race | **STILL OPEN** | Now H1 above, proven by `-race`. |
 | M2 batch move half-success | **NOT RE-CHECKED** | Auditor scope that owned it died. |
 | M4 `?delete` hard-deletes | **STILL OPEN** | Now M1 above, proven by execution. |
@@ -900,10 +900,12 @@ bash -n scripts/e2e/*.sh          all 40 cases parse
 2. **No `make e2e` run.** The 40 cases were READ and the harness exit logic was
    traced to `lib.sh:175` and `run-e2e.sh:267-280`, but no case was executed.
    Every claim about what an e2e case can and cannot detect remains read-level.
-3. **No ZFS contact.** `zfs-meta` was never reached. H2's live provisioner leg and
-   M1's fix gate are both unverified against real OpenZFS. Y1 was proven
-   STATICALLY (the call-site grep is conclusive: zero call sites for the floor
-   helper), so it does not need a live run; but the FIX for Y1 does.
+3. **No ZFS contact at AUDIT TIME.** `zfs-meta` was not reached during the
+   audit, so H2's live provisioner leg and M1's fix gate were unverified then.
+   BOTH were closed afterwards: `41d3081` ran the harness live (all sections
+   green, no floor violations, M1 pinned with a revert proof) and `4e7a854`
+   proved H2 by execution in the unit harness. Y1's floor helper was proven
+   statically (zero call sites) and then on a live run.
 4. **No revert-matrix sweep.** (The parent did run it by hand for two findings: the
    webdav root token and the s3 delete asymmetry both reproduce on a real
    handler path, which is the same property a revert proves.) The technique that proves a pin fails on revert of
