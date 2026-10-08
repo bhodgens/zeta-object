@@ -174,14 +174,34 @@ makes this legal). Do not gate v1 on the cursor.
 | 01 | Module skeleton + daemon lifecycle | DONE | bda8c8e | e2e 40: 19 asserts; make e2e 900/0; race green; lint 0 |
 | 02 | FUSE filesystem layer | DONE | 84b21fb | race green; lint 0; case 40 mount skip on FUSE-less hosts; live-mount activates with leaf 06 |
 | 03 | Index DB + sync journal | DONE | 84b21fb | race green (WAL concurrency, reconcile, crash-sim); lint 0 |
-| 04 | Sync engine (scan path) | DONE | b221669 (+a757d01 adapter) | race green all 5 pkgs; lint 0; 10 sync tests incl. full matrix |
+| 04 | Sync engine (scan path) | DONE | b221669 (+a757d01 adapter, c7ffe92 empty-bucket) | race green all 5 pkgs; lint 0; 12 sync tests incl. full matrix + empty-bucket |
 | 05 | Event cursor (CONDITIONAL on #15) | PARKED-PREREQ | - | - |
 | 06 | Transport + auth | DONE | ad9fd73 (+fixes) | race green; lint 0; case 40 23/23; h3 mTLS sync asserted |
 | 07 | Scheduler + quota + eviction | DONE | ad9fd73 (+fixes) | race green; watermark/pin/battery tests; lint 0 |
-| 08 | GUI + IPC | DISPATCHED | - | - |
+| 08 | GUI + IPC | DONE | 27595d0 | swift build+test 11 conformance; Go race green; golden fixtures 16; case 40 23/23 |
 
 Dispatch order: 1 -> (2 + 3) -> 4 -> 5/6/7 -> 8. Leaf 05 stays parked
 until zeta-object#15 lands; v1 ships scan-only.
+
+## Tree closure (2026-10-08)
+
+- All leaves except 05 are DONE; 05 stays PARKED-PREREQ by decision 7
+  (the cursor unblocks when gateway issue #15 lands).
+- Final CI: run for 27595d0 - all jobs green (build incl. the
+  zeta-cache module step, lint incl. the module's golangci-lint, e2e
+  900+/0 with case 40's LIVE FUSE mount round-trip on the CI runner,
+  27 test-matrix jobs).
+- Integration bugs the live-FUSE CI runner caught that local testing
+  could not: the fusefs adapter's invalid journal ops (every FUSE write
+  silently rolled back - adapter.go, fixed with index constants +
+  adapter_test.go), the empty-bucket root PROPFIND 404 (sync aborted on
+  fresh buckets - engine.go root+ErrNotExist rule), the IPC re-Serve
+  deleting the live socket (ReplaceHandler now swaps the handler on the
+  live listener), and the FUSE availability probe (fusermount3, not
+  just /dev/fuse).
+- Charter audit: zeta-cache stores nothing server-side beyond standard
+  webdav protocol fields; all index/journal/conflict state is
+  client-owned (zeta-cache/internal/index).
 
 ## Open questions (not blocking leaves 1-4)
 
