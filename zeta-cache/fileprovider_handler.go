@@ -31,8 +31,8 @@ func (h *guiHandler) cacheFilePath(key string) string {
 // "a/b/c" -> "c", "a/b/" -> "b", "top" -> "top".
 func leafName(path string) string {
 	trimmed := strings.TrimSuffix(path, "/")
-	if i := strings.LastIndexByte(trimmed, '/'); i >= 0 {
-		return trimmed[i+1:]
+	if _, leaf, found := strings.CutLast(trimmed, "/"); found {
+		return leaf
 	}
 	return trimmed
 }
