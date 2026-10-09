@@ -101,7 +101,7 @@ if ! wait_for_port 127.0.0.1 "$E34_PORT" 15; then
 	# Startup ABORTS by design when the feature is on but the dataDir is
 	# not a ZFS mountpoint (leaf 01 fail-loud contract) — the standard
 	# dev-host shape. Print the standard SKIP line and exit clean.
-	echo '  (zfs bucket datasets: dataDir not on ZFS or feature off — skipping case; live coverage in scripts/zfs-validate/run-zfs-validation.sh section 12)'
+	e2e_skip 'zfs bucket datasets: dataDir not on ZFS or feature off; live coverage in scripts/zfs-validate/run-zfs-validation.sh section 12'
 	e2e_finish
 	return 0 2>/dev/null || exit 0
 fi
@@ -114,7 +114,7 @@ export AWS_ACCESS_KEY_ID=zetaadmin AWS_SECRET_ACCESS_KEY=zetaadmin
 # (the shared testpool is churned by sibling sessions).
 E34_PARENT=$(e34_zfs list -H -o name -t filesystem "$E34_ROOT/data" | head -1 | tr -d '[:space:]')
 if [ -z "$E34_PARENT" ]; then
-	echo '  (zfs bucket datasets: dataDir not on ZFS or feature off — skipping case; live coverage in scripts/zfs-validate/run-zfs-validation.sh section 12)'
+	e2e_skip 'zfs bucket datasets: dataDir not on ZFS or feature off; live coverage in scripts/zfs-validate/run-zfs-validation.sh section 12'
 	e2e_finish
 	return 0 2>/dev/null || exit 0
 fi

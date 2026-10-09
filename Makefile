@@ -55,6 +55,7 @@ help:
 	@echo "  secrets          gitleaks detect (.gitleaks.toml)"
 	@echo "  e2e              Run scripts/e2e/run-e2e.sh (created by leaf 3.6)"
 	@echo "  e2e-clean        Sweep stale e2e temp files + orphaned servers (E2E_SWEEP_MIN_AGE=0 to include fresh)"
+	@echo "  e2e-report-test  Pins that a zero-assert case reports SKIP, never PASS"
 	@echo "  conformance      Run ceph/s3-tests subset (leaf 5.1); ratchets vs scripts/conformance/baseline.txt"
 	@echo ""
 	@echo "Modules:"
@@ -215,7 +216,7 @@ mod-verify:
 	@go mod verify
 
 # Fast gate: what every commit should pass.
-precommit: build vet fmt-check lint test test-cover-enforce parity-test mod-tidy-check
+precommit: build vet fmt-check lint test test-cover-enforce parity-test mod-tidy-check e2e-report-test
 	@echo ""
 	@echo "precommit gate passed."
 
@@ -277,6 +278,11 @@ e2e:
 		echo "The e2e suite is created by leaf 3.6 (hardening plan) and will exist by end of campaign."; \
 		exit 1; \
 	fi
+
+# Skip-reporting pins: a case that ran nothing must never report PASS
+# (bughunt 2026-10-08). Cheap, and it guards the suite's own honesty.
+e2e-report-test:
+	@bash scripts/e2e/test-skip-reporting.sh
 
 # Clean up after the e2e suite: stale temp files AND orphaned servers from a run
 # that was interrupted before its trap could fire (bughunt 2026-10-08). The

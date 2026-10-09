@@ -64,9 +64,8 @@ E18_DB="$E18_WORK/zmetad.db"
 # -mod=mod: cases 12/13 create vendor/ (boto3 venv, mc) mid-suite; Go then
 # treats vendor/ as a vendor tree and dies on the missing modules.txt.
 if ! go run -mod=mod ./scripts/e2e/fixtures/zmetad-fixture "$E18_DB" "$E18_BKT_PHYS" >"$E18_WORK/fixture.log" 2>&1; then
-	echo '  (zmetad fixture builder could not run — skipping case; unit + wire-shape coverage in internal/metadata and internal/frontend/s3 carries the contract)'
 	cat "$E18_WORK/fixture.log"
-	E2E_PASS=$((E2E_PASS + 1))
+	e2e_skip 'zmetad fixture builder could not run; unit + wire-shape coverage in internal/metadata and internal/frontend/s3 carries the contract'
 	e2e_finish
 	# return, NOT exit: this file is SOURCED (case-22 skip convention).
 	return 0

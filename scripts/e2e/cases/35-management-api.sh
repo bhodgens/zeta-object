@@ -39,7 +39,7 @@ E35_DS=''
 # openssl (run-e2e.sh). When it could not, print the standard SKIP line and
 # leave cleanly (0 pass / 0 fail).
 if [ "${E2E_ADMIN_AVAILABLE:-0}" != 1 ] || [ -z "${E2E_ADMIN_URL:-}" ]; then
-	echo '  (management API: client-certificate fixtures unavailable (openssl missing) — skipping case; unit + wiring coverage in internal/frontend/admin carries the contract)'
+	e2e_skip 'management API: client-certificate fixtures unavailable (openssl missing); unit + wiring coverage in internal/frontend/admin carries the contract'
 	e2e_finish
 	return 0 2>/dev/null || exit 0
 fi

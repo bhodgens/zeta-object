@@ -40,14 +40,14 @@ C36_CSRF=''
 # and the client-certificate fixtures (openssl) must exist. Otherwise print the
 # standard SKIP line and leave cleanly (0 pass / 0 fail).
 if [ "${E2E_ADMIN_CONSOLE_AVAILABLE:-0}" != 1 ] || [ ! -x "${E2E_ADMIN_CONSOLE_BIN:-}" ]; then
-	echo '  (admin console: the zeta-object-admin binary is unavailable (not built) — skipping case; unit + wiring coverage in internal/adminserver carries the contract)'
+	e2e_skip 'admin console: the zeta-object-admin binary is unavailable (not built); unit + wiring coverage in internal/adminserver carries the contract'
 	e2e_finish
 	return 0 2>/dev/null || exit 0
 fi
 if [ "${E2E_ADMIN_AVAILABLE:-0}" != 1 ] || [ -z "${E2E_ADMIN_URL:-}" ] \
 	|| [ -z "${E2E_ADMIN_CLIENT_CERT:-}" ] || [ -z "${E2E_ADMIN_CLIENT_KEY:-}" ] \
 	|| [ -z "${E2E_SERVER_CERT:-}" ] || [ ! -s "${E2E_SERVER_CERT:-/nonexistent}" ]; then
-	echo '  (admin console: client-certificate fixtures unavailable (openssl missing) — skipping case; unit + wiring coverage in internal/adminserver carries the contract)'
+	e2e_skip 'admin console: client-certificate fixtures unavailable (openssl missing); unit + wiring coverage in internal/adminserver carries the contract'
 	e2e_finish
 	return 0 2>/dev/null || exit 0
 fi

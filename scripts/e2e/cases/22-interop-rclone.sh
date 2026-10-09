@@ -2,15 +2,16 @@
 # remotes (sftp-ftp-2026-09 tree / GH issue #2), patterned on
 # 12-interop-boto3.sh.
 #
-# rclone is OPTIONAL tooling: when the binary is absent this case emits a
-# skip count WITHOUT failing — the wire-level coverage carried by cases
-# 20-ftp.sh (curl FTP/FTPS) and 21-sftp.sh (sftp CLI) satisfies the
-# AGENTS.md e2e hard rule; this case only ADDS third-party-client proof.
+# rclone is OPTIONAL tooling: when the binary is absent this case SKIPS
+# WITHOUT failing - the wire-level coverage carried by cases 20-ftp.sh (curl
+# FTP/FTPS) and 21-sftp.sh (sftp CLI) satisfies the AGENTS.md e2e hard rule;
+# this case only ADDS third-party-client proof. The skip is reported as a skip,
+# never as a pass (bughunt 2026-10-08): a case that verified nothing must not
+# read as a case that verified something.
 set -u
 
 if ! command -v rclone >/dev/null 2>&1; then
-	echo '  (rclone not installed — skipping interop case; 20-ftp/21-sftp carry the wire coverage)'
-	E2E_PASS=$((E2E_PASS + 1))
+	e2e_skip 'rclone not installed; 20-ftp/21-sftp carry the wire coverage'
 	e2e_finish
 	# return, NOT exit: this file is SOURCED by run-e2e.sh; exit would kill the
 	# harness subshell before it writes this case's tally (a skip then looked

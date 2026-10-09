@@ -12,6 +12,8 @@
 
 E2E_PASS=0
 E2E_FAIL=0
+E2E_SKIP=0
+E2E_SKIP_REASON=''
 E2E_CASE=''
 
 _e2e_record() {
@@ -168,9 +170,32 @@ wait_for_port() {
 	return 0
 }
 
+# e2e_skip <reason> — declare that this case's preconditions are not met on
+# this host (no ZFS dataset, no admin console binary, a fixture builder that
+# will not compile) and that the coverage lives elsewhere.
+#
+# WHY THIS EXISTS (bughunt 2026-10-08): a skipping case used to exit with
+# 0 asserts and 0 failures, and run-e2e.sh printed it as PASS. That is the same
+# reporting shape as the ZFS validation harness's unfalsifiable "TOTAL: 0/0",
+# which survived a whole wave because nothing in the output distinguished
+# "verified nothing" from "nothing to verify here". Case 18 went further and
+# incremented E2E_PASS to look deliberate.
+#
+# A skip is NOT a failure: the host genuinely cannot run the case, and failing
+# the suite for it would make the gate unusable. It IS reported, counted, and
+# named, so a reader can tell it apart from a case that verified something.
+e2e_skip() {
+	E2E_SKIP=$((E2E_SKIP + 1))
+	printf '  SKIP %s\n' "$1"
+}
+
 # e2e_finish — print totals; return non-zero on any failure (REAL exit code).
+# Skips are listed separately and never counted as passes.
 e2e_finish() {
 	printf '\n=== e2e summary ===\n'
 	printf '  passed: %d\n  failed: %d\n' "$E2E_PASS" "$E2E_FAIL"
+	if [ "${E2E_SKIP:-0}" -gt 0 ]; then
+		printf '  skipped: %d\n' "$E2E_SKIP"
+	fi
 	[ "$E2E_FAIL" -eq 0 ]
 }

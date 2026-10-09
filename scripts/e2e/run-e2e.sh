@@ -218,8 +218,9 @@ export E2E_ADMIN_WRONG_CERT="$E2E_ADMIN_CA_DIR/wrong.pem" E2E_ADMIN_WRONG_KEY="$
 export E2E_ADMIN_CONSOLE_AVAILABLE E2E_ADMIN_CONSOLE_BIN="$REPO_ROOT/zeta-object-admin" E2E_SERVER_CERT="$WORK/cert.pem"
 
 # --- run cases -----------------------------------------------------------------
-CASE_RESULTS=()   # "name:PASS:FAIL"
+CASE_RESULTS=()   # "name:PASS:FAIL:VERDICT"
 CASE_NAMES=()
+E2E_SKIP=0
 # Run each case in a nested bash so variable leakage cannot cross cases,
 # then fold its counters back via the tally file it writes.
 # launch_server — (re)start the suite server on a fresh free port; updates
@@ -272,6 +273,7 @@ for case_file in "$E2E_ROOT"/cases/*.sh; do
 # (server-did-not-start bail) must not leave a stale tally for the NEXT
 # case to read — that masked a real case failure as PASS (case 21, once).
 	rm -f "$WORK/.case-tally"
+	CASE_CRASHED=0
 	if bash -c "
 		set -u
 		unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_REGION
@@ -281,7 +283,7 @@ for case_file in "$E2E_ROOT"/cases/*.sh; do
 		ENDPOINT='$ENDPOINT'
 		BASE_URL='$BASE_URL'
 		source '$case_file'
-		echo \"\$E2E_PASS \$E2E_FAIL\" > '$WORK/.case-tally'
+		echo \"\$E2E_PASS \$E2E_FAIL \${E2E_SKIP:-0}\" > '$WORK/.case-tally'
 	"; then
 		if [ ! -f "$WORK/.case-tally" ]; then
 			# The case sourced cleanly but never asserted (e.g. it bailed
@@ -289,37 +291,63 @@ for case_file in "$E2E_ROOT"/cases/*.sh; do
 			# failure, not a pass.
 			cp_=0
 			cf_=1
+			cs_=0
 			echo '  (case bailed before any assert — counted as failure)'
 		else
-			read -r cp_ cf_ < "$WORK/.case-tally"
+			read -r cp_ cf_ cs_ < "$WORK/.case-tally"
+			# Tolerate a tally without the skip field (an older lib.sh, or a
+			# case that returned before lib.sh's globals existed).
+			case "$cs_" in
+			'' | *[!0-9]*) cs_=0 ;;
+			esac
 		fi
 		E2E_PASS=$((E2E_PASS + cp_))
 		E2E_FAIL=$((E2E_FAIL + cf_))
+		E2E_SKIP=$((E2E_SKIP + cs_))
 	else
 		# Case script itself crashed (syntax error, unbound var). Count as 1 fail.
 		E2E_FAIL=$((E2E_FAIL + 1))
 		cf_=1
 		cp_=0
+		cs_=0
+		CASE_CRASHED=1
 		echo '  (case script crashed — counted as failure)'
 	fi
-	if [ "$cf_" -eq 0 ]; then
-		printf '  -> PASS (%d asserts)\n' "$cp_"
-	else
+	# VERDICT, three ways. A case that ran nothing and failed nothing is a
+	# SKIP, never a PASS: "0 asserts" is not evidence, and printing PASS for it
+	# is the same hole as the ZFS harness's unfalsifiable 0/0 (bughunt
+	# 2026-10-08). A crash that reported no tally is still a FAIL, because the
+	# case could not prove it skipped either.
+	if [ "$cf_" -ne 0 ]; then
 		printf '  -> FAIL (%d failed asserts)\n' "$cf_"
+		v=FATAL
+	elif [ "${cs_:-0}" -ne 0 ] || { [ "$cp_" -eq 0 ] && [ "$CASE_CRASHED:-0" -ne 1 ]; }; then
+		printf '  -> SKIP (0 asserts — preconditions not met on this host)\n'
+		v=SKIP
+	else
+		printf '  -> PASS (%d asserts)\n' "$cp_"
+		v=PASS
 	fi
 	CASE_NAMES+=("$name")
-	CASE_RESULTS+=("$name:$cp_:$cf_")
+	CASE_RESULTS+=("$name:$cp_:$cf_:$v")
 done
 
 # --- summary table ---------------------------------------------------------------
 printf '\n=== per-case results ===\n'
 printf '%-28s %6s %6s %s\n' CASE PASS FAIL VERDICT
 for r in "${CASE_RESULTS[@]}"; do
-	IFS=: read -r n p f <<< "$r"
-	v=PASS
-	[ "$f" -gt 0 ] && v=FAIL
+	IFS=: read -r n p f v <<< "$r"
+	[ -n "$v" ] || v=PASS
 	printf '%-28s %6s %6s %s\n' "$n" "$p" "$f" "$v"
 done
+# A skip is not a pass: say so in the summary so nobody reads a green suite as
+# full coverage when a precondition was missing.
+if [ "${E2E_SKIP:-0}" -gt 0 ]; then
+	echo
+	echo "NOTE: $E2E_SKIP case(s) SKIPPED (preconditions not met on this host)."
+	echo "      A SKIP verified nothing; see each case's SKIP line for the reason"
+	echo "      and where that coverage lives instead."
+fi
 
 e2e_finish
 rc=$?
