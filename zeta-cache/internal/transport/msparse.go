@@ -53,10 +53,20 @@ type msProps struct {
 	} `xml:"DAV: resourcetype"`
 }
 
-// msPSRaw is one propstat block: live props plus the HTTP status line.
+// msPSRaw is one propstat block. The gateway emits the live props as
+// DIRECT children of propstat (its serializer renders each activeProp
+// under its own name - no <d:prop> wrapper, pinned by the wire tests);
+// the RFC-wrapped <DAV: prop> container is decoded too (other servers).
 type msPSRaw struct {
 	Props  msProps `xml:"DAV: prop"`
 	Status string  `xml:"DAV: status"`
+	// Gateway direct-form: same props, one level up.
+	// RawPropsFallback mirrors Props for the gateway's UNWRAPPED form:
+	// its serializer renders each prop directly under propstat (no
+	// <d:prop> container), and a field tagged DAV: on the propstat
+	// itself cannot express that - decode via the raw inner bytes in
+	// decodeProps (below) instead.
+	RawPropsFallback []byte `xml:",innerxml"`
 }
 
 // msRespRaw is one <d:response>: href + propstat blocks.
@@ -98,6 +108,21 @@ func parseMultistatus(body []byte) ([]msRow, error) {
 		for _, ps := range rr.Propstat {
 			if !strings.Contains(ps.Status, " 2") {
 				continue // 404 propstat: absent props, no values
+			}
+			// The gateway renders props as DIRECT propstat children
+			// (no <d:prop> wrapper - see the struct comment): when the
+			// wrapped form decoded empty, re-decode the inner bytes as
+			// if they were the prop container.
+			if ps.Props.ETag == "" && ps.Props.ContentLength == "" && len(ps.RawPropsFallback) > 0 {
+				// The fragment carries literal d: prefixes with no
+				// xmlns declaration of its own - re-home it inside a
+				// root that declares the binding before decoding.
+				wrapped := append([]byte("<root xmlns:d=\"DAV:\" xmlns:oc=\"http://owncloud.org/ns\">"), ps.RawPropsFallback...)
+				wrapped = append(wrapped, []byte("</root>")...)
+				var alt msProps
+				if err := xml.Unmarshal(wrapped, &alt); err == nil {
+					ps.Props = alt
+				}
 			}
 			if n, err := strconv.ParseInt(strings.TrimSpace(ps.Props.ContentLength), 10, 64); err == nil {
 				row.size = n

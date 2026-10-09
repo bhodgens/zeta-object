@@ -156,3 +156,25 @@ func TestNonRoot404StaysError(t *testing.T) {
 		t.Fatal("subtree 404 must stay an error, not an empty tree")
 	}
 }
+
+// TestSubdirSelfRowSkippedWithTrailingSlash pins the live-found descent
+// bug (2026-10-09): the inner walk's self row carries the trailing
+// slash ('sub/') while dirKey is bare ('sub') - the failed equality
+// made the engine descend into 'sub//' and the nested file was never
+// downloaded (scanned=2 downloads=1 on the live gateway repro).
+func TestSubdirSelfRowSkippedWithTrailingSlash(t *testing.T) {
+	h := newHarness(t)
+	h.fs.PutRaw("sub/deep.txt", "sub content")
+	h.fs.PutRaw("root.txt", "root content")
+
+	if err := h.eng.SyncOnce(bg()); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	rep := h.eng.LastReport()
+	if rep.Downloads != 2 {
+		t.Fatalf("downloads = %d, want 2 (nested file must download): %+v", rep.Downloads, rep)
+	}
+	if _, err := h.store.Get(bg(), "sub/deep.txt"); err != nil {
+		t.Fatalf("sub/deep.txt row missing: %v", err)
+	}
+}

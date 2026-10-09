@@ -389,14 +389,24 @@ func (e *Engine) walk(ctx context.Context, dir string, seen map[string]bool) (Re
 	}
 	for i := range entries {
 		entry := entries[i]
+		e.log.Printf("sync: DIAG walk dir=%q entry[%d].Key=%q IsDir=%v ETag=%q", dir, i, entry.Key, entry.IsDir, entry.ETag)
 		if err := ctx.Err(); err != nil {
 			return rep, err
 		}
 		key := entry.Key
-		if key == dir {
-			continue // entry 0: the collection itself
+		// Entry 0: the collection itself. Collection rows carry a
+		// trailing slash (rowToKey keeps it), so compare BOTH forms -
+		// a mismatch here made the inner walk treat the parent
+		// collection as a child dir and descend into 'sub//' (the
+		// live-found subdir-descent bug, 2026-10-09).
+		if key == dir || key == dir+"/" {
+			continue
 		}
 		if entry.IsDir {
+			if seen[key] {
+				continue // duplicate dir row: already walked
+			}
+			seen[key] = true
 			if err := e.walkDir(ctx, key, entry.ETag, &rep); err != nil {
 				return rep, err
 			}
@@ -418,6 +428,10 @@ func (e *Engine) walk(ctx context.Context, dir string, seen map[string]bool) (Re
 // or empty token, index error) the walk happens - the token is a hint,
 // never a correctness input.
 func (e *Engine) walkDir(ctx context.Context, dirKey, listedToken string, rep *Report) error {
+	// Dir rows carry the trailing slash (rowToKey keeps it); normalize
+	// so the row key is exactly one slash (a caller passing 'sub/'
+	// produced 'sub//' rows - live-found 2026-10-09).
+	dirKey = strings.TrimSuffix(dirKey, "/")
 	rowKey := dirKey + "/" // dir rows carry the trailing slash
 	if e.listingAll() {
 		// FullRescan: every subtree is listed regardless of the token.
