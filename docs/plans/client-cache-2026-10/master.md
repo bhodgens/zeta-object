@@ -176,7 +176,7 @@ tracking table). Scan-only remains the behavior on plain-dir buckets
 | 02 | FUSE filesystem layer | DONE | 84b21fb | race green; lint 0; case 40 mount skip on FUSE-less hosts; live-mount activates with leaf 06 |
 | 03 | Index DB + sync journal | DONE | 84b21fb | race green (WAL concurrency, reconcile, crash-sim); lint 0 |
 | 04 | Sync engine (scan path) | DONE | b221669 (+a757d01 adapter, c7ffe92 empty-bucket) | race green all 5 pkgs; lint 0; 12 sync tests incl. full matrix + empty-bucket |
-| 05 | Event cursor (CONDITIONAL on #15) | READY (code complete, unblocked by #15 — awaiting review/commit) | - | gateway #15 shipped: since-id pass-through on both frontends (e2e 18: 35 asserts); zeta-cache cursor ChangeFeed + transport Events seam (stub tests: redelivery idempotence, loss invalidation, 503 scan-only); race green all pkgs; lint 0 both modules |
+| 05 | Event cursor | DONE | 31c3540 (CursorFeed wired both engine sites) + d6633ff (descent fix) | gateway #15: since-id pass-through both frontends (e2e 18: 35 asserts, byte-parity); CursorFeed 11 unit tests (redelivery idempotence, loss invalidation, 503 scan-only); live-gateway repro: empty-bucket degrade + subdir descent fixed; race green all pkgs; lint 0 both modules |
 | 06 | Transport + auth | DONE | ad9fd73 (+fixes) | race green; lint 0; case 40 23/23; h3 mTLS sync asserted |
 | 07 | Scheduler + quota + eviction | DONE | ad9fd73 (+fixes) | race green; watermark/pin/battery tests; lint 0 |
 | 08 | GUI + IPC | DONE | 27595d0 | swift build+test 11 conformance; Go race green; golden fixtures 16; case 40 23/23 |
