@@ -6,9 +6,10 @@
 // without zmetad).
 //
 // Selection rule as implemented (tagstore.go tagStoreFor):
-//   zfs_native_tags installed AND the bucket's dataset resolves
-//     (deterministic <parent>/<bucket> exists probe)  -> zmetadTagStore
-//   otherwise                                          -> sidecarTagStore
+//
+//	zfs_native_tags installed AND the bucket's dataset resolves
+//	  (deterministic <parent>/<bucket> exists probe)  -> zmetadTagStore
+//	otherwise                                          -> sidecarTagStore
 //
 // The dataset name is NEVER path-resolved (`zfs list <plaindir>` returns
 // the PARENT dataset — the read-the-parent hazard zfsdatasets.go

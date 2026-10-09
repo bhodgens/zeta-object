@@ -31,10 +31,10 @@ const DownloadTimeout = 30 * time.Second
 // Name is the leaf component; CachePath is the cache-relative backing
 // file path ("files/<key>", or "" for dirs - dirs have no bytes).
 type ItemEntry struct {
-	Name string `json:"name"`
-	Key  string `json:"key"`
-	IsDir bool  `json:"isDir"`
-	Size int64  `json:"size"`
+	Name  string `json:"name"`
+	Key   string `json:"key"`
+	IsDir bool   `json:"isDir"`
+	Size  int64  `json:"size"`
 	// Mtime is unix seconds (0 = unknown).
 	Mtime int64 `json:"mtime"`
 	// Materialized reports that the backing cache file exists on disk

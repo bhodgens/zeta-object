@@ -148,8 +148,8 @@ func TestBucketNameFromPath(t *testing.T) {
 		{"/dataDir/bkt", "/dataDir", "bkt", false},
 		{"/dataDir/bkt", "/dataDir/", "bkt", false},
 		{"/other/bkt", "/dataDir", "", true},
-		{"/dataDir", "/dataDir", "", true},      // the dataDir itself is not a bucket
-		{"/dataDir/a/b", "/dataDir", "", true},  // nested: not a bucket root
+		{"/dataDir", "/dataDir", "", true},     // the dataDir itself is not a bucket
+		{"/dataDir/a/b", "/dataDir", "", true}, // nested: not a bucket root
 		{"", "/dataDir", "", true},
 	}
 	for _, tc := range cases {

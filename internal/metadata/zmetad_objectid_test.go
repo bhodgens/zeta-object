@@ -18,7 +18,7 @@ func TestResolveObjectID(t *testing.T) {
 	// "draft.txt" -> "doc.txt" on object 100 (newest row), plus an
 	// unrelated row. The newest row naming doc.txt carries object 100.
 	stmts := []struct {
-		sql string
+		sql  string
 		args []any
 	}{
 		{`INSERT INTO events (id, dataset, txg, timestamp, object_id, event_type, path, full_path)
