@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- zeta-cache daemon LaunchAgent for the FileProvider setup
+     (fileprovider-2026-10 leaf 01). The FileProvider extension (leaf 02)
+     talks ONLY to this daemon's IPC socket + cache dir, so the daemon
+     must be running before Finder ever touches the domain.
+
+     NOT installed automatically. One-time setup:
+       1. put the built binary somewhere stable (e.g. /usr/local/bin/)
+       2. edit BOTH absolute paths below (binary + your zeta-cache.json)
+       3. cp gui/launchagents/com.zeta-object.zeta-cache.plist \
+             ~/Library/LaunchAgents/
+       4. launchctl load ~/Library/LaunchAgents/com.zeta-object.zeta-cache.plist
+     Stop / unload: launchctl unload <same path>.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.zeta-object.zeta-cache</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/zeta-cache-bin</string>
+        <string>-config</string>
+        <string>/Users/CHANGE_ME/Library/Application Support/zeta-cache/zeta-cache.json</string>
+    </array>
+
+    <!-- Start at login, restart if it crashes (throttled). -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/zeta-cache.launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/zeta-cache.launchd.err.log</string>
+
+    <!-- The FUSE mount + IPC socket are per-user; do not run when not
+         logged in. -->
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

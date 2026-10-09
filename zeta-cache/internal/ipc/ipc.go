@@ -28,6 +28,9 @@ type Request struct {
 	// Confirm is the explicit user flag: only a resolve request carrying
 	// confirm=true may DELETE the conflicted-copy file.
 	Confirm bool `json:"confirm,omitempty"`
+	// Leaf-01 (fileprovider-2026-10) addition, same additive rule: Dest
+	// is the move request's destination path.
+	Dest string `json:"to,omitempty"`
 }
 
 // StatusData is the payload of a successful status response.
@@ -311,6 +314,16 @@ func handleConn(conn net.Conn, serverURL, bucket string, status StatusSource, ha
 		if req.Type == "conflicts.list" || req.Type == "conflicts.resolve" ||
 			req.Type == "deleted.list" || req.Type == "deleted.restore" || req.Type == "evict" {
 			writeResponse(conn, handleLeaf08(req, handler))
+			return
+		}
+		// fileprovider-2026-10 leaf-01 types dispatch through the
+		// additive FileProviderSource capability (the leaf-08 pattern:
+		// a handler without it answers the capability error, keeping
+		// the unknown-type rejection and older surfaces unchanged).
+		if req.Type == "enumerate" || req.Type == "item" || req.Type == "download" ||
+			req.Type == "dehydrate" || req.Type == "mark" || req.Type == "delete" ||
+			req.Type == "move" {
+			writeResponse(conn, handleFileProvider(req, handler))
 			return
 		}
 		writeResponse(conn, Response{V: Version, OK: false, Error: "unknown request type"})

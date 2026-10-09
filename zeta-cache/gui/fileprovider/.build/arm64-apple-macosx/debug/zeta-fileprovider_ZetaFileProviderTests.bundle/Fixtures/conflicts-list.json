@@ -1,0 +1,1 @@
+{"v":1,"ok":true,"extra":{"conflicts":[{"path":"doc.txt","kind":"conflict-copy","copyPath":"doc (conflicted copy 2026-10-07).txt"},{"path":"notes/todo.md","kind":"kept-local"}]}}

@@ -1,0 +1,818 @@
+{
+  "builtTestProducts" : [
+    {
+      "binaryPath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta-fileproviderPackageTests.xctest/Contents/MacOS/zeta-fileproviderPackageTests",
+      "packagePath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider",
+      "productName" : "zeta-fileproviderPackageTests"
+    }
+  ],
+  "copyCommands" : {
+    "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta-fileprovider_ZetaFileProviderTests.bundle/Fixtures" : {
+      "inputs" : [
+        {
+          "kind" : "directory",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Tests/ZetaFileProviderTests/Fixtures"
+        }
+      ],
+      "outputs" : [
+        {
+          "kind" : "directory",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta-fileprovider_ZetaFileProviderTests.bundle/Fixtures"
+        }
+      ]
+    }
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.ZetaFileProvider-arm64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/sources",
+      "importPath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/FileProviderEnumerator.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/FileProviderExtension.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/FileProviderItem.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/IPC.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFPShim.build/ZetaFPShim.m.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "ZetaFileProvider",
+      "moduleOutputPath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/Modules/ZetaFileProvider.swiftmodule",
+      "objects" : [
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderEnumerator.swift.o",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderExtension.swift.o",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderItem.swift.o",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/IPC.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx13.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j24",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-Xcc",
+        "-fmodule-map-file=/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFPShim.build/module.modulemap",
+        "-Xcc",
+        "-I",
+        "-Xcc",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFPShim/include",
+        "-module-cache-path",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/include/ZetaFileProvider-Swift.h",
+        "-swift-version",
+        "5",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "fileprovider"
+      ],
+      "outputFileMapPath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderEnumerator.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderExtension.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderItem.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/IPC.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/Modules/ZetaFileProvider.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/FileProviderEnumerator.swift",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/FileProviderExtension.swift",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/FileProviderItem.swift",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/IPC.swift"
+      ],
+      "tempsPath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.ZetaFileProviderTests-arm64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/sources",
+      "importPath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Tests/ZetaFileProviderTests/FileProviderItemMappingTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Tests/ZetaFileProviderTests/ProtocolConformanceTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Tests/ZetaFileProviderTests/StubDaemon.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/DerivedSources/resource_bundle_accessor.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "virtual",
+          "name" : "<ZetaFileProviderTests-arm64-apple-macosx26.0-debug.module-resources>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/Modules/ZetaFileProvider.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "ZetaFileProviderTests",
+      "moduleOutputPath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/Modules/ZetaFileProviderTests.swiftmodule",
+      "objects" : [
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/FileProviderItemMappingTests.swift.o",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/ProtocolConformanceTests.swift.o",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/StubDaemon.swift.o",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/resource_bundle_accessor.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j24",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_AVAILABLE",
+        "-Xcc",
+        "-fmodule-map-file=/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFPShim.build/module.modulemap",
+        "-Xcc",
+        "-I",
+        "-Xcc",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFPShim/include",
+        "-module-cache-path",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-swift-version",
+        "5",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "fileprovider"
+      ],
+      "outputFileMapPath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/FileProviderItemMappingTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/ProtocolConformanceTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/StubDaemon.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/resource_bundle_accessor.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/Modules/ZetaFileProviderTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Tests/ZetaFileProviderTests/FileProviderItemMappingTests.swift",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Tests/ZetaFileProviderTests/ProtocolConformanceTests.swift",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Tests/ZetaFileProviderTests/StubDaemon.swift",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/DerivedSources/resource_bundle_accessor.swift"
+      ],
+      "tempsPath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.zeta-fileproviderPackageTests-arm64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta_fileproviderPackageTests.build/sources",
+      "importPath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta-fileproviderPackageTests.derived/runner.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/Modules/ZetaFileProviderTests.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta_fileproviderPackageTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "zeta_fileproviderPackageTests",
+      "moduleOutputPath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/Modules/zeta_fileproviderPackageTests.swiftmodule",
+      "objects" : [
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta_fileproviderPackageTests.build/runner.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx13.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j24",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-Xcc",
+        "-fmodule-map-file=/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFPShim.build/module.modulemap",
+        "-Xcc",
+        "-I",
+        "-Xcc",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFPShim/include",
+        "-module-cache-path",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta_fileproviderPackageTests.build/include/zeta-fileproviderPackageTests-Swift.h",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "fileprovider"
+      ],
+      "outputFileMapPath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta_fileproviderPackageTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta_fileproviderPackageTests.build/runner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/Modules/zeta_fileproviderPackageTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta-fileproviderPackageTests.derived/runner.swift"
+      ],
+      "tempsPath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta_fileproviderPackageTests.build",
+      "wholeModuleOptimization" : false
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "ZetaFileProvider" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "ZetaFileProvider",
+      "-package-name",
+      "fileprovider",
+      "-c",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/FileProviderEnumerator.swift",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/FileProviderExtension.swift",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/FileProviderItem.swift",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/IPC.swift",
+      "-I",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx13.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j24",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-Xcc",
+      "-fmodule-map-file=/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFPShim.build/module.modulemap",
+      "-Xcc",
+      "-I",
+      "-Xcc",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFPShim/include",
+      "-module-cache-path",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/include/ZetaFileProvider-Swift.h",
+      "-swift-version",
+      "5",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "fileprovider",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "ZetaFileProviderTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "ZetaFileProviderTests",
+      "-package-name",
+      "fileprovider",
+      "-c",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Tests/ZetaFileProviderTests/FileProviderItemMappingTests.swift",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Tests/ZetaFileProviderTests/ProtocolConformanceTests.swift",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Tests/ZetaFileProviderTests/StubDaemon.swift",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/DerivedSources/resource_bundle_accessor.swift",
+      "-I",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j24",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_AVAILABLE",
+      "-Xcc",
+      "-fmodule-map-file=/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFPShim.build/module.modulemap",
+      "-Xcc",
+      "-I",
+      "-Xcc",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFPShim/include",
+      "-module-cache-path",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-swift-version",
+      "5",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "fileprovider",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "zeta_fileproviderPackageTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "zeta_fileproviderPackageTests",
+      "-package-name",
+      "fileprovider",
+      "-c",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta-fileproviderPackageTests.derived/runner.swift",
+      "-I",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx13.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j24",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-Xcc",
+      "-fmodule-map-file=/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFPShim.build/module.modulemap",
+      "-Xcc",
+      "-I",
+      "-Xcc",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFPShim/include",
+      "-module-cache-path",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta_fileproviderPackageTests.build/include/zeta-fileproviderPackageTests-Swift.h",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "fileprovider",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "ZetaFPShim" : [
+
+    ],
+    "ZetaFileProvider" : [
+      "ZetaFPShim"
+    ],
+    "ZetaFileProviderTests" : [
+      "ZetaFileProvider",
+      "ZetaFPShim"
+    ],
+    "zeta_fileproviderPackageTests" : [
+      "ZetaFileProviderTests",
+      "ZetaFileProvider",
+      "ZetaFPShim"
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+    "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta-fileproviderPackageTests.derived/runner.swift" : {
+      "inputs" : [
+
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta-fileproviderPackageTests.derived/runner.swift"
+        }
+      ]
+    }
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/FileProviderEnumerator.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/FileProviderExtension.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/FileProviderItem.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/IPC.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/sources"
+    },
+    "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Tests/ZetaFileProviderTests/FileProviderItemMappingTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Tests/ZetaFileProviderTests/ProtocolConformanceTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Tests/ZetaFileProviderTests/StubDaemon.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/DerivedSources/resource_bundle_accessor.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/sources"
+    },
+    "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+    },
+    "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta-fileproviderPackageTests.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFPShim.build/ZetaFPShim.m.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderEnumerator.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderExtension.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderItem.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/IPC.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/FileProviderItemMappingTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/ProtocolConformanceTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/StubDaemon.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProviderTests.build/resource_bundle_accessor.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta_fileproviderPackageTests.build/runner.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta-fileproviderPackageTests.product/Objects.LinkFileList"
+    },
+    "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta_fileproviderPackageTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta-fileproviderPackageTests.derived/runner.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/zeta_fileproviderPackageTests.build/sources"
+    }
+  }
+}

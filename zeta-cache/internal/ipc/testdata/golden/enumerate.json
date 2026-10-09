@@ -1,0 +1,1 @@
+{"v":1,"ok":true,"extra":{"entries":[{"name":"a.txt","key":"docs/a.txt","isDir":false,"size":5,"mtime":1728211200,"materialized":true,"dirty":false,"cachePath":"files/docs/a.txt"},{"name":"sub","key":"docs/sub/","isDir":true,"size":0,"mtime":0,"materialized":false,"dirty":false,"cachePath":""}]}}

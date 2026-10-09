@@ -121,7 +121,38 @@ with `not supported: ...` capability errors instead of hanging.
 | `deleted.list` | - | List tombstoned paths within the deletion-grace window. | `extra`: same shape as `tombstones`. |
 | `deleted.restore` | `path` | Re-download a deleted path if the server still serves it (tombstone flips back to a clean hydrated row). An unrecoverable path is an HONEST error ("the server no longer serves the path"), never a silent ok. | `extra`: `{"path"}`. |
 | `evict` | `path` | Evict ONE clean file from the cache now (admin-ish). Refusals (surfaced as errors): dirty (unsynced local edits), pinned, tombstoned, not hydrated, unknown path. | `extra`: `{"path"}`. |
+| `enumerate` | `path` (dir; `""` = root; trailing slash optional) | List the DIRECT children of a dir from the index (the sync's cached view; never the network). Tombstoned rows never surface; deeper rows collapse into their immediate subdirectory entry. Unknown dir answers ok with EMPTY entries (never null). Requires the sync engine. | `extra`: `{"entries":[{"name","key","isDir","size","mtime","materialized","dirty","cachePath"}]}`. `key` is the server key (the FileProvider item identity); `mtime` is unix secs (0 = unknown); `cachePath` is the backing file RELATIVE to `cacheDir` (`"files/<key>"`, `""` for dirs). |
+| `item` | `path` | Single-entry metadata (the FileProvider Lookup analog). Unknown/tombstoned path: `no such item: <path>` error. | `extra`: `{"item":{...same shape as one enumerate entry...}}`. |
+| `download` | `path` | BLOCKING hydration through the engine's download path: returns when the cache file is materialized or the 30s request deadline fires. Already-materialized paths answer without a sync. Unknown path: honest error. | `extra`: `{"path","materialized","cachePath"}`. |
+| `dehydrate` | `path` | Evict ONE clean file keyed by path (same refusals as `evict`: dirty/pinned/tombstoned/not-hydrated/unknown). The FileProvider "Remove Download" action lands here. | `extra`: `{"path"}`. |
+| `mark` | `path` | Flag an already-written cache file dirty so prompt-upload pushes it (the extension writes bytes BEFORE mark). Creates/refreshes the row from the DISK truth (size/mtime); dirty rows keep their known-good ETag (If-Match on upload). Missing cache file: error. | `extra`: `{"path","dirty":true}`. |
+| `delete` | `path` | Tombstone the path: cache file removed + tombstone row (the sync's matrix-6 pass issues the remote DELETE). Unknown paths are fine (tombstone either way). | `extra`: `{"path"}`. |
+| `move` | `path`, `to` | Rename: cache-file rename + index row re-point (old key tombstoned; the sync deletes it remotely and uploads the new key). Unknown source: `no such item` error. | `extra`: `{"from","to"}`. |
 | anything else | - | Unknown type. | `{"v":1,"ok":false,"error":"unknown request type"}`. |
+
+The seven `enumerate`/`item`/`download`/`dehydrate`/`mark`/`delete`/`move`
+types dispatch through the ADDITIVE `FileProviderSource` capability seam
+(`internal/ipc/fileprovider.go`, the leaf-08 `ConflictResolver` pattern): a
+daemon whose handler does not implement it answers them with
+`not supported: no file provider handler`, keeping the older surfaces and
+the unknown-type rejection byte-identical.
+
+### The data-via-FILE, metadata-via-IPC contract (FileProvider)
+
+The FileProvider extension (`gui/fileprovider/`, leaf 02 of
+`docs/plans/fileprovider-2026-10/`) is a thin adapter over this daemon:
+
+- METADATA via IPC: enumerate/item/download/dehydrate/mark/delete/move -
+  exactly the table rows above.
+- DATA via the FILE: every entry carries `cachePath` (relative to
+  `cacheDir`), and the extension - same user - opens
+  `<cacheDir>/<cachePath>` directly. No bytes ever cross the socket; the
+  extension holds no credentials and makes no network calls.
+- CREATE: the extension writes the bytes into `<cacheDir>/files/<key>`
+  itself, then IPC `mark` (dirty) - the prompt-upload loop pushes them.
+- Download trigger: Finder opens a `.downloadLazily` item -> IPC
+  `download` (blocking hydrate) -> serve bytes from the cache file.
+- Eviction: Finder "Remove Download" -> IPC `dehydrate`.
 
 ### Golden fixtures (protocol conformance)
 
@@ -131,7 +162,12 @@ files in its test suite (`gui/macos/Tests`), so a fixture change that
 breaks the GUI fails a test instead of shipping:
 
     cd zeta-cache && go test ./internal/ipc -run TestGoldenFixtures -update   # regenerate
-    cd zeta-cache/gui/macos && swift test                                    # Swift side
+    cd zeta-cache/gui/macos && swift test                                    # Swift menu app side
+    cd zeta-cache/gui/fileprovider && swift test                             # Swift FileProvider side (same fixtures, copied into its Tests/Fixtures/)
+
+The gui/fileprovider package COPIES the Codable structs (SPM cannot
+cross-import gui/macos); the duplication rule is documented at the top of
+its IPC.swift: regenerate fixtures, then update BOTH Swift copies.
 
 ## GUI: macOS menu-bar app
 
@@ -163,8 +199,16 @@ signed/notarized distribution is future work.
 
 ## Run the daemon at login (LaunchAgent)
 
-`gui/macos/com.zeta-object.zeta-cache.plist` is a minimal LaunchAgent.
-It is NOT installed automatically. One-time setup:
+Two equivalent plist artifacts exist (same content, different location in
+the tree):
+
+- `gui/macos/com.zeta-object.zeta-cache.plist` - the leaf-08 menu-app setup.
+- `gui/launchagents/com.zeta-object.zeta-cache.plist` - the
+  fileprovider-2026-10 leaf-01 copy for the FileProvider setup (the
+  extension talks ONLY to this daemon's socket + cache dir, so the daemon
+  must run at login before Finder touches the domain).
+
+Neither is installed automatically. One-time setup:
 
     # 1. put the binary somewhere stable
     cp zeta-cache-bin /usr/local/bin/            # or any PATH-free location

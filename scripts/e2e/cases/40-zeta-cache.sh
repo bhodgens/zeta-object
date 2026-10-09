@@ -269,6 +269,134 @@ ZC_RESP=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"frobnicate"}')
 assert_contains 'unknown type answers ok:false' "$ZC_RESP" '"ok":false'
 assert_contains 'unknown type names the error' "$ZC_RESP" 'unknown request type'
 
+# --- 40g: FileProvider IPC surface (fileprovider-2026-10 leaf 01) ------
+# IPC-ONLY asserts over the LIVE daemon: enumerate/item/download/dehydrate
+# (+ mark/delete/move). No FUSE required - these run on CI too.
+#
+# State is built through the SUPPORTED mutation surface (mark = the
+# extension's data-via-FILE contract): bytes are written straight into the
+# daemon's cache dir, then flagged dirty over IPC. This exercises the
+# leaf-01 contract end to end without depending on the sync engine's
+# walk of remote keys (the live remote round-trip is pinned by 40e's FUSE
+# section when FUSE is present).
+ZC_FP_CACHE="$ZC_ROOT/cache/files/fp"
+mkdir -p "$ZC_FP_CACHE/deep"
+printf 'ext alpha body' > "$ZC_FP_CACHE/alpha.txt"
+printf 'ext nested body' > "$ZC_FP_CACHE/deep/nested.txt"
+printf 'ext clean body' > "$ZC_FP_CACHE/clean.txt"
+ZC_MARK_A=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"mark","path":"fp/alpha.txt"}')
+assert_contains 'mark answers ok dirty true (alpha)' "$ZC_MARK_A" '"dirty":true'
+ZC_MARK_N=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"mark","path":"fp/deep/nested.txt"}')
+assert_contains 'mark answers ok dirty true (nested)' "$ZC_MARK_N" '"dirty":true'
+ZC_MARK_C=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"mark","path":"fp/clean.txt"}')
+assert_contains 'mark answers ok dirty true (clean)' "$ZC_MARK_C" '"dirty":true'
+# mark without the cache file on disk: honest error (bytes BEFORE mark).
+ZC_MARK_BAD=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"mark","path":"fp/ghost.txt"}')
+assert_contains 'mark without cache file answers ok:false' "$ZC_MARK_BAD" '"ok":false'
+
+# item: the Lookup analog over a marked row (disk truth: size/materialized).
+ZC_ITEM=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"item","path":"fp/alpha.txt"}')
+assert_contains 'item answers ok' "$ZC_ITEM" '"ok":true'
+assert_contains 'item carries the server key' "$ZC_ITEM" '"key":"fp/alpha.txt"'
+assert_contains 'item carries the cache-relative path' "$ZC_ITEM" '"cachePath":"files/fp/alpha.txt"'
+assert_contains 'item names the leaf' "$ZC_ITEM" '"name":"alpha.txt"'
+assert_contains 'item reports materialized' "$ZC_ITEM" '"materialized":true'
+assert_contains 'item carries the marked bytes size' "$ZC_ITEM" '"size":14'
+# item of an unknown path: ok:false naming the path (the extension maps it
+# to NSFileProviderError.noSuchItem).
+ZC_ITEM_BAD=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"item","path":"fp/absent.txt"}')
+assert_contains 'item unknown path answers ok:false' "$ZC_ITEM_BAD" '"ok":false'
+# missing path field: validation error.
+ZC_ITEM_NOARG=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"item"}')
+assert_contains 'item without path answers ok:false' "$ZC_ITEM_NOARG" '"ok":false'
+
+# enumerate the fp dir: alpha.txt + the deep/ subdirectory entry (the
+# deeper marked row collapses into its immediate subdir).
+ZC_ENUM=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"enumerate","path":"fp"}')
+assert_contains 'enumerate answers ok' "$ZC_ENUM" '"ok":true'
+assert_contains 'enumerate lists the file entry' "$ZC_ENUM" '"name":"alpha.txt"'
+assert_contains 'enumerate collapses deep children into the dir entry' "$ZC_ENUM" '"name":"deep"'
+assert_contains 'enumerate dir entry is isDir' "$ZC_ENUM" '"name":"deep","key":"fp/deep/","isDir":true'
+# enumerate the root: fp/ visible.
+ZC_ENUM_ROOT=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"enumerate"}')
+assert_contains 'root enumerate answers ok' "$ZC_ENUM_ROOT" '"ok":true'
+assert_contains 'root enumerate lists the fp dir' "$ZC_ENUM_ROOT" '"key":"fp/"'
+# enumerate the subdir: the nested file.
+ZC_ENUM_DEEP=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"enumerate","path":"fp/deep"}')
+assert_contains 'subdir enumerate lists the nested file' "$ZC_ENUM_DEEP" '"name":"nested.txt"'
+# enumerate of an unknown dir: ok with EMPTY entries (never null).
+ZC_ENUM_NONE=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"enumerate","path":"zzz-none"}')
+assert_contains 'enumerate unknown dir answers ok with empty entries' "$ZC_ENUM_NONE" '"ok":true,"extra":{"entries":[]}'
+
+# download: an already-materialized path answers without touching the
+# network (the hydration branch over the server copy is pinned by the
+# live mount round-trip in 40e when FUSE is present).
+ZC_DL=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"download","path":"fp/alpha.txt"}')
+assert_contains 'download answers materialized true' "$ZC_DL" '"materialized":true'
+assert_contains 'download names the cache path' "$ZC_DL" '"cachePath":"files/fp/alpha.txt"'
+# download an unknown path: honest error after the (real) sync attempt.
+ZC_DL_BAD=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"download","path":"fp/absent.txt"}')
+assert_contains 'download unknown path answers ok:false' "$ZC_DL_BAD" '"ok":false'
+# missing path field: validation error.
+ZC_DL_NOARG=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"download"}')
+assert_contains 'download without path answers ok:false' "$ZC_DL_NOARG" '"ok":false'
+
+# delete: tombstone + cache file gone.
+ZC_DEL=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"delete","path":"fp/alpha.txt"}')
+assert_contains 'delete answers ok' "$ZC_DEL" '"ok":true'
+if [ -e "$ZC_FP_CACHE/alpha.txt" ]; then
+\t_e2e_record 1 'delete removed the cache file'
+else
+\t_e2e_record 0 'delete removed the cache file'
+fi
+ZC_ITEM_DEL=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"item","path":"fp/alpha.txt"}')
+assert_contains 'deleted item is no longer addressable' "$ZC_ITEM_DEL" '"ok":false'
+
+# move: cache rename + index row re-point.
+ZC_MV=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"move","path":"fp/clean.txt","to":"fp/clean-renamed.txt"}')
+assert_contains 'move answers ok from/to' "$ZC_MV" '"from":"fp/clean.txt","to":"fp/clean-renamed.txt"'
+ZC_ITEM_MV=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"item","path":"fp/clean-renamed.txt"}')
+assert_contains 'moved item is addressable at the new key' "$ZC_ITEM_MV" '"ok":true'
+if [ -e "$ZC_FP_CACHE/clean.txt" ]; then
+\t_e2e_record 1 'move removed the old cache file'
+else
+\t_e2e_record 0 'move removed the old cache file'
+fi
+# move unknown source -> honest error; move without to -> validation error.
+ZC_MV_BAD=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"move","path":"fp/ghost.txt","to":"fp/x.txt"}')
+assert_contains 'move unknown source answers ok:false' "$ZC_MV_BAD" '"ok":false'
+ZC_MV_NOARG=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"move","path":"fp/clean-renamed.txt"}')
+assert_contains 'move without to answers ok:false' "$ZC_MV_NOARG" '"ok":false'
+
+# dehydrate: a DIRTY file is refused (the locked refusal set).
+ZC_DEH_DIRTY=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"dehydrate","path":"fp/clean-renamed.txt"}')
+assert_contains 'dehydrate dirty file answers ok:false' "$ZC_DEH_DIRTY" '"ok":false'
+ZC_DEH_BAD=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"dehydrate","path":"fp/absent.txt"}')
+assert_contains 'dehydrate unknown path answers ok:false' "$ZC_DEH_BAD" '"ok":false'
+ZC_DEH_NOARG=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"dehydrate"}')
+assert_contains 'dehydrate without path answers ok:false' "$ZC_DEH_NOARG" '"ok":false'
+# A CLEAN+hydrated row dehydrates end to end: seed the row exactly the way
+# the sync's upload pipeline leaves it (clean, hydrated) + the disk file.
+python3 - "$ZC_ROOT/cache/index.db" <<'PYEOF'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute("INSERT OR REPLACE INTO resources (path, etag, mtime, size, hydrated, dirty, deleted, lastAccess, pinned) VALUES ('fp/dehydrate-me.txt','0123456789abcdef0123456789abcdef',1728211200,3,1,0,0,0,0)")
+db.commit(); db.close()
+PYEOF
+printf 'abc' > "$ZC_FP_CACHE/dehydrate-me.txt"
+ZC_DEH=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"dehydrate","path":"fp/dehydrate-me.txt"}')
+assert_contains 'dehydrate clean file answers ok' "$ZC_DEH" '"ok":true'
+if [ -e "$ZC_FP_CACHE/dehydrate-me.txt" ]; then
+\t_e2e_record 1 'dehydrate removed the cache file'
+else
+\t_e2e_record 0 'dehydrate removed the cache file'
+fi
+ZC_ITEM_DEH=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"item","path":"fp/dehydrate-me.txt"}')
+assert_contains 'dehydrated item reports materialized false' "$ZC_ITEM_DEH" '"materialized":false'
+# The old-type rejection is preserved ALONGSIDE the new types.
+ZC_RESP=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"frobnicate2"}')
+assert_contains 'unknown type still rejected with the new types live' "$ZC_RESP" '"ok":false'
+
 # Socket mode 0600 (python stat: portable across BSD/GNU stat).
 ZC_MODE=$(python3 -c 'import os,sys; print("%o" % (os.stat(sys.argv[1]).st_mode & 0o777))' "$ZC_ROOT/run/z.ipc" 2>/dev/null)
 assert_eq 'socket file mode is 600' 600 "$ZC_MODE"

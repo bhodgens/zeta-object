@@ -1,0 +1,33 @@
+{
+  "": {
+    "swift-dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/master.swiftdeps"
+  },
+  "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/FileProviderEnumerator.swift": {
+    "dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderEnumerator.d",
+    "object": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderEnumerator.swift.o",
+    "swiftmodule": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderEnumerator~partial.swiftmodule",
+    "swift-dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderEnumerator.swiftdeps",
+    "diagnostics": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderEnumerator.dia"
+  },
+  "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/FileProviderExtension.swift": {
+    "dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderExtension.d",
+    "object": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderExtension.swift.o",
+    "swiftmodule": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderExtension~partial.swiftmodule",
+    "swift-dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderExtension.swiftdeps",
+    "diagnostics": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderExtension.dia"
+  },
+  "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/FileProviderItem.swift": {
+    "dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderItem.d",
+    "object": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderItem.swift.o",
+    "swiftmodule": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderItem~partial.swiftmodule",
+    "swift-dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderItem.swiftdeps",
+    "diagnostics": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/FileProviderItem.dia"
+  },
+  "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFileProvider/IPC.swift": {
+    "dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/IPC.d",
+    "object": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/IPC.swift.o",
+    "swiftmodule": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/IPC~partial.swiftmodule",
+    "swift-dependencies": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/IPC.swiftdeps",
+    "diagnostics": "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/.build/arm64-apple-macosx/debug/ZetaFileProvider.build/IPC.dia"
+  }
+}
