@@ -890,6 +890,30 @@ bash -n scripts/zfs-validate/…    clean; all 5 floors wired and non-zero
 bash -n scripts/e2e/*.sh          all 40 cases parse
 ```
 
+## G7 (MEDIUM, found by `make check`): a coverage floor set from ONE sample
+## sits on the boundary and red-lines on the next unlucky run.
+
+The fix wave ratcheted `COVER_MIN` from 47 to 80 off a single measurement of
+80.4%. `make check` then failed at 79.8%. Re-measuring:
+
+| Tree | Measurement |
+|---|---|
+| `bbbfe20` in a detached worktree (the SAME commit the 80.4 came from) | **79.7%** |
+| HEAD, three consecutive samples | 79.8%, 79.8%, 79.8% |
+
+The 80.4 was sampling noise. The aggregate moves with which packages'
+non-deterministic tests happen to execute their covered branches, so a one-shot
+reading is not a measurement - and a floor derived from one sits exactly on the
+boundary. `COVER_MIN` is now **78**, one point under the mode of three samples,
+with the measurement method written into the Makefile so the next ratchet does
+not repeat the mistake.
+
+The lesson generalizes past coverage: every numeric threshold in this repo
+(`COVER_MIN`, the 14 CI per-package floors, `maxListPages`, the ZFS harness
+`E2E_SWEEP_MIN_AGE`) was set from a single run. The per-package CI floors were
+measured the same way and are off by a similar amount; they have not tripped
+because each sits under its package's floor with more margin than this one did.
+
 ## Disclosure ledger - what this audit did NOT verify
 
 1. **No auditor output exists.** All 7 parallel auditors plus 1 re-dispatch died
