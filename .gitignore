@@ -28,5 +28,7 @@ h3probe
 # every tracked file in the repo. Swift regenerates all of it; none of it is
 # source.
 zeta-cache/gui/macos/.build/
+zeta-cache/gui/fileprovider/.build/
 .swiftpm/
 Package.resolved
+DerivedData/

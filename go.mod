@@ -2,6 +2,13 @@ module github.com/bhodgens/zeta-object
 
 go 1.27.0
 
+// The 9 standard-library advisories govulncheck reports (GO-2026-6603
+// through GO-2026-6617, plus GO-2026-6605/6607/6608/6613) are fixed in
+// go1.27.2; `make vuln` fails on go1.27.0. Pinning the toolchain makes the
+// requirement explicit and lets GOTOOLCHAIN fetch it, so nobody re-introduces
+// the gap by building on an older toolchain.
+toolchain go1.27.2
+
 require (
 	github.com/fclairamb/ftpserverlib v0.32.4
 	github.com/jlaffaye/ftp v0.2.4
@@ -21,7 +28,7 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	modernc.org/libc v1.77.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
