@@ -1,4 +1,0 @@
-module ZetaFPShim {
-    umbrella header "/Users/caimlas/git/mini-s3/zeta-cache/gui/fileprovider/Sources/ZetaFPShim/include/ZetaFPShim.h"
-    export *
-}
