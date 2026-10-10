@@ -914,6 +914,108 @@ The lesson generalizes past coverage: every numeric threshold in this repo
 measured the same way and are off by a similar amount; they have not tripped
 because each sits under its package's floor with more margin than this one did.
 
+## G8 (INFO): the 17 CI per-package coverage floors - re-measured, all hold on
+## the platform CI runs, but the measurement is PLATFORM-SPECIFIC.
+
+Follow-on from G7. Re-measured every per-package floor in
+`.github/workflows/check.yml` with the exact command the CI job runs (race +
+coverprofile; coverage without race for s3), three samples each, then compared
+against the coverage numbers from CI's own log on the green run `37990770019`
+(linux, ubuntu-24.04, go1.27.2):
+
+| Package | Floor | linux CI | darwin (3x stable) | linux headroom |
+|---|---|---|---|---|
+| root | 80 | 82.2 | 83.3 | +2.2 |
+| cmd/admin-server | 0 | 0.0 | 0.0 | +0.0 |
+| internal/adminserver | 87 | 88.4 | 87.1 | +1.4 |
+| internal/auth | 90 | 91.5 | 91.1 | +1.5 |
+| internal/backend | 92 | 93.9 | 93.9 | +1.9 |
+| internal/backend/conformance | 78 | 79.0 | 76.6 | +1.0 |
+| internal/backend/fsbackend | 83 | 84.1 | 81.8 | +1.1 |
+| internal/bucketmanager | 87 | 88.9 | 87.8 | +1.9 |
+| internal/frontend | 92 | 93.3 | 92.2 | +1.3 |
+| internal/frontend/ftp | 66 | 68.1 | 67.1 | +2.1 |
+| internal/frontend/owncloud | 92 | 93.9 | 93.6 | +1.9 |
+| internal/frontend/s3 | 83 | 83.2 | 81.0 | +0.2 |
+| internal/frontend/sftp | 68 | 69.8 | 68.7 | +1.8 |
+| internal/frontend/webdav | 83 | 84.7 | 84.0 | +1.7 |
+| internal/fslock | 99 | 100.0 | 100.0 | +1.0 |
+| internal/metadata | 91 | 92.8 | 92.1 | +1.8 |
+| internal/objectmodel | 91 | 92.8 | 92.6 | +1.8 |
+
+**No floor is red on linux.** The three that look red from a mac (conformance
+76.6 < 78, fsbackend 81.8 < 83, s3 81.0 < 83) are all fine on the platform the
+gate actually runs on - the gap is 1.0 to 2.4 points, and it is a PLATFORM
+DIFFERENCE, not a regression: the three packages whose tests touch
+platform-dependent filesystem paths (xattr ordering, `fsync`/rename edge cases,
+symlink handling) are exactly the three that move. So the floors were correct
+where it counted, and my earlier worry that they carried G7's single-sample risk
+was only partly right: the SAMPLES are noisy but the PLATFORM was the real
+variable.
+
+Two corrections to my earlier report, both from measuring instead of guessing:
+
+1. `internal/frontend/s3` floor 83 has only **+0.2** headroom on linux (83.2
+   measured). It is the tightest floor in the repo and it holds, but any test
+   removal or any code move into that package red-lines it. The comment already
+   says to re-measure when code moves; this is the one to watch.
+2. My G7 note said the per-package floors "have not tripped because each sits
+   under its package's floor with more margin than this one did." That was
+   reasoning from the aggregate and it was wrong for s3: s3's margin is 0.2, the
+   smallest in the repo, not more.
+
+Also recorded: `internal/frontend/ftp` returned a non-zero `go test` exit once in
+the first measurement pass (1 of 3 samples), then passed 28 consecutive
+race-enabled runs afterwards. The failure text was not captured (the measure
+loop discarded it) and it never reproduced, so the cause is UNKNOWN - most
+likely a transient, but "most likely" is not evidence. Worth a pinned
+investigation if it ever recurs; not worth blocking on.
+
+The measurement method for the next person is in
+`scripts/ci/measure-package-floors.sh` (checked in, runs the CI commands and
+prints this table).
+
+## G9 (HIGH): SEVEN packages were in the CI matrix with NO coverage floor, so
+## their coverage jobs enforced nothing.
+
+The matrix is generated from `go list ./...`, so it grows automatically when a
+package is added. The `case` block that assigns `FLOOR` is hand-maintained. A
+package with no matching case gets `FLOOR=""`, which reaches
+`awk -v floor="" ... if ($3+0 < floor)` and compares as **0** - so `autherr`
+at 100% and `h3probe` at 0% were gated identically. CI had been running those
+jobs and enforcing nothing, which is exactly the failure mode the AGENTS.md
+coverage rule exists to prevent.
+
+Found by the new `scripts/ci/measure-package-floors.sh` on its first run, not
+by reading the workflow: the script prints `MISSING` for any package without a
+floor and exits non-zero. Seven hits, with CI's own linux coverage for each:
+
+| Package | CI measured | Floor before | Floor now |
+|---|---|---|---|
+| internal/adminserver/gateway | 80.2 | **none (0)** | 78 |
+| internal/batchops | 88.4 | **none (0)** | 86 |
+| internal/frontend/admin | 85.2 | **none (0)** | 83 |
+| internal/frontend/autherr | 100.0 | **none (0)** | 98 |
+| internal/frontend/h3 | 91.0 | **none (0)** | 89 |
+| scripts/e2e/h3probe | 0.0 | **none (0)** | 0 (stated) |
+| scripts/e2e/fixtures/zmetad-fixture | 0.0 | **none (0)** | 0 (stated) |
+
+Two parts to the fix, because a table alone still lets the next package slip in:
+
+1. Floors added for all seven, from CI's own linux numbers minus 2. The two
+   `scripts/e2e` binaries are main-only programs driven by their e2e cases;
+   `FLOOR=0` is now written down as a decision rather than an accident.
+2. A guard right after the `esac`:
+   ```sh
+   if [ -z "${FLOOR:-}" ]; then
+     echo "ERROR: no coverage floor for ${{ matrix.package }} - add a case to the block above"
+     exit 1
+   fi
+   ```
+   So a future package without a floor fails the job instead of silently
+   under-gating. This is the part that matters: the floors were fine, the
+   ENFORCEMENT of the floors was the bug.
+
 ## Disclosure ledger - what this audit did NOT verify
 
 1. **No auditor output exists.** All 7 parallel auditors plus 1 re-dispatch died

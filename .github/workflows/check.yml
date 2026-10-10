@@ -132,7 +132,30 @@ jobs:
             github.com/bhodgens/zeta-object/internal/objectmodel) FLOOR=91 ;; # measured 92.8 (2026-10-06 ratchet); RAISE as tests land
             github.com/bhodgens/zeta-object/internal/adminserver) FLOOR=87 ;; # measured 88.4 (2026-10-06 ratchet); RAISE as tests land
             github.com/bhodgens/zeta-object/cmd/admin-server)              FLOOR=0  ;; # main-only console binary wiring: not unit-tested
+            # --- floors added 2026-10-10 (audit G8) ---
+            # These 7 packages were in the CI matrix (built from `go list ./...`)
+            # with NO case in the block above. An unset FLOOR reaches the awk
+            # check as the empty string, which compares as 0 - so a package with
+            # 80% coverage and a package with none were gated identically. CI has
+            # been running these jobs and enforcing nothing. Floors are CI's own
+            # linux numbers from the green run 37990770019, minus 2.
+            github.com/bhodgens/zeta-object/internal/adminserver/gateway)   FLOOR=78 ;; # measured 80.2; RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/batchops)              FLOOR=86 ;; # measured 88.4; RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/frontend/admin)        FLOOR=83 ;; # measured 85.2; RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/frontend/autherr)      FLOOR=98 ;; # measured 100.0; RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/frontend/h3)           FLOOR=89 ;; # measured 91.0; RAISE as tests land
+            # main-only probe/fixture programs: exercised by their e2e cases,
+            # not by unit tests. FLOOR=0 is correct for these, stated on purpose.
+            github.com/bhodgens/zeta-object/scripts/e2e/h3probe)            FLOOR=0  ;; # main-only e2e probe binary; run by scripts/e2e, not unit-tested
+            github.com/bhodgens/zeta-object/scripts/e2e/fixtures/zmetad-fixture) FLOOR=0 ;; # main-only e2e fixture binary; run by scripts/e2e, not unit-tested
           esac
+          # A package that reaches the matrix without a floor above is a silent
+          # hole: FLOOR='' compares as 0, so the job passes whatever it measures.
+          # Fail loudly instead of under-gating.
+          if [ -z "${FLOOR:-}" ]; then
+            echo "ERROR: no coverage floor for ${{ matrix.package }} - add a case to the block above"
+            exit 1
+          fi
           if [ "${{ matrix.package }}" = "github.com/bhodgens/zeta-object/internal/frontend/s3" ]; then
             # s3 special case (3 consecutive runner reclaims at ~107s on race+cover, 2026-10-06):
             # run the race gate WITHOUT -coverprofile (race+cover is the slowest combo and the
