@@ -227,7 +227,7 @@ mod-verify:
 	@go mod verify
 
 # Fast gate: what every commit should pass.
-precommit: build vet fmt-check lint test test-cover-enforce parity-test mod-tidy-check e2e-report-test
+precommit: build vet fmt-check lint test test-cover-enforce parity-test mod-tidy-check e2e-report-test ci-floor-test
 	@echo ""
 	@echo "precommit gate passed."
 
@@ -294,6 +294,13 @@ e2e:
 # (bughunt 2026-10-08). Cheap, and it guards the suite's own honesty.
 e2e-report-test:
 	@bash scripts/e2e/test-skip-reporting.sh
+
+# CI floor-guard pins: a package in the coverage matrix with no FLOOR case is
+# gated at 0, which means the job enforces nothing (bughunt 2026-10-10, G9 -
+# seven packages were in that state). Reads .github/workflows/check.yml; never
+# runs a test suite, so it is cheap enough to sit in precommit.
+ci-floor-test:
+	@bash scripts/ci/test-ci-floor-guard.sh
 
 # Clean up after the e2e suite: stale temp files AND orphaned servers from a run
 # that was interrupted before its trap could fire (bughunt 2026-10-08). The

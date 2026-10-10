@@ -1016,6 +1016,34 @@ Two parts to the fix, because a table alone still lets the next package slip in:
    under-gating. This is the part that matters: the floors were fine, the
    ENFORCEMENT of the floors was the bug.
 
+### G9 fix, pinned: `scripts/ci/test-ci-floor-guard.sh` (12 pins, wired into
+### `make precommit` as `ci-floor-test`)
+
+The guard in the workflow fixes today's hole. These pins stop it reopening, and
+stop the next fix being cosmetic. What they hold:
+
+1. every package in `go list ./...` resolves to a non-empty FLOOR (the G9 state,
+   reproduced by running the case block rather than pattern-matching it);
+2. the guard exists, and it `exit 1`s rather than only printing;
+3. it fires and STOPS before the test lines for a package with no case;
+4. `FLOOR=0` counts as a value, so the two main-only binaries do not trip it;
+5. no floor exceeds what CI measured for it (the G7 ratchet direction);
+6. the CI awk line's own arithmetic, run through the real expression: 88.4% with
+   no floor assigned PASSES, 88.4% against floor 86 PASSES, 88.4% against floor
+   90 FAILS, and 0.0% with no floor PASSES.
+
+Pin 6 exists because my first version of it was wrong and I want that on the
+record. It asserted `50+0 < ("" + 0)` should be true - i.e. that an empty floor
+compares as a *large* number. awk coerces `""` to `0`, so `50 < 0` is also
+false: the pin passed for the wrong reason and would have gone red if awk ever
+changed. Replaced with the CI line's actual expression, which fails for the
+right reason.
+
+Wired into `make precommit` because it reads one file and runs no test suite.
+The measurement script (`measure-package-floors.sh`) is deliberately NOT in the
+gate: three samples with `-race` is a multi-minute job, and it is a tool for a
+human or an agent deciding whether to ratchet, not a cheap always-on pin.
+
 ## Disclosure ledger - what this audit did NOT verify
 
 1. **No auditor output exists.** All 7 parallel auditors plus 1 re-dispatch died
