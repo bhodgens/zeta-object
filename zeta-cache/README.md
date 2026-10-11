@@ -229,6 +229,43 @@ The agent runs at login (`RunAtLoad`), restarts the daemon if it exits
 FUSE mount and IPC socket are per-user). The menu-bar app can quit and
 relaunch freely; the daemon outlives it.
 
+## FileProvider extension (macOS Finder namespace)
+
+The extension (`gui/fileprovider/`) is a thin adapter over this daemon:
+metadata and mutations travel the IPC socket, file bytes move through the
+cache dir directly (same user), and the extension holds no credentials.
+Enablement is manual; distribution to other machines is gated on
+signing/notarization (below, future work).
+
+    cd zeta-cache/gui/fileprovider && swift build    # build + swift test (23 tests over the golden fixtures)
+    pluginkit -a .build/arm64-apple-macosx/debug/ZetaFileProvider.appex   # register with FileProvider (manual)
+    # restart Finder (or log out/in), then add the domain in
+    # System Settings > General > Login Items (File Providers), or check Finder's sidebar
+    fileproviderctl status    # the extension's domain appears once Finder enumerates it
+
+The daemon must run at login or Finder sees a dead namespace: install the
+LaunchAgent (`gui/launchagents/com.zeta-object.zeta-cache.plist`, the
+leaf-01 copy; setup steps in the LaunchAgent section above). Conformance:
+`swift test` (23 tests) plus the case-40g IPC asserts in
+`scripts/e2e/cases/40-zeta-cache.sh` (43 asserts).
+
+Distribution gate (REQUIRED for any machine other than the build machine;
+not automated, future work): sign the extension with a Developer ID
+Application identity, `codesign --deep --force --options runtime -s
+<identity> <appex>`, submit with `xcrun notarytool submit <zip> --key
+<path>.p8 --key-id <id> --issuer <iss>` (or `--apple-id`), then staple
+with `xcrun stapler staple <appex>`. Unsigned builds are rejected by
+pluginkit on other machines.
+
+Known limitations:
+
+| Limitation | Detail |
+|---|---|
+| Classic API | The extension subclasses `NSFileProviderExtension` (the pre-modern decorated API), not the app-container Replicated extension; the Replicated path needs an app target (future). |
+| Locks | Server locking supports exclusive locks only; no shared-lock semantics surface to Finder. |
+| Eviction | Eviction is daemon-owned (leaf 07 policy). Finder's "Remove Download" maps to IPC `dehydrate`; the daemon refuses dirty/pinned paths. |
+| Credentials | The extension is credential-free; the daemon holds auth and is the single network-attached process. |
+
 ## Linux tray app
 
 DEFERRED (plan-tree decision): the Linux tray app lands after the
