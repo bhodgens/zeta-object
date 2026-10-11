@@ -667,6 +667,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	c.AuditLog = a.AuditLog
 	c.ZetaFederation = a.ZetaFederation
 	c.ZetaSTS = a.ZetaSTS
+	c.ZetaConsoleOIDC = a.ZetaConsoleOIDC
 	a.Buckets.apply(c)
 	return c.bucketsErr
 }
