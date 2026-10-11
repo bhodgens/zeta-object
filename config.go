@@ -189,6 +189,11 @@ type ServerConfig struct {
 	// (the frontend and its listener are built once at startup); the
 	// signing-key FILE it names reloads through the SIGHUP path.
 	ZetaSTS *STSConfig `json:"zeta_sts,omitempty"`
+	// ZetaConsoleOIDC is the raw console-OIDC block (accessstor appliance
+	// leaf 03 wiring): parsed at admin-frontend assembly time via
+	// admin.ParseConsoleOIDCBlock, keeping the duration-string JSON shape
+	// in one place (the admin package).
+	ZetaConsoleOIDC json.RawMessage `json:"zeta_console_oidc,omitempty"`
 
 	// bucketsErr carries a buckets-map decode failure (null/empty bucket
 	// value) out of the custom UnmarshalJSON path; it is not a JSON key.
@@ -627,6 +632,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 		Auth                          AuthConfig             `json:"auth"`
 		ZetaFederation                *auth.FederationConfig `json:"zeta_federation"`
 		ZetaSTS                       *STSConfig             `json:"zeta_sts"`
+		ZetaConsoleOIDC               json.RawMessage        `json:"zeta_console_oidc"`
 		ZmetadDBPath                  string                 `json:"zmetad_db_path"`
 		ZmetadBinary                  string                 `json:"zmetad_binary"`
 		Region                        string                 `json:"region"`
