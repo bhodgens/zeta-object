@@ -39,30 +39,30 @@ trap 'rm -f "$PROF"' EXIT
 # updated, the table below says "MISSING" and the mismatch is obvious.
 floor_for() {
   case "$1" in
-    github.com/bhodgens/zeta-object)              echo 80 ;;
+    github.com/bhodgens/zeta-object)              echo 81 ;;
     */internal/auth)                                echo 90 ;;
     */internal/backend)                             echo 92 ;;
-    */internal/backend/conformance)                 echo 78 ;;
-    */internal/backend/fsbackend)                   echo 83 ;;
-    */internal/bucketmanager)                       echo 87 ;;
-    */internal/frontend)                            echo 92 ;;
+    */internal/backend/conformance)                 echo 75 ;;
+    */internal/backend/fsbackend)                   echo 80 ;;
+    */internal/bucketmanager)                       echo 86 ;;
+    */internal/frontend)                            echo 91 ;;
     */internal/frontend/ftp)                        echo 66 ;;
-    */internal/frontend/s3)                         echo 83 ;;
-    */internal/frontend/sftp)                       echo 68 ;;
+    */internal/frontend/s3)                         echo 80 ;;
+    */internal/frontend/sftp)                       echo 67 ;;
     */internal/frontend/webdav)                     echo 83 ;;
     */internal/frontend/owncloud)                   echo 92 ;;
     */internal/fslock)                              echo 99 ;;
     */internal/metadata)                            echo 91 ;;
     */internal/objectmodel)                         echo 91 ;;
-    */internal/adminserver)                         echo 87 ;;
-    */cmd/admin-server)                             echo 0  ;;
-    */internal/adminserver/gateway)                  echo 78 ;;
-    */internal/batchops)                             echo 86 ;;
+    */internal/adminserver)                         echo 86 ;;
+    */internal/adminserver/gateway)                  echo 76 ;;
+    */internal/batchops)                             echo 87 ;;
     */internal/frontend/admin)                       echo 83 ;;
-    */internal/frontend/autherr)                     echo 98 ;;
+    */internal/frontend/autherr)                     echo 99 ;;
     */internal/frontend/h3)                          echo 89 ;;
     */scripts/e2e/h3probe)                           echo 0  ;;
     */scripts/e2e/fixtures/zmetad-fixture)           echo 0  ;;
+    */cmd/admin-server)                             echo 0  ;;
     *)                                               echo "MISSING" ;;
   esac
 }

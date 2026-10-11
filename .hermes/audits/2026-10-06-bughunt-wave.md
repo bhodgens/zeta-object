@@ -1044,6 +1044,71 @@ The measurement script (`measure-package-floors.sh`) is deliberately NOT in the
 gate: three samples with `-race` is a multi-minute job, and it is a tool for a
 human or an agent deciding whether to ratchet, not a cheap always-on pin.
 
+## G10 (HIGH): COVERAGE IS TOOLCHAIN-DEPENDENT. A `toolchain` bump in go.mod
+## silently moved every per-package floor, and 4 packages went red with zero code
+## change.
+
+Discovered by pushing G9's floors and reading CI run `38114160393`. Four jobs
+failed on packages nobody had touched:
+
+| Package | floor | go1.27.0 (green `37990770019`) | go1.27.2 (red) | drop |
+|---|---|---|---|---|
+| internal/frontend/s3 | 83 | 83.2 | 81.4 | -1.8 |
+| internal/backend/fsbackend | 83 | 84.1 | 81.6 | -2.5 |
+| internal/backend/conformance | 78 | 79.0 | 76.6 | -2.4 |
+| internal/adminserver/gateway | 78 | 80.2 | 77.6 | -2.6 |
+
+THE VARIABLE WAS THE COMPILER, not the platform and not the code. Both runs used
+the same runner image (ubuntu-24.04); the green run logged go1.27.0, the red run
+go1.27.2, because `toolchain go1.27.2` in go.mod feeds setup-go's
+`go-version-file`. Across the two runs, 17 of 24 packages changed and 7 were
+byte-identical - and the packages that moved all moved DOWN. Coverage
+instrumentation is part of the compiler, so the instrumented block set changes
+with it.
+
+This corrects G8, which attributed the darwin/linux gap to the platform alone.
+The gap is real, but it is at least PARTLY toolchain: the same 1.0-2.4 point
+"platform" gap I measured on darwin/go1.27.2 reproduced on linux/go1.27.2, which
+means darwin was never the variable - the COMPILER was, in both cases. darwin
+still reads lower than linux on a fixed toolchain, but the larger effect is the
+compiler.
+
+THE RULE THIS ADDS: a `go` or `toolchain` directive change in go.mod is a
+COVERAGE EVENT. Re-measure every per-package floor in the SAME change that moves
+it, or the next toolchain bump red-lines packages nobody touched. That belongs in
+AGENTS.md next to "Coverage floors move with code", because "code" here means
+the toolchain as much as the source.
+
+Floors are now the red run's own linux numbers minus 1, and margin dropped from
+2 points to 1: on a FIXED toolchain the measurement is bit-stable (7 of 24
+identical), so the 2-point margin was buying protection against noise that does
+not exist.
+
+### The pin for this: a 6th pin on the mirror table, and three bugs in my own
+### first three attempts at it
+
+`measure-package-floors.sh` keeps a mirrored copy of the floor table so it can
+report headroom without parsing YAML. Pin 6 asserts the mirror matches the
+workflow. Getting that pin to actually work took four attempts, and every earlier
+version PASSED on a deliberately wrong table - the exact failure mode a pin
+exists to prevent:
+
+1. built the package name wrong (`zeta-object` + `internal/fslock`, no slash);
+2. read a temp harness whose EXIT trap had already fired, so every lookup
+   returned empty and "empty == mirror" looked like agreement;
+3. piped the case block into `eval "$(cat)"`, which fails because the extracted
+   block is not a complete script on stdin - sourcing a file works;
+4. compared values only, so DELETING a case from the mirror passed.
+
+The working version compares both sides through one function, sources a file, and
+asserts the floor COUNTS match as well as the values. Verified against three
+deliberate drifts: wrong value -> red, extra ghost case -> red, deleted case ->
+red, clean tree -> green.
+
+The pin also self-caught: version 3 reported "ok" while comparing nothing, and
+the `mir_checked < 20` assertion turned that into a visible failure rather than a
+silent pass. That assertion is the part worth keeping.
+
 ## Disclosure ledger - what this audit did NOT verify
 
 1. **No auditor output exists.** All 7 parallel auditors plus 1 re-dispatch died

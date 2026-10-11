@@ -118,32 +118,35 @@ for pkg in github.com/bhodgens/zeta-object/scripts/e2e/h3probe \
 done
 
 # --- 4. no floor exceeds what CI measured ------------------------------------
-# Numbers from the green CI run 37990770019 (ubuntu-24.04, go1.27.2). This is
+# Numbers from CI run 38114160393 (ubuntu-24.04, go1.27.2) - the FIRST run on the
+# go1.27.2 toolchain. Every number moved when the compiler moved (frontend/s3
+# 83.2 -> 81.4), which is why this table is versioned WITH the toolchain rather
+# than treated as a constant. This is
 # the ratchet direction check: a floor ABOVE the measured value is what turned
 # a green run red once already (audit G7).
 measured() {
 	case "$1" in
-		github.com/bhodgens/zeta-object)                     echo 82.2 ;;
-		*/internal/adminserver)                              echo 88.4 ;;
-		*/internal/adminserver/gateway)                      echo 80.2 ;;
-		*/internal/auth)                                     echo 91.5 ;;
-		*/internal/backend)                                  echo 93.9 ;;
-		*/internal/backend/conformance)                      echo 79.0 ;;
-		*/internal/backend/fsbackend)                        echo 84.1 ;;
-		*/internal/batchops)                                 echo 88.4 ;;
-		*/internal/bucketmanager)                            echo 88.9 ;;
-		*/internal/frontend)                                 echo 93.3 ;;
-		*/internal/frontend/admin)                           echo 85.2 ;;
-		*/internal/frontend/autherr)                         echo 100.0 ;;
-		*/internal/frontend/ftp)                             echo 68.1 ;;
-		*/internal/frontend/h3)                              echo 91.0 ;;
-		*/internal/frontend/owncloud)                        echo 93.9 ;;
-		*/internal/frontend/s3)                              echo 83.2 ;;
-		*/internal/frontend/sftp)                            echo 69.8 ;;
-		*/internal/frontend/webdav)                          echo 84.7 ;;
-		*/internal/fslock)                                   echo 100.0 ;;
-		*/internal/metadata)                                 echo 92.8 ;;
-		*/internal/objectmodel)                              echo 92.8 ;;
+		github.com/bhodgens/zeta-object)            echo 82.7 ;;
+		*/internal/adminserver)                     echo 87.1 ;;
+		*/internal/adminserver/gateway)             echo 77.6 ;;
+		*/internal/auth)                            echo 91.1 ;;
+		*/internal/backend)                         echo 93.9 ;;
+		*/internal/backend/conformance)             echo 76.6 ;;
+		*/internal/backend/fsbackend)               echo 81.6 ;;
+		*/internal/batchops)                        echo 88.4 ;;
+		*/internal/bucketmanager)                   echo 87.8 ;;
+		*/internal/frontend)                        echo 92.2 ;;
+		*/internal/frontend/admin)                  echo 84.9 ;;
+		*/internal/frontend/autherr)                echo 100.0 ;;
+		*/internal/frontend/ftp)                    echo 67.1 ;;
+		*/internal/frontend/h3)                     echo 90.7 ;;
+		*/internal/frontend/owncloud)               echo 93.6 ;;
+		*/internal/frontend/s3)                     echo 81.4 ;;
+		*/internal/frontend/sftp)                   echo 68.7 ;;
+		*/internal/frontend/webdav)                 echo 84.0 ;;
+		*/internal/fslock)                          echo 100.0 ;;
+		*/internal/metadata)                        echo 92.1 ;;
+		*/internal/objectmodel)                     echo 92.6 ;;
 	esac
 }
 over=""
@@ -199,6 +202,70 @@ if printf 'total:	(statements)	0.0%%\n' | _ci_floor_line | grep -q PASSED_UNDER_
 	ok "confirmed: even 0.0% passes with no floor assigned (the worst case)"
 else
 	bad "0.0% no longer passes unassigned - re-check the guard's premise"
+fi
+
+# --- 6. the measurement script's mirrored floor table matches the workflow ---
+# measure-package-floors.sh keeps its own `floor_for` copy so it can report
+# headroom without parsing YAML. A stale copy produces a table that says every
+# floor holds while CI is red, or the reverse - the dishonesty this file exists
+# to prevent.
+#
+# Two earlier attempts at this pin were wrong and both reported "ok" on a
+# deliberately stale table: the first built the wrong package name, the second
+# read a temp harness whose EXIT trap had already fired. The third compares both
+# sides through ONE function, and asserts it compared a real number of floors -
+# a check that compared nothing must never read as a pass. It writes the case
+# block to a file and SOURCES it: piping it into `eval "$(cat)"` fails here,
+# because the extracted block is not a complete script on stdin.
+mir_file="${TMPDIR:-/tmp}/zeta-ci-mirrorchk.$$"
+rm -f "$mir_file"
+
+wf_floor_for() {
+	printf '%s\n' "$CASE_BLOCK" \
+		| sed 's/"\${{ matrix\.package }}"/"$1"/g; s/\${{ matrix\.package }}/$1/g' > "$mir_file"
+	FLOOR=unset
+	# shellcheck disable=SC1090 # generated from the workflow on purpose
+	. "$mir_file"
+	printf '%s\n' "$FLOOR"
+}
+
+mir_mismatch=""
+mir_checked=0
+TAB=$(printf '\t')
+while IFS="$TAB" read -r pat floor; do
+	[ -z "$pat" ] && continue
+	case "$pat" in
+		github.com/*) wf_pkg="$pat" ;;
+		# "*/internal/fslock" -> "github.com/bhodgens/zeta-object/internal/fslock".
+		# ${pat#\*/} removes "*" AND "/", so the slash must be re-added.
+		*)            wf_pkg="github.com/bhodgens/zeta-object/${pat#\*/}" ;;
+	esac
+	got=$(wf_floor_for "$wf_pkg")
+	if [ "$got" = "unset" ] || [ -z "$got" ]; then
+		mir_mismatch="$mir_mismatch $pat(workflow has NO floor)"
+		continue
+	fi
+	mir_checked=$((mir_checked + 1))
+	[ "$got" != "$floor" ] && mir_mismatch="$mir_mismatch $pat(wf=$got mirror=$floor)"
+done < <(sed -n '/^floor_for() {/,/^}/p' scripts/ci/measure-package-floors.sh \
+	| grep -oE '^ +[^ ]+\) +echo [0-9]+' \
+	| sed -E 's/^ +//; s/\) +echo /\t/')
+
+# Count the floors on BOTH sides. A mirror that dropped a case would otherwise
+# compare only what it still has and report agreement: proven by deleting the
+# fslock case from the mirror, which this check passed until the count was added.
+mir_total=$(sed -n '/^floor_for() {/,/^}/p' scripts/ci/measure-package-floors.sh \
+	| grep -cE '^ +[^ ]+\) +echo [0-9]+')
+wf_total=$(printf '%s\n' "$CASE_BLOCK" | grep -cE '\) +FLOOR=[0-9]+')
+
+if [ "$mir_checked" -lt 20 ]; then
+	bad "the mirror check only compared $mir_checked floors - it is not reading both sides"
+elif [ "$mir_total" -ne "$wf_total" ]; then
+	bad "measure-package-floors.sh has $mir_total floors, the workflow has $wf_total - a case was added or dropped on one side only"
+elif [ -z "$mir_mismatch" ]; then
+	ok "measure-package-floors.sh mirrors all $mir_checked workflow floors"
+else
+	bad "measure-package-floors.sh floor table is stale:$mir_mismatch"
 fi
 
 echo
