@@ -121,6 +121,12 @@ type adminFrontend struct {
 	opts       Options
 	caPool     atomic.Pointer[x509.CertPool]
 	principals map[string]bool // empty = admit every CA-verified principal
+
+	// fed is the console-OIDC session state (leaf 03); nil when console
+	// federation is disabled (the pre-leaf behavior, byte-identical).
+	fed *fedSessions
+	// capabilities is the /capabilities live-source surface (leaf 03).
+	capabilities *CapabilityDeps
 }
 
 var (
@@ -151,6 +157,27 @@ func New(opts Options) (frontend.Frontend, error) {
 	f := &adminFrontend{opts: opts, principals: principals}
 	f.caPool.Store(pool)
 	return f, nil
+}
+
+// NewConsoleOIDC attaches console-OIDC federation (leaf 03) to a built
+// admin frontend and wires the /capabilities live-source surface. It must
+// be called AFTER New; both are wiring-time, fail-loud steps. deps may be
+// nil (federation disabled) — capabilities may be nil too.
+func NewConsoleOIDC(f frontend.Frontend, deps *federationDeps, caps *CapabilityDeps) error {
+	af, ok := f.(*adminFrontend)
+	if !ok {
+		return fmt.Errorf("admin: NewConsoleOIDC on %T (want *adminFrontend)", f)
+	}
+	if deps != nil && deps.Cfg.Enabled {
+		fed, err := newAdminFederation(*deps)
+		if err != nil {
+			return err
+		}
+		fed.mtls = af
+		af.fed = fed
+	}
+	af.capabilities = caps
+	return nil
 }
 
 // Name returns the wire identity of this frontend.
