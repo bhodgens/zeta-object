@@ -60,6 +60,11 @@ var configUpdateKeys = map[string]bool{
 	// Federation (accessstor appliance leaf 01): patchable but always
 	// restart-required — the registry is built once at startup.
 	"zeta_federation": true,
+	// STS token-exchange frontend (accessstor appliance leaf 02):
+	// patchable but restart-required — the frontend and its listener are
+	// built once at startup. The signing-key FILE the block names reloads
+	// through the identity-reload path without a restart.
+	"zeta_sts": true,
 }
 
 // hotApplyKeys is the pinned hot-apply set (Contract 3): the top-level keys
@@ -421,6 +426,17 @@ func mergePatchField(candidate, live *ServerConfig, key string, raw json.RawMess
 			}
 		}
 		candidate.ZetaFederation = v
+	case "zeta_sts":
+		v, err := parseSTSConfigBlock(raw)
+		if err != nil {
+			return err
+		}
+		// A nil-returning parse means the block is absent/disabled.
+		stsCfg := v
+		candidate.ZetaSTS = &stsCfg
+		if raw == nil || string(raw) == "null" {
+			candidate.ZetaSTS = nil
+		}
 	case "auditLog":
 		var v *AuditLogConfig
 		if err := json.Unmarshal(raw, &v); err != nil {
@@ -906,6 +922,10 @@ func deepCopyServerConfig(cfg *ServerConfig) ServerConfig {
 		fed := *cfg.ZetaFederation
 		cp.ZetaFederation = &fed
 	}
+	if cfg.ZetaSTS != nil {
+		stsCfg := *cfg.ZetaSTS
+		cp.ZetaSTS = &stsCfg
+	}
 	cp.bucketsErr = nil
 	return cp
 }
@@ -933,6 +953,7 @@ type persistableConfig struct {
 	Identities                    []auth.IdentityConfig    `json:"identities,omitempty"`
 	Auth                          AuthConfig               `json:"auth"`
 	ZetaFederation                *auth.FederationConfig   `json:"zeta_federation,omitempty"`
+	ZetaSTS                       *STSConfig               `json:"zeta_sts,omitempty"`
 	ZmetadDBPath                  string                   `json:"zmetad_db_path"`
 	ZmetadBinary                  string                   `json:"zmetad_binary"`
 	Region                        string                   `json:"region"`
@@ -969,6 +990,7 @@ func marshalConfigDocument(cfg *ServerConfig) ([]byte, error) {
 		Identities:                    cfg.Identities,
 		Auth:                          cfg.Auth,
 		ZetaFederation:                cfg.ZetaFederation,
+		ZetaSTS:                       cfg.ZetaSTS,
 		ZmetadDBPath:                  cfg.ZmetadDBPath,
 		ZmetadBinary:                  cfg.ZmetadBinary,
 		Region:                        cfg.Region,

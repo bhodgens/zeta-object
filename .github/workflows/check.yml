@@ -144,6 +144,7 @@ jobs:
             github.com/bhodgens/zeta-object/internal/frontend/admin)        FLOOR=83 ;; # measured 85.2; RAISE as tests land
             github.com/bhodgens/zeta-object/internal/frontend/autherr)      FLOOR=98 ;; # measured 100.0; RAISE as tests land
             github.com/bhodgens/zeta-object/internal/frontend/h3)           FLOOR=89 ;; # measured 91.0; RAISE as tests land
+            github.com/bhodgens/zeta-object/internal/frontend/sts)          FLOOR=60 ;; # measured 62.6 (2026-10-11, leaf 02 sts; mTLS listener paths are e2e-covered, resolver covered via s3); RAISE as tests land
             # main-only probe/fixture programs: exercised by their e2e cases,
             # not by unit tests. FLOOR=0 is correct for these, stated on purpose.
             github.com/bhodgens/zeta-object/scripts/e2e/h3probe)            FLOOR=0  ;; # main-only e2e probe binary; run by scripts/e2e, not unit-tested

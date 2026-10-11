@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 )
@@ -182,17 +183,93 @@ type ServerConfig struct {
 	// implemented in this leaf — the registry is built once, at startup.
 	ZetaFederation *auth.FederationConfig `json:"zeta_federation,omitempty"`
 
+	// ZetaSTS configures the /sts token-exchange frontend (accessstor
+	// appliance tree leaf 02). nil/absent = sts disabled (the pre-leaf
+	// behavior, byte-identical). RESTART-REQUIRED at the config store
+	// (the frontend and its listener are built once at startup); the
+	// signing-key FILE it names reloads through the SIGHUP path.
+	ZetaSTS *STSConfig `json:"zeta_sts,omitempty"`
+
 	// bucketsErr carries a buckets-map decode failure (null/empty bucket
 	// value) out of the custom UnmarshalJSON path; it is not a JSON key.
 	bucketsErr error
 }
 
 // AuditLogConfig is the config.json "auditLog" block (auth extensions leaf
-// 10): the append-only SigV4 request audit trail. Path empty/absent =
-// disabled (default off). The writer-ONLY contract (AGENTS.md charter): no
+// 10): the append-only SigV4 request audit trail. Path empty/absent = disabled
+// (default off). The writer-ONLY contract (AGENTS.md charter): no
 // code path ever reads the file.
 type AuditLogConfig struct {
 	Path string `json:"path"`
+}
+
+// STSConfig is the zeta_sts config block (accessstor appliance tree leaf
+// 02). Zero value / nil pointer = sts disabled.
+//
+// TTL fields are STRINGS in JSON ("3600s", Go duration syntax) because a
+// bare time.Duration would decode nanoseconds-as-int — the same trap the
+// zeta_console_oidc.session_ttl block avoids by parsing the string form.
+type STSConfig struct {
+	Enabled bool
+	// TTL / MaxTTL are the mint default (3600s) and the requested_ttl cap
+	// (43200s). Zero = leaf defaults applied by the sts frontend.
+	TTL    time.Duration `json:"-"`
+	MaxTTL time.Duration `json:"-"`
+	// TTLRaw / MaxTTLRaw are the JSON wire forms ("" = default).
+	TTLRaw    string `json:"ttl,omitempty"`
+	MaxTTLRaw string `json:"max_ttl,omitempty"`
+	// SigningKeyFile is the PATH to the HMAC server signing key (PEM or
+	// raw bytes). A path reference, NEVER an inline secret; the file is
+	// provisioned by the appliance and read at startup plus on every
+	// identity reload (SIGHUP / POST /auth/reload), so a key rotation
+	// invalidates outstanding temporary credentials fail-closed.
+	SigningKeyFile string `json:"signing_key_file,omitempty"`
+}
+
+// UnmarshalJSON decodes the wire form and resolves the duration strings.
+// Unknown keys are an error (fail-loud; the posture used across the
+// config surface) — a typo like "signing_key_fiel" must never silently
+// disable the signing key.
+func (c *STSConfig) UnmarshalJSON(data []byte) error {
+	type raw struct {
+		Enabled        bool   `json:"enabled"`
+		TTL            string `json:"ttl,omitempty"`
+		MaxTTL         string `json:"max_ttl,omitempty"`
+		SigningKeyFile string `json:"signing_key_file,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var r raw
+	if err := dec.Decode(&r); err != nil {
+		return err
+	}
+	*c = STSConfig{Enabled: r.Enabled, SigningKeyFile: r.SigningKeyFile, TTLRaw: r.TTL, MaxTTLRaw: r.MaxTTL}
+	dur := func(name, raw string, into *time.Duration) error {
+		if raw == "" {
+			return nil
+		}
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return fmt.Errorf("invalid zeta_sts.%s %q: %w", name, raw, err)
+		}
+		*into = d
+		return nil
+	}
+	if err := dur("ttl", r.TTL, &c.TTL); err != nil {
+		return err
+	}
+	return dur("max_ttl", r.MaxTTL, &c.MaxTTL)
+}
+
+// MarshalJSON renders the wire form (durations as their raw strings).
+func (c STSConfig) MarshalJSON() ([]byte, error) {
+	type raw struct {
+		Enabled        bool   `json:"enabled"`
+		TTL            string `json:"ttl,omitempty"`
+		MaxTTL         string `json:"max_ttl,omitempty"`
+		SigningKeyFile string `json:"signing_key_file,omitempty"`
+	}
+	return json.Marshal(raw{Enabled: c.Enabled, TTL: c.TTLRaw, MaxTTL: c.MaxTTLRaw, SigningKeyFile: c.SigningKeyFile})
 }
 
 // AuthConfig is the config.json "auth" block (pluggable-authentication tree
@@ -549,6 +626,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 		Identities                    []auth.IdentityConfig  `json:"identities"`
 		Auth                          AuthConfig             `json:"auth"`
 		ZetaFederation                *auth.FederationConfig `json:"zeta_federation"`
+		ZetaSTS                       *STSConfig             `json:"zeta_sts"`
 		ZmetadDBPath                  string                 `json:"zmetad_db_path"`
 		ZmetadBinary                  string                 `json:"zmetad_binary"`
 		Region                        string                 `json:"region"`
@@ -582,6 +660,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	c.ZfsNativeTags = a.ZfsNativeTags
 	c.AuditLog = a.AuditLog
 	c.ZetaFederation = a.ZetaFederation
+	c.ZetaSTS = a.ZetaSTS
 	a.Buckets.apply(c)
 	return c.bucketsErr
 }
@@ -605,10 +684,17 @@ func buildIdentityRegistry() (*auth.MultiRegistry, error) {
 	// the discovery document). Absent block = federation disabled, zero
 	// impact. Validation happens BEFORE the registry build so a broken
 	// federation config never half-installs identities.
+	//
+	// The constructed registry is ALSO published to the process mirror
+	// (sts_wiring.go) the sts resolver reads through: identity reloads
+	// replace the mirror, so ZSTSID- grant re-resolution always sees the
+	// live registry.
 	if cfg.ZetaFederation != nil {
-		if _, err := auth.NewFederationRegistry(*cfg.ZetaFederation); err != nil {
+		fed, err := auth.NewFederationRegistry(*cfg.ZetaFederation)
+		if err != nil {
 			return nil, fmt.Errorf("invalid zeta_federation: %w", err)
 		}
+		installFederationRegistry(fed)
 	}
 	identities := make([]auth.IdentityConfig, 0, 1+len(cfg.Identities))
 	identities = append(identities, auth.EnvPair(serverCredentials.AccessKeyID, serverCredentials.SecretAccessKey))
@@ -660,6 +746,14 @@ func reloadIdentityRegistry() error {
 	if err != nil {
 		log.Printf("WARNING: auth identity reload failed, keeping previous registry: %v", err)
 		return err
+	}
+	// The signing key rides the same reload sequence (leaf 02): a
+	// rotated zeta_sts.signing_key_file invalidates outstanding
+	// ZSTSID- credentials without a restart. A key-read failure is
+	// reported but does NOT fail the identity reload (each rotation
+	// surface is independent; the old key keeps serving).
+	if err := reloadSTSSigningKey(); err != nil {
+		log.Printf("WARNING: sts signing key reload failed, keeping previous key: %v", err)
 	}
 	identityRegistry.Swap(reg)
 	names := reg.Names()

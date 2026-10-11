@@ -167,6 +167,14 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 		}
 		return f, nil
 	},
+	// sts is the token-exchange frontend (accessstor appliance leaf 02):
+	// a dedicated TLS listener serving POST /sts. It REQUIRES the
+	// zeta_sts block enabled and its signing key loaded (initSTS ran at
+	// startup); the live federation registry and the signing-key slot
+	// are process seams sts_wiring.go owns. "sts" is a separate frontend
+	// NAME — an explicit frontends array lists it as its own entry and
+	// "s3" stays listed.
+	"sts": stsFrontendFactory,
 	// h3 is the HTTP/3 (QUIC) frontend (quic-h3-2026-10 leaf 02): it wraps
 	// a webdav frontend built with the SAME constructor options as the
 	// webdav entry above (single-bucket re-root, per-bucket lock store
