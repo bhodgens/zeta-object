@@ -173,6 +173,15 @@ type ServerConfig struct {
 	// exception, decided 2026-10-02). nil/absent = disabled (default off).
 	AuditLog *AuditLogConfig `json:"auditLog,omitempty"`
 
+	// ZetaFederation configures the federated-identity registry
+	// (accessstor appliance tree leaf 01). nil/absent = federation
+	// disabled (the pre-leaf behavior, byte-identical). The block is
+	// validated fail-loud at startup (buildIdentityRegistry constructs
+	// the FederationRegistry, which fetches the discovery document) and
+	// RESTART-REQUIRED at the config store: hot-apply is deliberately not
+	// implemented in this leaf — the registry is built once, at startup.
+	ZetaFederation *auth.FederationConfig `json:"zeta_federation,omitempty"`
+
 	// bucketsErr carries a buckets-map decode failure (null/empty bucket
 	// value) out of the custom UnmarshalJSON path; it is not a JSON key.
 	bucketsErr error
@@ -529,24 +538,25 @@ func loadConfig(configPath string) error {
 // A null buckets value fails with the bucket's name in the message.
 func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	type alias struct {
-		DataDir                       string                `json:"dataDir"`
-		ListenAddr                    string                `json:"listenAddr"`
-		CertFile                      string                `json:"certFile"`
-		KeyFile                       string                `json:"keyFile"`
-		Frontends                     []FrontendConfig      `json:"frontends"`
-		Backends                      map[string]BackendCfg `json:"backends"`
-		Buckets                       bucketsRaw            `json:"buckets"`
-		AuditLog                      *AuditLogConfig       `json:"auditLog"`
-		Identities                    []auth.IdentityConfig `json:"identities"`
-		Auth                          AuthConfig            `json:"auth"`
-		ZmetadDBPath                  string                `json:"zmetad_db_path"`
-		ZmetadBinary                  string                `json:"zmetad_binary"`
-		Region                        string                `json:"region"`
-		ZfsVersioning                 string                `json:"zfs_versioning"`
-		ZfsVersioningReflinkRetention int                   `json:"zfs_versioning_reflink_retention"`
-		ZfsBucketDatasets             bool                  `json:"zfs_bucket_datasets"`
-		ZfsBinary                     string                `json:"zfs_binary"`
-		ZfsNativeTags                 bool                  `json:"zfs_native_tags"`
+		DataDir                       string                 `json:"dataDir"`
+		ListenAddr                    string                 `json:"listenAddr"`
+		CertFile                      string                 `json:"certFile"`
+		KeyFile                       string                 `json:"keyFile"`
+		Frontends                     []FrontendConfig       `json:"frontends"`
+		Backends                      map[string]BackendCfg  `json:"backends"`
+		Buckets                       bucketsRaw             `json:"buckets"`
+		AuditLog                      *AuditLogConfig        `json:"auditLog"`
+		Identities                    []auth.IdentityConfig  `json:"identities"`
+		Auth                          AuthConfig             `json:"auth"`
+		ZetaFederation                *auth.FederationConfig `json:"zeta_federation"`
+		ZmetadDBPath                  string                 `json:"zmetad_db_path"`
+		ZmetadBinary                  string                 `json:"zmetad_binary"`
+		Region                        string                 `json:"region"`
+		ZfsVersioning                 string                 `json:"zfs_versioning"`
+		ZfsVersioningReflinkRetention int                    `json:"zfs_versioning_reflink_retention"`
+		ZfsBucketDatasets             bool                   `json:"zfs_bucket_datasets"`
+		ZfsBinary                     string                 `json:"zfs_binary"`
+		ZfsNativeTags                 bool                   `json:"zfs_native_tags"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
@@ -571,6 +581,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	c.ZfsBinary = a.ZfsBinary
 	c.ZfsNativeTags = a.ZfsNativeTags
 	c.AuditLog = a.AuditLog
+	c.ZetaFederation = a.ZetaFederation
 	a.Buckets.apply(c)
 	return c.bucketsErr
 }
@@ -588,6 +599,16 @@ func buildIdentityRegistry() (*auth.MultiRegistry, error) {
 	case "", authModeNone:
 	default:
 		return nil, fmt.Errorf("invalid auth.mode %q (want \"\" or %q)", cfg.Auth.Mode, authModeNone)
+	}
+	// Federation block (accessstor appliance leaf 01): validate fail-loud
+	// at startup by constructing the registry (which fetches and checks
+	// the discovery document). Absent block = federation disabled, zero
+	// impact. Validation happens BEFORE the registry build so a broken
+	// federation config never half-installs identities.
+	if cfg.ZetaFederation != nil {
+		if _, err := auth.NewFederationRegistry(*cfg.ZetaFederation); err != nil {
+			return nil, fmt.Errorf("invalid zeta_federation: %w", err)
+		}
 	}
 	identities := make([]auth.IdentityConfig, 0, 1+len(cfg.Identities))
 	identities = append(identities, auth.EnvPair(serverCredentials.AccessKeyID, serverCredentials.SecretAccessKey))
