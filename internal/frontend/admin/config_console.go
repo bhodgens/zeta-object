@@ -81,3 +81,10 @@ func resolveClientSecret(path string) (string, error) {
 	}
 	return secret, nil
 }
+
+// ParseConsoleOIDCBlock is the exported config-surface wrapper (accessstor
+// appliance wiring): package main keeps zeta_console_oidc as raw JSON on
+// ServerConfig and parses it at wiring time via this helper.
+func ParseConsoleOIDCBlock(raw json.RawMessage) (ConsoleOIDCConfig, error) {
+	return parseConsoleOIDCBlock(raw)
+}

@@ -165,6 +165,13 @@ var frontendFactories = map[string]func(cfg FrontendConfig, b backend.Backend, c
 		if ca, ok := f.(admin.ClientCAReloader); ok {
 			registerClientCAReloader(f.Name(), ca.ReloadClientCA)
 		}
+		// Console-OIDC federation (accessstor appliance leaf 03): attach
+		// /auth/* + /capabilities when zeta_console_oidc is enabled. The
+		// live federation registry comes from the same atomic mirror the
+		// sts resolver reads (installed at startup from zeta_federation).
+		if err := wireConsoleOIDC(f); err != nil {
+			return nil, err
+		}
 		return f, nil
 	},
 	// sts is the token-exchange frontend (accessstor appliance leaf 02):
@@ -545,4 +552,34 @@ func applyListenAddrOverride(cfg *ServerConfig) {
 		return
 	}
 	cfg.ListenAddr = value
+}
+
+// wireConsoleOIDC attaches the console-OIDC flow (leaf 03) to an admin
+// frontend when zeta_console_oidc is enabled in the server config. A
+// disabled or absent block leaves the frontend byte-identical to the
+// pre-leaf behavior (mTLS only). Failure to wire an ENABLED block is a
+// startup error (fail-loud), per the leaf's construction contract.
+func wireConsoleOIDC(f frontend.Frontend) error {
+	raw := serverConfig().ZetaConsoleOIDC
+	if len(raw) == 0 {
+		return nil
+	}
+	cfg, err := admin.ParseConsoleOIDCBlock(raw)
+	if err != nil {
+		return err
+	}
+	if !cfg.Enabled {
+		return nil
+	}
+	reg := federationRegistryFor()
+	if reg == nil {
+		return fmt.Errorf("admin: zeta_console_oidc enabled but no zeta_federation registry is configured")
+	}
+	wiring := admin.ConsoleOIDCWiring{
+		Enabled:          true,
+		SessionTTL:       cfg.SessionTTL,
+		ClientSecretFile: cfg.ClientSecretFile,
+		ClientID:         cfg.ClientID,
+	}
+	return admin.AttachConsoleOIDC(context.Background(), f, http.DefaultClient, reg, wiring)
 }
