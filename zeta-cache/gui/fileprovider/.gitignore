@@ -1,0 +1,4 @@
+
+# xcodegen output (regenerate with: xcodegen generate)
+*.xcodeproj
+.build/

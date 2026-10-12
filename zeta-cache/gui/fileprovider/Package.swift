@@ -9,6 +9,12 @@ import PackageDescription
 let package = Package(
     name: "zeta-fileprovider",
     platforms: [.macOS(.v13)],
+    products: [
+        // Consumed by the Xcode app container (project.yml): the appex
+        // target links the Replicated extension sources via these.
+        .library(name: "ZetaFileProvider", targets: ["ZetaFileProvider"]),
+        .library(name: "ZetaFileProviderReplicated", targets: ["ZetaFileProviderReplicated"]),
+    ],
     targets: [
         // Availability shim: NSFileProviderExtension is marked
         // API_UNAVAILABLE(macos) in the macOS 26 SDK; the shim target

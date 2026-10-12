@@ -1,0 +1,83 @@
+# project.yml - xcodegen spec for the Replicated FileProvider app
+# container (issue #14 remainder). Generates ZetaFileProvider.xcodeproj
+# with an app target + a Replicated appex embedding it. The appex needs
+# Xcode's actool to emit the ExtensionKit metadata that SwiftPM cannot
+# produce (see replicated-bringup-findings.md).
+name: ZetaFileProvider
+options:
+  bundleIdPrefix: com.zeta-object
+  deploymentTarget:
+    macOS: "13.0"
+settings:
+  base:
+    ENABLE_DEBUG_DYLIB: NO
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: YES
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    SWIFT_VERSION: "5.9"
+
+targets:
+  ZetaFileProviderApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: AppHost
+    dependencies:
+      - target: ZetaFileProviderAppex
+    info:
+      path: AppHost/Info.plist
+      properties:
+        CFBundleDisplayName: ZetaFileProvider
+        LSUIElement: true
+        LSMinimumSystemVersion: "13.0"
+    entitlements:
+      path: AppHost/ZetaFileProviderApp.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.application-groups:
+          - group.com.zeta-object.zeta-cache
+    scheme:
+      testTargets: []
+
+  ZetaFileProviderAppex:
+    type: app-extension   # the Replicated FileProvider extension point
+    platform: macOS
+    sources:
+      - path: Appex
+    dependencies:
+      - package: zeta-fileprovider
+        products:
+          - ZetaFileProvider
+          - ZetaFileProviderReplicated
+    info:
+      path: Appex/Info.plist
+      properties:
+        CFBundleDisplayName: ZetaFileProvider
+        LSMinimumSystemVersion: "13.0"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.fileprovider-nonui
+          NSExtensionPrincipalClass: "FPReplicatedExtension"
+          NSExtensionFileProviderDocumentGroup: group.com.zeta-object.zeta-cache
+    entitlements:
+      path: Appex/ZetaFileProviderAppex.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.application-groups:
+          - group.com.zeta-object.zeta-cache
+
+packages:
+  zeta-fileprovider:
+    path: .
+# NOTE: `path: .` makes the SPM package at the repo root the dependency
+# source; the ZetaFileProvider product is the existing library target
+# (FileProviderMount + items + IPC).
+
+schemes:
+  ZetaFileProviderApp:
+    build:
+      targets:
+        ZetaFileProviderApp: all
+    run:
+      config: Debug
