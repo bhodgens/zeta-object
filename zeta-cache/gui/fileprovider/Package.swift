@@ -32,6 +32,15 @@ let package = Package(
             dependencies: ["ZetaFileProvider"],
             path: "Sources/ZetaFileProviderReplicated"
         ),
+        // The .appex executable: the system launches this binary and
+        // instantiates the principal class named in the appex Info.plist
+        // (NSExtensionPrincipalClass). main.swift just keeps the process
+        // alive after the class registers.
+        .executableTarget(
+            name: "ZetaFileProviderAppex",
+            dependencies: ["ZetaFileProviderReplicated"],
+            path: "Sources/ZetaFileProviderAppex"
+        ),
         .testTarget(
             name: "ZetaFileProviderTests",
             dependencies: ["ZetaFileProvider", "ZetaFileProviderReplicated"],

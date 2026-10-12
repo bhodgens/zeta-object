@@ -15,36 +15,37 @@ import FileProvider
 import Foundation
 import ZetaFileProvider
 
-final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtension {
+@objc(FPReplicatedExtension)
+public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtension {
     let domain: NSFileProviderDomain
     let mount: FileProviderMount
 
-    required init(domain: NSFileProviderDomain) {
+    public required init(domain: NSFileProviderDomain) {
         self.domain = domain
         self.mount = .standard()
         super.init()
     }
 
-    init(domain: NSFileProviderDomain, mount: FileProviderMount) {
+    public init(domain: NSFileProviderDomain, mount: FileProviderMount) {
         // Test seam: inject a stub-backed mount.
         self.domain = domain
         self.mount = mount
         super.init()
     }
 
-    func invalidate() {
+    public func invalidate() {
         // No persistent state: IPC connections are per-request.
     }
 
     // MARK: - Enumeration (NSFileProviderEnumerating)
 
-    func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier, request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
+    public func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier, request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
         FileProviderEnumerator(containerItemIdentifier: containerItemIdentifier, mount: mount)
     }
 
     // MARK: - Items
 
-    func item(for identifier: NSFileProviderItemIdentifier, request: NSFileProviderRequest, completionHandler: @escaping (NSFileProviderItem?, (any Error)?) -> Void) -> Progress {
+    public func item(for identifier: NSFileProviderItemIdentifier, request: NSFileProviderRequest, completionHandler: @escaping (NSFileProviderItem?, (any Error)?) -> Void) -> Progress {
         let progress = Progress(totalUnitCount: 100)
         Task {
             do {
@@ -61,7 +62,7 @@ final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtension {
 
     // MARK: - Fetch (materialization)
 
-    func fetchContents(for itemIdentifier: NSFileProviderItemIdentifier, version requestedVersion: NSFileProviderItemVersion?, request: NSFileProviderRequest, completionHandler: @escaping (URL?, NSFileProviderItem?, (any Error)?) -> Void) -> Progress {
+    public func fetchContents(for itemIdentifier: NSFileProviderItemIdentifier, version requestedVersion: NSFileProviderItemVersion?, request: NSFileProviderRequest, completionHandler: @escaping (URL?, NSFileProviderItem?, (any Error)?) -> Void) -> Progress {
         let progress = Progress(totalUnitCount: 100)
         Task {
             do {
@@ -82,7 +83,7 @@ final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtension {
 
     // MARK: - Mutations
 
-    func createItem(basedOn template: NSFileProviderItem, fields: NSFileProviderItemFields, contents url: URL?, options: NSFileProviderCreateItemOptions, request: NSFileProviderRequest, completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, (any Error)?) -> Void) -> Progress {
+    public func createItem(basedOn template: NSFileProviderItem, fields: NSFileProviderItemFields, contents url: URL?, options: NSFileProviderCreateItemOptions, request: NSFileProviderRequest, completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, (any Error)?) -> Void) -> Progress {
         let progress = Progress(totalUnitCount: 100)
         Task {
             do {
@@ -109,7 +110,7 @@ final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtension {
         return progress
     }
 
-    func modifyItem(_ item: NSFileProviderItem, baseVersion: NSFileProviderItemVersion, changedFields: NSFileProviderItemFields, contents newContents: URL?, options: NSFileProviderModifyItemOptions, request: NSFileProviderRequest, completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, (any Error)?) -> Void) -> Progress {
+    public func modifyItem(_ item: NSFileProviderItem, baseVersion: NSFileProviderItemVersion, changedFields: NSFileProviderItemFields, contents newContents: URL?, options: NSFileProviderModifyItemOptions, request: NSFileProviderRequest, completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, (any Error)?) -> Void) -> Progress {
         let progress = Progress(totalUnitCount: 100)
         Task {
             do {
@@ -137,7 +138,7 @@ final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtension {
         return progress
     }
 
-    func deleteItem(identifier: NSFileProviderItemIdentifier, baseVersion: NSFileProviderItemVersion, options: NSFileProviderDeleteItemOptions, request: NSFileProviderRequest, completionHandler: @escaping ((any Error)?) -> Void) -> Progress {
+    public func deleteItem(identifier: NSFileProviderItemIdentifier, baseVersion: NSFileProviderItemVersion, options: NSFileProviderDeleteItemOptions, request: NSFileProviderRequest, completionHandler: @escaping ((any Error)?) -> Void) -> Progress {
         let progress = Progress(totalUnitCount: 100)
         Task {
             do {
