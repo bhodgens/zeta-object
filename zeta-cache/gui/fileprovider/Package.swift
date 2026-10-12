@@ -24,9 +24,17 @@ let package = Package(
             dependencies: ["ZetaFPShim"],
             path: "Sources/ZetaFileProvider"
         ),
+        // The MODERN Replicated extension (issue #14 remainder):
+        // NSFileProviderReplicatedExtension, macOS 11+. No shim needed -
+        // the protocol is available on macOS.
+        .target(
+            name: "ZetaFileProviderReplicated",
+            dependencies: ["ZetaFileProvider"],
+            path: "Sources/ZetaFileProviderReplicated"
+        ),
         .testTarget(
             name: "ZetaFileProviderTests",
-            dependencies: ["ZetaFileProvider"],
+            dependencies: ["ZetaFileProvider", "ZetaFileProviderReplicated"],
             path: "Tests/ZetaFileProviderTests",
             resources: [.copy("Fixtures")]
         ),

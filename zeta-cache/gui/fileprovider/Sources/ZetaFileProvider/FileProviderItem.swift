@@ -21,11 +21,15 @@ public final class FileProviderItem: NSObject, NSFileProviderItem {
     /// The parent item identifier: "." (root) or a dir key's hash.
     let parentIdentifier: NSFileProviderItemIdentifier
 
-    init(entry: FileProviderItemEntry, parentKey: String) {
+    public init(entry: FileProviderItemEntry, parentKey: String) {
         self.entry = entry
         self.parentIdentifier = FileProviderItem.identifier(forDirKey: parentKey)
         super.init()
     }
+
+    /// The server key backing this item (public for the Replicated
+    /// extension target, which maps protocol callbacks back to keys).
+    public var publicKey: String { entry.key }
 
     // MARK: identity
 

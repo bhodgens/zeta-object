@@ -46,7 +46,7 @@ public struct FileProviderMount {
 
     // MARK: IPC wrappers (each one request per connection)
 
-    func enumerate(dirKey: String) throws -> [FileProviderItemEntry] {
+    public func enumerate(dirKey: String) throws -> [FileProviderItemEntry] {
         let resp = try IPCClient.ask(socketPath, .enumerate(dirKey))
         guard resp.ok else { throw FileProviderErrorMapper.error(fromIPC: resp.error ?? "enumerate failed") }
         guard case .enumerate(let data) = resp.extra else {
@@ -55,7 +55,7 @@ public struct FileProviderMount {
         return data.entries
     }
 
-    func item(_ path: String) throws -> FileProviderItemEntry {
+    public func item(_ path: String) throws -> FileProviderItemEntry {
         let resp = try IPCClient.ask(socketPath, .item(path))
         guard resp.ok else { throw FileProviderErrorMapper.error(fromIPC: resp.error ?? "item failed") }
         guard case .item(let data) = resp.extra else {
@@ -67,7 +67,7 @@ public struct FileProviderMount {
     /// Blocking hydration: the daemon answers only when the cache file is
     /// materialized (or on its ctx timeout - surfaced as ok:false).
     @discardableResult
-    func download(_ path: String) throws -> DownloadAck {
+    public func download(_ path: String) throws -> DownloadAck {
         let resp = try IPCClient.ask(socketPath, .download(path))
         guard resp.ok else { throw FileProviderErrorMapper.error(fromIPC: resp.error ?? "download failed") }
         guard case .download(let ack) = resp.extra else {
@@ -76,13 +76,13 @@ public struct FileProviderMount {
         return ack
     }
 
-    func dehydrate(_ path: String) throws {
+    public func dehydrate(_ path: String) throws {
         let resp = try IPCClient.ask(socketPath, .dehydrate(path))
         guard resp.ok else { throw FileProviderErrorMapper.error(fromIPC: resp.error ?? "dehydrate failed") }
     }
 
     @discardableResult
-    func mark(_ path: String) throws -> MarkAck {
+    public func mark(_ path: String) throws -> MarkAck {
         let resp = try IPCClient.ask(socketPath, .mark(path))
         guard resp.ok else { throw FileProviderErrorMapper.error(fromIPC: resp.error ?? "mark failed") }
         guard case .mark(let ack) = resp.extra else {
@@ -92,7 +92,7 @@ public struct FileProviderMount {
     }
 
     @discardableResult
-    func delete(_ path: String) throws -> DeleteAck {
+    public func delete(_ path: String) throws -> DeleteAck {
         let resp = try IPCClient.ask(socketPath, .delete(path))
         guard resp.ok else { throw FileProviderErrorMapper.error(fromIPC: resp.error ?? "delete failed") }
         guard case .delete(let ack) = resp.extra else {
@@ -102,7 +102,7 @@ public struct FileProviderMount {
     }
 
     @discardableResult
-    func move(_ path: String, to dest: String) throws -> MoveAck {
+    public func move(_ path: String, to dest: String) throws -> MoveAck {
         let resp = try IPCClient.ask(socketPath, .move(path, to: dest))
         guard resp.ok else { throw FileProviderErrorMapper.error(fromIPC: resp.error ?? "move failed") }
         guard case .move(let ack) = resp.extra else {
@@ -114,8 +114,14 @@ public struct FileProviderMount {
     // MARK: cache-file access (the data plane)
 
     /// The absolute URL of an entry's backing file.
-    func cacheURL(of entry: FileProviderItemEntry) -> URL {
+    public func cacheURL(of entry: FileProviderItemEntry) -> URL {
         cacheDir.appendingPathComponent(entry.cachePath)
+    }
+
+    /// The cache URL for a server key (the Replicated extension copies
+    /// downloaded/uploaded bytes through this path before mark).
+    public func cacheURL(ofKey key: String) -> URL {
+        cacheDir.appendingPathComponent(key)
     }
 }
 

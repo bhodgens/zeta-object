@@ -92,7 +92,7 @@ enum ExtraPayload: Decodable {
         case entries, item, materialized, dirty, from, to
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         if let p = try c.decodeIfPresent([String].self, forKey: .pins) {
             self = .pins(p)
@@ -171,7 +171,7 @@ struct StatusData: Decodable {
 struct LastSyncValue: Decodable {
     let unixSeconds: Int64?
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
         if c.decodeNil() {
             unixSeconds = nil
@@ -183,30 +183,30 @@ struct LastSyncValue: Decodable {
 
 /// One tombstone row (tombstones / deleted.list).
 struct Tombstone: Decodable {
-    let path: String
+    public let path: String
     let deletedAt: Int64
     let expiresAt: Int64
 }
 
 /// One conflict record (conflicts.list).
 struct ConflictItem: Decodable {
-    let path: String
+    public let path: String
     let kind: String // "conflict-copy" | "kept-local"
     let copyPath: String?
 }
 
 struct ResolveAck: Decodable {
-    let path: String
+    public let path: String
     let mode: String
     let copyRemoved: Bool
 }
 
 struct RestoreAck: Decodable {
-    let path: String
+    public let path: String
 }
 
 struct EvictAck: Decodable {
-    let path: String
+    public let path: String
 }
 
 // MARK: fileprovider-2026-10 leaf-01 payload types
@@ -216,15 +216,15 @@ struct EvictAck: Decodable {
 /// daemon's cacheDir (slash-separated, "files/<key>"): the extension
 /// opens the bytes directly at <cacheDir>/<cachePath> - data via the
 /// FILE, metadata via IPC.
-struct FileProviderItemEntry: Decodable {
-    let name: String
-    let key: String
-    let isDir: Bool
-    let size: Int64
-    let mtime: Int64
-    let materialized: Bool
-    let dirty: Bool
-    let cachePath: String
+public struct FileProviderItemEntry: Decodable {
+    public let name: String
+    public let key: String
+    public let isDir: Bool
+    public let size: Int64
+    public let mtime: Int64
+    public let materialized: Bool
+    public let dirty: Bool
+    public let cachePath: String
 }
 
 struct EnumerateData: Decodable {
@@ -236,16 +236,16 @@ struct ItemData: Decodable {
 }
 
 /// The download (blocking hydrate) ack: {"path","materialized","cachePath"}.
-struct DownloadAck: Decodable {
-    let path: String
-    let materialized: Bool
-    let cachePath: String
+public struct DownloadAck: Decodable {
+    public let path: String
+    public let materialized: Bool
+    public let cachePath: String
 
     private enum CodingKeys: String, CodingKey {
         case path, materialized, cachePath
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         path = try c.decode(String.self, forKey: .path)
         materialized = try c.decode(Bool.self, forKey: .materialized)
@@ -253,18 +253,18 @@ struct DownloadAck: Decodable {
     }
 }
 
-struct MarkAck: Decodable {
-    let path: String
-    let dirty: Bool
+public struct MarkAck: Decodable {
+    public let path: String
+    public let dirty: Bool
 }
 
-struct DeleteAck: Decodable {
-    let path: String
+public struct DeleteAck: Decodable {
+    public let path: String
 }
 
-struct MoveAck: Decodable {
-    let from: String
-    let to: String
+public struct MoveAck: Decodable {
+    public let from: String
+    public let to: String
 }
 
 // MARK: - Client
