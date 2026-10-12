@@ -250,7 +250,9 @@ leaf-01 copy; setup steps in the LaunchAgent section above). Conformance:
 `scripts/e2e/cases/40-zeta-cache.sh` (43 asserts).
 
 Distribution gate (REQUIRED for any machine other than the build machine;
-not automated, future work): sign the extension with a Developer ID
+not automated, future work): a self-signed identity (e.g. `SymbiosisDev`)
+suffices for local dev - the build machine trusts its own certs.
+Distribution to OTHER machines: sign the extension with a Developer ID
 Application identity, `codesign --deep --force --options runtime -s
 <identity> <appex>`, submit with `xcrun notarytool submit <zip> --key
 <path>.p8 --key-id <id> --issuer <iss>` (or `--apple-id`), then staple
