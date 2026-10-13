@@ -109,12 +109,14 @@ func TestXattrNotFoundClassification(t *testing.T) {
 		t.Error("EPERM misclassified as attribute-absent")
 	}
 
-	// The wrapper's Error/Unwrap surface the underlying errno.
-	wrapped := &xattrNotFoundError{err: unix.ENOATTR}
-	if wrapped.Error() != unix.ENOATTR.Error() {
+	// The wrapper's Error/Unwrap surface the underlying errno. ENODATA is
+	// the Linux spelling; darwin's ENOATTR aliases to the same number, so
+	// one constant keeps the test cross-platform.
+	wrapped := &xattrNotFoundError{err: unix.ENODATA}
+	if wrapped.Error() != unix.ENODATA.Error() {
 		t.Errorf("Error() = %q, want the underlying errno text", wrapped.Error())
 	}
-	if !errors.Is(wrapped, unix.ENOATTR) {
+	if !errors.Is(wrapped, unix.ENODATA) {
 		t.Error("Unwrap does not expose the underlying errno")
 	}
 }
