@@ -76,6 +76,8 @@ The honest, per-operation capability matrix for every protocol — what is imple
 
 **Gateway architecture** - `backends` config selects storage per bucket (filesystem today; the seam carries a 17-subtest conformance suite every backend must pass); `frontends` config selects client protocols with optional dedicated TLS listeners; unknown backend/frontend types fail startup loudly, never silently.
 
+**Native clients (`zeta-cache`)** - a companion client module (`zeta-cache/`, its own Go module + Swift GUIs) that turns a laptop into a cached view of a bucket: a FUSE mount backed by a local cache dir and a client-owned SQLite index, an event-cursor ChangeFeed (`since-id`) for incremental sync, mTLS transport with an Alt-Svc-driven HTTP/3 upgrade, and a macOS menu-bar GUI with IPC control (pause/resume/pin/evict/conflicts). Two FileProvider extensions (classic + modern Replicated) give the Finder-native path on macOS. See [zeta-cache/README.md](zeta-cache/README.md).
+
 ## Quickstart
 
 ```bash
@@ -97,7 +99,7 @@ Quality gates and tests:
 ```bash
 make test         # unit tests with coverage summary
 make check        # full local gate: build, vet, fmt, lint, tests, race, vuln, secrets
-make e2e          # end-to-end suite: 881 asserts over 39 cases (incl. boto3 + mc + rclone interop)
+make e2e          # end-to-end suite: ~930 asserts over 41 cases (incl. boto3 + mc + rclone interop)
 ```
 
 ## Credentials Configuration
@@ -811,6 +813,14 @@ setattr) over S3-style subresources:
 - `GET /<bucket>?events` - bucket-level recent history
 - `GET /<bucket>?events&versions` - a versions-style XML listing derived from the log: newest-first, per-key `IsLatest`, delete markers for removes, `IsLossy`/`RecordsLost`/`RingSwaps` loss indicators
 
+Every `?events` surface accepts `since-id=N`: events with row id strictly
+after `N` (absent or `N=0` returns the full stream, byte-identical to the
+pre-cursor shape; invalid values are a `400 InvalidArgument`), and every
+entry carries its monotonic row id as the additive `id` field. Served
+identically on both frontends; `max-events` caps after the cursor filter.
+This is the resume cursor the zeta-cache client's ChangeFeed consumes -
+poll with the last seen `id` and never re-read a delivered event.
+
 ### Prerequisite: the `extended-metadata` branch of the OpenZFS fork
 
 The per-file event log is **not in stock OpenZFS**. It comes from one
@@ -1010,7 +1020,7 @@ Inspect configured actions with `./scripts/show-bucket-actions.sh data/`.
 
 zeta-object is baselined against the industry-standard [ceph/s3-tests](https://github.com/ceph/s3-tests) suite. `make conformance` builds the server, launches it on a free HTTPS port, runs the in-scope pytest subset (277 tests - buckets, objects, listing, multipart, copy, conditional, range, presigned), and exits non-zero only when a previously-passing test regresses against the committed ratchet `scripts/conformance/baseline.txt`. The full matrix with per-failure triage: [docs/conformance/2026-09-28-matrix.md](docs/conformance/2026-09-28-matrix.md).
 
-The e2e suite (`make e2e`, 881 asserts over 39 cases) additionally covers every user-facing surface - including custom buckets, backend/frontend configuration, the metadata endpoints, object tagging, multi-range GET, WebDAV locking, versioning, ZFS bucket datasets, all four protocol frontends, and live boto3/mc/rclone interop - per the repo rule in [AGENTS.md](AGENTS.md). The full per-operation protocol matrix: [docs/protocol-compatibility.md](docs/protocol-compatibility.md).
+The e2e suite (`make e2e`, ~930 asserts over 41 cases) additionally covers every user-facing surface - including custom buckets, backend/frontend configuration, the metadata endpoints, object tagging, multi-range GET, WebDAV locking, versioning, ZFS bucket datasets, all four protocol frontends, and live boto3/mc/rclone interop - per the repo rule in [AGENTS.md](AGENTS.md). The full per-operation protocol matrix: [docs/protocol-compatibility.md](docs/protocol-compatibility.md).
 
 ## Architecture
 

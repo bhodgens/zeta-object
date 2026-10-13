@@ -10,8 +10,11 @@ Implementation status: leaf 08 (GUI + IPC). The daemon mounts (FUSE),
 syncs both ways (ETag-diff scan + conflict copies), runs the three
 scheduler loops (prompt upload / periodic sync / quota eviction), serves
 the full v1 IPC protocol, and ships with the macOS menu-bar app
-(`gui/macos/`, below). The event-cursor optimization (leaf 05) is
-parked pending zeta-object#15; v1 ships scan-only.
+(`gui/macos/`, below). Incremental sync uses the event cursor
+(leaf 05, shipped): a ChangeFeed consumes the gateway's `?events`
+`since-id` cursor + monotonic event `id` fields (gateway issue #15,
+closed), and degrades to the ETag-diff scan on non-ZFS buckets or
+gaps in the cursor stream.
 
 
 ## Build
@@ -237,16 +240,43 @@ cache dir directly (same user), and the extension holds no credentials.
 Enablement is manual; distribution to other machines is gated on
 signing/notarization (below, future work).
 
-    cd zeta-cache/gui/fileprovider && swift build    # build + swift test (23 tests over the golden fixtures)
-    pluginkit -a .build/arm64-apple-macosx/debug/ZetaFileProvider.appex   # register with FileProvider (manual)
-    # restart Finder (or log out/in), then add the domain in
-    # System Settings > General > Login Items (File Providers), or check Finder's sidebar
-    fileproviderctl status    # the extension's domain appears once Finder enumerates it
+Two extension implementations share the adapter:
+
+- **Classic** (`Sources/ZetaFileProvider`): subclasses
+  `NSFileProviderExtension`. Builds with SwiftPM alone.
+
+      cd zeta-cache/gui/fileprovider && swift build    # build + swift test (31 tests over the golden fixtures)
+      pluginkit -a .build/arm64-apple-macosx/debug/ZetaFileProvider.appex   # register with FileProvider (manual)
+      # restart Finder (or log out/in), then add the domain in
+      # System Settings > General > Login Items (File Providers), or check Finder's sidebar
+      fileproviderctl status    # the extension's domain appears once Finder enumerates it
+
+- **Replicated** (`Sources/ZetaFileProviderReplicated`): implements the
+  modern `NSFileProviderReplicatedExtension` (macOS 11+), the API path
+  iCloud Drive itself uses. Same IPC contract. Shipped as an app
+  container: `project.yml` generates `ZetaFileProvider.xcodeproj`
+  (`xcodegen generate`) with an app host that registers the domain and
+  the embedded `.appex`. The appex entry (`Appex/main.swift`) calls
+  `NSExtensionMain` via `@_silgen_name` - without it the process boots
+  with no XPC endpoint and fileproviderd's bringup fails.
+
+      xcodegen generate
+      xcodebuild -project ZetaFileProvider.xcodeproj -scheme ZetaFileProviderApp \
+        -configuration Debug -derivedDataPath .build/xcode build \
+        CODE_SIGN_IDENTITY="-" CODE_SIGN_STYLE=Manual CODE_SIGNING_ALLOWED=NO \
+        ENABLE_DEBUG_DYLIB=NO
+      # sign appex + app (entitlements in Appex/ + AppHost/), lsregister, run the host
+
+Live-device status: fileproviderd accepts the provider and extensionKit
+launches the appex; the domain start currently dies at the documentStorage
+directory step (EPERM inside fileproviderd) - assessed as the real
+provisioning gate. Full findings + reproduce steps:
+`docs/plans/fileprovider-2026-10/replicated-bringup-findings.md`.
 
 The daemon must run at login or Finder sees a dead namespace: install the
 LaunchAgent (`gui/launchagents/com.zeta-object.zeta-cache.plist`, the
 leaf-01 copy; setup steps in the LaunchAgent section above). Conformance:
-`swift test` (23 tests) plus the case-40g IPC asserts in
+`swift test` (31 tests) plus the case-40g IPC asserts in
 `scripts/e2e/cases/40-zeta-cache.sh` (43 asserts).
 
 Distribution gate (REQUIRED for any machine other than the build machine;
@@ -263,7 +293,7 @@ Known limitations:
 
 | Limitation | Detail |
 |---|---|
-| Classic API | The extension subclasses `NSFileProviderExtension` (the pre-modern decorated API), not the app-container Replicated extension; the Replicated path needs an app target (future). |
+| Replicated bring-up | The Replicated appex launches but domain start dies at the documentStorage step (EPERM in fileproviderd) - gated on genuine provisioning (Developer Program). Classic API is the working local path. |
 | Locks | Server locking supports exclusive locks only; no shared-lock semantics surface to Finder. |
 | Eviction | Eviction is daemon-owned (leaf 07 policy). Finder's "Remove Download" maps to IPC `dehydrate`; the daemon refuses dirty/pinned paths. |
 | Credentials | The extension is credential-free; the daemon holds auth and is the single network-attached process. |
