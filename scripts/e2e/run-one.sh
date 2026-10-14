@@ -108,23 +108,21 @@ E2E_SK=${ZETAOBJECT_SECRET_KEY:-zetaadmin}
 
 rm -f "$WORK/.case-tally"
 CASE_RC=0
-bash -c "
-	set -u
-	unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_REGION
-	export AWS_ACCESS_KEY_ID='$E2E_AK' AWS_SECRET_ACCESS_KEY='$E2E_SK'
-	export AWS_DEFAULT_REGION=us-east-1 AWS_EC2_METADATA_DISABLED=true
-	export E2E_DATA_DIR='$WORK/data' E2E_SENTINEL_DIR='$WORK/sentinels' \
-	       E2E_SERVER_LOG='$WORK/server.log' E2E_SERVER_PID='$SERVER_PID' \
-	       E2E_ENDPOINT='$ENDPOINT' \
-	       E2E_ADMIN_CONSOLE_AVAILABLE='${E2E_ADMIN_CONSOLE_AVAILABLE:-}' \
-	       E2E_ADMIN_CONSOLE_BIN='${E2E_ADMIN_CONSOLE_BIN:-$REPO_ROOT/zeta-object-admin}' \
-	       E2E_SERVER_CERT='$WORK/cert.pem'
-	source '$E2E_ROOT/lib.sh'
-	ENDPOINT='$ENDPOINT'
-	BASE_URL='$BASE_URL'
-	source '$CASE_FILE'
-	echo "\$E2E_PASS \$E2E_FAIL \${E2E_SKIP:-0}" > '$WORK/.case-tally'
-" || CASE_RC=$?
+CASE_SCRIPT="$WORK/.case-body.sh"
+{
+	echo '#!/usr/bin/env bash'
+	echo 'set -u'
+	echo 'unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_REGION'
+	echo "export AWS_ACCESS_KEY_ID='$E2E_AK' AWS_SECRET_ACCESS_KEY='$E2E_SK'"
+	echo 'export AWS_DEFAULT_REGION=us-east-1 AWS_EC2_METADATA_DISABLED=true'
+	echo "export E2E_DATA_DIR='$WORK/data' E2E_SENTINEL_DIR='$WORK/sentinels' E2E_SERVER_LOG='$WORK/server.log' E2E_SERVER_PID='$SERVER_PID' E2E_ENDPOINT='$ENDPOINT' E2E_ADMIN_CONSOLE_AVAILABLE='${E2E_ADMIN_CONSOLE_AVAILABLE:-}' E2E_ADMIN_CONSOLE_BIN='${E2E_ADMIN_CONSOLE_BIN:-$REPO_ROOT/zeta-object-admin}' E2E_SERVER_CERT='$WORK/cert.pem'"
+	echo "source '$E2E_ROOT/lib.sh'"
+	echo "ENDPOINT='$ENDPOINT'"
+	echo "BASE_URL='$BASE_URL'"
+	echo "source '$CASE_FILE'"
+	echo 'printf "%s %s %s\\n" "$E2E_PASS" "$E2E_FAIL" "${E2E_SKIP:-0}" > '$WORK/.case-tally''
+} > "$CASE_SCRIPT"
+bash "$CASE_SCRIPT" || CASE_RC=$?
 
 # Fold the tally back. A missing tally file means the case exited before its
 # first assert (a server-did-not-start bail, say): that is a FAILURE, never a
