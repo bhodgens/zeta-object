@@ -1555,6 +1555,156 @@ func buildCopyMetadata(srcMeta *ObjectMetadata, r *http.Request, data []byte, eT
 	return meta
 }
 
+// captureForCopy is copyObjectHandler's versioning capture gate (W2-H2):
+// read the destination bucket's versioning state, and on Enabled capture the
+// current object. A state read or capture failure writes the wire error and
+// returns ok=false (fail-closed, PutObject parity); errNoPriorVersion is a
+// clean nil capture (create).
+func captureForCopy(w http.ResponseWriter, dstBucketPath, bucketName, objectName string) (*capturedObjectVersion, bool) {
+	state, stateErr := versionStoreForBucket(dstBucketPath).State(bucketName)
+	if stateErr != nil {
+		log.Printf("Error reading versioning state for %s: %v", strconv.Quote(bucketName), stateErr)
+		writeS3Error(w, "InternalError", "Error reading bucket versioning state.", http.StatusInternalServerError)
+		return nil, false
+	}
+	if state != versioningEnabled {
+		return nil, true
+	}
+	captured, capErr := captureCurrentObjectVersion(dstBucketPath, objectName)
+	if capErr != nil && !errors.Is(capErr, errNoPriorVersion) {
+		log.Printf("Error capturing prior version for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), capErr)
+		writeS3Error(w, "InternalError", "Error capturing object version.", http.StatusInternalServerError)
+		return nil, false
+	}
+	return captured, true
+}
+
+// recordForCopy is copyObjectHandler's record half: write the captured
+// pre-copy bytes as one version after the successful write. A nil capture
+// (create / unversioned) is a no-op. A record failure writes the wire error
+// and returns false.
+func recordForCopy(w http.ResponseWriter, dstBucketPath, bucketName, objectName string, captured *capturedObjectVersion) bool {
+	if captured == nil {
+		return true
+	}
+	if recErr := recordCapturedObjectVersion(dstBucketPath, bucketName, objectName, captured); recErr != nil {
+		log.Printf("Error recording prior version for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), recErr)
+		writeS3Error(w, "InternalError", "Error recording object version.", http.StatusInternalServerError)
+		return false
+	}
+	return true
+}
+
+// copiedSource is everything copyObjectHandler needs from the source side:
+// validated coordinates, the effective metadata directive, and the (capped)
+// source bytes with their metadata.
+type copiedSource struct {
+	bucket    string
+	key       string
+	directive string
+	data      []byte
+	obj       objectmodel.Object
+}
+
+// readCopySource performs copyObjectHandler's source half: header
+// validation, source bucket/key checks, the source-read grant (bughunt S1),
+// the self-copy rejection, and the backend Get capped at batchCopyMaxBytes
+// (bughunt W2-M8 - same cap + error as the batch twin). Any failure writes
+// the wire error and returns ok=false.
+func readCopySource(w http.ResponseWriter, r *http.Request, bucketName, objectName string) (copiedSource, bool) {
+	var out copiedSource
+	copySource := r.Header.Get("x-amz-copy-source")
+	decoded, err := url.PathUnescape(copySource)
+	if err != nil {
+		log.Printf("Invalid x-amz-copy-source header %s: %v", strconv.Quote(copySource), err)
+		writeS3Error(w, "InvalidArgument", "Invalid x-amz-copy-source header.", http.StatusBadRequest)
+		return out, false
+	}
+	srcBucket, srcKey, hasVersionID := parseCopySource(decoded)
+	if hasVersionID {
+		log.Printf("CopyObject with versionId not supported (source %s)", strconv.Quote(decoded))
+		writeS3Error(w, "NotImplemented", "Copy from a specific version is not implemented.", http.StatusNotImplemented)
+		return out, false
+	}
+	if srcBucket == "" || srcKey == "" {
+		log.Printf("Invalid x-amz-copy-source header %s: expected bucket/key", strconv.Quote(decoded))
+		writeS3Error(w, "InvalidArgument", "x-amz-copy-source must be of the form bucket/key.", http.StatusBadRequest)
+		return out, false
+	}
+	// Bughunt S1: the source bucket must pass the same validation as any
+	// URL-path bucket (traversal/naming) before it is used for grants or
+	// the backend Get.
+	if !validBucket(srcBucket) {
+		log.Printf("Invalid source bucket %s for CopyObject", strconv.Quote(srcBucket))
+		writeS3Error(w, "InvalidArgument", "Invalid bucket name.", http.StatusBadRequest)
+		return out, false
+	}
+	if err := validateObjectKey(srcKey); err != nil {
+		log.Printf("Invalid source key %s for CopyObject: %v", strconv.Quote(srcKey), err)
+		writeS3Error(w, "InvalidArgument", err.Error(), http.StatusBadRequest)
+		return out, false
+	}
+	// Bughunt S1: enforce the SOURCE bucket grant before the source Get.
+	// authorizeS3Request only checked the URL-path (destination) bucket;
+	// without this check an identity with write on one bucket and no grant
+	// on another could read the other bucket's bytes via a copy. Leaf 09:
+	// the decision is AuthorizeOp (read on the source bucket/key).
+	if srcID := identityOf(r); !auth.AuthorizeOp(srcID, auth.OpRead, srcBucket, srcKey, time.Now().UTC()) {
+		log.Printf("Authorization Denied: identity %s, CopyObject source bucket %s", strconv.Quote(srcID.AccessKeyID), strconv.Quote(srcBucket))
+		writeS3Error(w, "AccessDenied", "Access Denied", http.StatusForbidden)
+		return out, false
+	}
+	// S3 rejects a copy where source and destination are the same object.
+	if srcBucket == bucketName && srcKey == objectName {
+		log.Printf("CopyObject source and destination are identical: %s/%s", strconv.Quote(bucketName), strconv.Quote(objectName))
+		writeS3Error(w, "InvalidRequest", "This copy request is illegal because it is trying to copy an object to itself.", http.StatusBadRequest)
+		return out, false
+	}
+	// Metadata directive: COPY (default) preserves the source metadata;
+	// REPLACE uses the request headers.
+	directive := r.Header.Get("x-amz-metadata-directive")
+	if directive == "" {
+		directive = "COPY"
+	}
+	switch directive {
+	case "COPY", "REPLACE":
+	default:
+		log.Printf("Invalid x-amz-metadata-directive %s for CopyObject", strconv.Quote(directive))
+		writeS3Error(w, "InvalidArgument", "Unknown metadata directive.", http.StatusBadRequest)
+		return out, false
+	}
+	if !bucketExists(srcBucket) {
+		log.Printf("Source bucket %s does not exist for CopyObject", strconv.Quote(srcBucket))
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
+		return out, false
+	}
+	srcRC, srcObj, srcErr := backendCallBucket2(srcBucket, func(b backend.Backend) (io.ReadCloser, objectmodel.Object, error) {
+		return b.Get(r.Context(), srcBucket, srcKey, objectmodel.GetOptions{})
+	})
+	if srcErr != nil {
+		code, message, status := s3ErrorFrom(srcErr)
+		log.Printf("CopyObject source read %s/%s failed: %v", strconv.Quote(srcBucket), strconv.Quote(srcKey), srcErr)
+		writeS3Error(w, code, message, status)
+		return out, false
+	}
+	// BUGHUNT W2-M8: cap the source read exactly like the batch twin (same
+	// LimitReader+1/oversize shape, same error text).
+	data, readErr := io.ReadAll(io.LimitReader(srcRC, batchCopyMaxBytes+1))
+	srcRC.Close()
+	if readErr != nil {
+		log.Printf("Error reading source object data %s/%s: %v", strconv.Quote(srcBucket), strconv.Quote(srcKey), readErr)
+		writeS3ErrorFrom(w, readErr)
+		return out, false
+	}
+	if int64(len(data)) > batchCopyMaxBytes {
+		log.Printf("CopyObject source %s/%s exceeds the maximum object size %d", strconv.Quote(srcBucket), strconv.Quote(srcKey), batchCopyMaxBytes)
+		writeS3Error(w, "InvalidArgument", fmt.Sprintf("object size exceeds the maximum allowed size %d", batchCopyMaxBytes), http.StatusBadRequest)
+		return out, false
+	}
+	out.bucket, out.key, out.directive, out.data, out.obj = srcBucket, srcKey, directive, data, srcObj
+	return out, true
+}
+
 // copyObjectHandler implements CopyObject: a PUT with x-amz-copy-source.
 // The object data is copied server-side (source data + meta read, then
 // written to the destination via the storage.go atomic helpers), and the
@@ -1566,108 +1716,11 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 		return
 	}
 
-	copySource := r.Header.Get("x-amz-copy-source")
-	decoded, err := url.PathUnescape(copySource)
-	if err != nil {
-		log.Printf("Invalid x-amz-copy-source header %s: %v", strconv.Quote(copySource), err)
-		writeS3Error(w, "InvalidArgument", "Invalid x-amz-copy-source header.", http.StatusBadRequest)
+	src, ok := readCopySource(w, r, bucketName, objectName)
+	if !ok {
 		return
 	}
-	srcBucket, srcKey, hasVersionID := parseCopySource(decoded)
-	if hasVersionID {
-		log.Printf("CopyObject with versionId not supported (source %s)", strconv.Quote(decoded))
-		writeS3Error(w, "NotImplemented", "Copy from a specific version is not implemented.", http.StatusNotImplemented)
-		return
-	}
-	if srcBucket == "" || srcKey == "" {
-		log.Printf("Invalid x-amz-copy-source header %s: expected bucket/key", strconv.Quote(decoded))
-		writeS3Error(w, "InvalidArgument", "x-amz-copy-source must be of the form bucket/key.", http.StatusBadRequest)
-		return
-	}
-	// Bughunt S1: the source bucket must pass the same validation as any
-	// URL-path bucket (traversal/naming) before it is used for grants or
-	// the backend Get.
-	if !validBucket(srcBucket) {
-		log.Printf("Invalid source bucket %s for CopyObject", strconv.Quote(srcBucket))
-		writeS3Error(w, "InvalidArgument", "Invalid bucket name.", http.StatusBadRequest)
-		return
-	}
-	if err := validateObjectKey(srcKey); err != nil {
-		log.Printf("Invalid source key %s for CopyObject: %v", strconv.Quote(srcKey), err)
-		writeS3Error(w, "InvalidArgument", err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Bughunt S1: enforce the SOURCE bucket grant before the source Get.
-	// authorizeS3Request only checked the URL-path (destination) bucket;
-	// without this check an identity with write on one bucket and no grant
-	// on another could read the other bucket's bytes via a copy. The
-	// identity arrives in the request context (set by serveHTTP); a missing
-	// identity degrades to the legacy wildcard principal (see identityOf).
-	// Leaf 09: the decision is AuthorizeOp (read on the source bucket/key).
-	if srcID := identityOf(r); !auth.AuthorizeOp(srcID, auth.OpRead, srcBucket, srcKey, time.Now().UTC()) {
-		log.Printf("Authorization Denied: identity %s, CopyObject source bucket %s", strconv.Quote(srcID.AccessKeyID), strconv.Quote(srcBucket))
-		writeS3Error(w, "AccessDenied", "Access Denied", http.StatusForbidden)
-		return
-	}
-
-	// S3 rejects a copy where source and destination are the same object
-	// (without a directive changing the copy semantics).
-	if srcBucket == bucketName && srcKey == objectName {
-		log.Printf("CopyObject source and destination are identical: %s/%s", strconv.Quote(bucketName), strconv.Quote(objectName))
-		writeS3Error(w, "InvalidRequest", "This copy request is illegal because it is trying to copy an object to itself.", http.StatusBadRequest)
-		return
-	}
-
-	// Metadata directive: COPY (default) preserves the source metadata;
-	// REPLACE uses the request headers. Anything else is InvalidArgument.
-	directive := r.Header.Get("x-amz-metadata-directive")
-	if directive == "" {
-		directive = "COPY"
-	}
-	switch directive {
-	case "COPY", "REPLACE":
-	default:
-		log.Printf("Invalid x-amz-metadata-directive %s for CopyObject", strconv.Quote(directive))
-		writeS3Error(w, "InvalidArgument", "Unknown metadata directive.", http.StatusBadRequest)
-		return
-	}
-
-	if !bucketExists(srcBucket) {
-		log.Printf("Source bucket %s does not exist for CopyObject", strconv.Quote(srcBucket))
-		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", http.StatusNotFound)
-		return
-	}
-
-	// Data-plane flip (leaf 02): read the source through the Backend seam.
-	srcRC, srcObj, srcErr := backendCallBucket2(srcBucket, func(b backend.Backend) (io.ReadCloser, objectmodel.Object, error) {
-		return b.Get(r.Context(), srcBucket, srcKey, objectmodel.GetOptions{})
-	})
-	if srcErr != nil {
-		code, message, status := s3ErrorFrom(srcErr)
-		log.Printf("CopyObject source read %s/%s failed: %v", strconv.Quote(srcBucket), strconv.Quote(srcKey), srcErr)
-		writeS3Error(w, code, message, status)
-		return
-	}
-	// BUGHUNT W2-M8: the source read is capped exactly like the batch twin
-	// (batch_endpoint.go's batchCopyMaxBytes LimitReader + oversize check).
-	// An unbounded io.ReadAll here let a single CopyObject buffer an
-	// arbitrarily large source — an object larger than the cap could never
-	// have been written by a single Put either (the batch copy's rationale,
-	// batch_endpoint.go:47-61), so nothing S3-reachable is rejected by the
-	// gate. The same LimitReader+1/oversize shape, the same error text.
-	data, readErr := io.ReadAll(io.LimitReader(srcRC, batchCopyMaxBytes+1))
-	srcRC.Close()
-	if readErr != nil {
-		log.Printf("Error reading source object data %s/%s: %v", strconv.Quote(srcBucket), strconv.Quote(srcKey), readErr)
-		writeS3ErrorFrom(w, readErr)
-		return
-	}
-	if int64(len(data)) > batchCopyMaxBytes {
-		log.Printf("CopyObject source %s/%s exceeds the maximum object size %d", strconv.Quote(srcBucket), strconv.Quote(srcKey), batchCopyMaxBytes)
-		writeS3Error(w, "InvalidArgument", fmt.Sprintf("object size exceeds the maximum allowed size %d", batchCopyMaxBytes), http.StatusBadRequest)
-		return
-	}
+	srcBucket, srcKey, directive, data, srcObj := src.bucket, src.key, src.directive, src.data, src.obj
 
 	// S3 computes a fresh ETag for the new object.
 	hash := md5.Sum(data) //nolint:gosec // G401: S3 ETags are defined as MD5; protocol requirement, not crypto.
@@ -1724,21 +1777,9 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 	// Suspended buckets skip the capture (plain-overwrite semantics; the
 	// state read on a never-versioned bucket is one missing-file stat that
 	// answers Off with a nil error).
-	var copyCapturedOld *capturedObjectVersion
-	copyState, copyStateErr := versionStoreForBucket(dstBucketPath).State(bucketName)
-	if copyStateErr != nil {
-		log.Printf("Error reading versioning state for %s: %v", strconv.Quote(bucketName), copyStateErr)
-		writeS3Error(w, "InternalError", "Error reading bucket versioning state.", http.StatusInternalServerError)
+	copyCapturedOld, ok := captureForCopy(w, dstBucketPath, bucketName, objectName)
+	if !ok {
 		return
-	}
-	if copyState == versioningEnabled {
-		captured, capErr := captureCurrentObjectVersion(dstBucketPath, objectName)
-		if capErr != nil && !errors.Is(capErr, errNoPriorVersion) {
-			log.Printf("Error capturing prior version for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), capErr)
-			writeS3Error(w, "InternalError", "Error capturing object version.", http.StatusInternalServerError)
-			return
-		}
-		copyCapturedOld = captured
 	}
 
 	_, putErr := backendCall(bucketName, func(b backend.Backend) (objectmodel.Object, error) {
@@ -1766,12 +1807,8 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 	// gate existed a CopyObject onto an existing destination wiped its
 	// version history (the sidecar is rewritten wholesale) — the same
 	// class as the CMPU H8 wipe, on the one write path H8 missed.
-	if copyCapturedOld != nil {
-		if recErr := recordCapturedObjectVersion(dstBucketPath, bucketName, objectName, copyCapturedOld); recErr != nil {
-			log.Printf("Error recording prior version for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), recErr)
-			writeS3Error(w, "InternalError", "Error recording object version.", http.StatusInternalServerError)
-			return
-		}
+	if !recordForCopy(w, dstBucketPath, bucketName, objectName, copyCapturedOld) {
+		return
 	}
 
 	// Action context: resolve the concrete paths the action may reference.

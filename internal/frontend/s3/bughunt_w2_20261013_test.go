@@ -252,7 +252,7 @@ func w2m7SabotageFinalPath(t *testing.T, env verEnv) string {
 	if err != nil {
 		t.Fatalf("reading sidecar: %v", err)
 	}
-	var m map[string]interface{}
+	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatalf("parsing sidecar: %v", err)
 	}
