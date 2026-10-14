@@ -92,9 +92,16 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
                     ? template.filename
                     : parent + "/" + template.filename
                 if let url {
-                    try FileManager.default.copyItem(at: url, to: mount.cacheURL(ofKey: key))
+                    // H6: bytes land at <cacheDir>/files/<key> (the daemon's
+                    // data plane), parents created on demand.
+                    let dst = try mount.cacheURLCreatingParents(ofKey: key)
+                    if FileManager.default.fileExists(atPath: dst.path) {
+                        try FileManager.default.removeItem(at: dst)
+                    }
+                    try FileManager.default.copyItem(at: url, to: dst)
                 } else {
-                    try FileManager.default.createDirectory(at: mount.cacheURL(ofKey: key), withIntermediateDirectories: true)
+                    try FileManager.default.createDirectory(
+                        at: mount.cacheURL(ofKey: key), withIntermediateDirectories: true)
                 }
                 try mount.mark(key)
                 let entry = try mount.item(key)
@@ -114,7 +121,7 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
         let progress = Progress(totalUnitCount: 100)
         Task {
             do {
-                let key = (item as? FileProviderItem)?.publicKey ?? item.itemIdentifier.rawValue
+                var key = (item as? FileProviderItem)?.publicKey ?? item.itemIdentifier.rawValue
                 // Rename/move first when the name changed, then content.
                 if changedFields.contains(.filename) {
                     let parent = item.parentItemIdentifier.rawValue
@@ -122,9 +129,18 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
                         ? item.filename
                         : parent + "/" + item.filename
                     try mount.move(key, to: newKey)
+                    // H7: after the index re-point the OLD key is a
+                    // tombstone - the content write and mark must target
+                    // the NEW key or they strand bytes / resurrect the
+                    // tombstone.
+                    key = newKey
                 }
                 if let newContents {
-                    try FileManager.default.copyItem(at: newContents, to: mount.cacheURL(ofKey: key))
+                    let dst = try mount.cacheURLCreatingParents(ofKey: key)
+                    if FileManager.default.fileExists(atPath: dst.path) {
+                        try FileManager.default.removeItem(at: dst)
+                    }
+                    try FileManager.default.copyItem(at: newContents, to: dst)
                     try mount.mark(key)
                 }
                 let entry = try mount.item(key)

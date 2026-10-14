@@ -139,20 +139,68 @@ public final class FileProviderItem: NSObject, NSFileProviderItem {
 // MARK: - Error mapping
 
 /// Maps a daemon IPC error string to the FileProvider error the Finder
-/// understands. The daemon's not-found shape is "no such item: <path>"
-/// (leaf-01 handler); everything else surfaces as .notAKnownItem's
-/// sibling: a plain local error with the message (the honest EIO analog).
+/// understands.
+///
+/// L42: the previous mapping sent EVERY non-"no such item" error to
+/// .serverUnreachable - a transient domain-wide signal, so permanent
+/// refusals ("refused, file is dirty", "not supported: ...") made the
+/// OS retry forever. Only connectivity-shaped failures map to
+/// .serverUnreachable now; refusals and unrecognized payloads map to
+/// .cannotSynchronize (a per-item local error, no domain-wide retry).
+/// .noSuchItem is unchanged (the daemon's not-found shape,
+/// "no such item: <path>", leaf-01 handler).
 public enum FileProviderErrorMapper {
+    /// Connectivity-shaped failures: the daemon process is gone, the
+    /// socket is unobservable, or the transport broke mid-request.
+    /// Surfaces as .serverUnreachable so the OS treats the WHOLE domain
+    /// as transiently offline and backs off.
+    private static let connectivityMarkers = [
+        "cannot reach the daemon",
+        "connection refused",
+        "connection reset",
+        "broken pipe",
+        "socket",
+        "closed the connection without a response",
+        "failed writing the request",
+    ]
+
+    /// Permanent, per-item refusals from the daemon (dirty/pinned evict,
+    /// tombstoned move, "not supported: no ... handler", unknown request
+    /// type, undecodable payload, ...). The OS must NOT domain-retry
+    /// these.
+    private static let refusalMarkers = [
+        "refused",
+        "not supported",
+        "unknown request type",
+        "requires path",
+        "requires ",
+        "undecodable",
+        "unexpected payload",
+        "no file provider handler",
+    ]
+
     public static func error(fromIPC message: String) -> NSError {
+        let lower = message.lowercased()
         if message.hasPrefix("no such item") {
             return NSError(
                 domain: NSFileProviderErrorDomain,
                 code: Int(NSFileProviderError.noSuchItem.rawValue),
                 userInfo: [NSLocalizedDescriptionKey: message])
         }
+        let code: NSFileProviderError.Code
+        if connectivityMarkers.contains(where: { lower.contains($0) }) {
+            code = .serverUnreachable
+        } else if refusalMarkers.contains(where: { lower.contains($0) }) {
+            code = .cannotSynchronize
+        } else {
+            // Unrecognized shape: assume a local/permanent problem (the
+            // honest EIO analog) rather than a transient outage - an
+            // infinite domain-wide retry loop is the worse failure mode.
+            code = .cannotSynchronize
+        }
         return NSError(
             domain: NSFileProviderErrorDomain,
-            code: Int(NSFileProviderError.serverUnreachable.rawValue),
+            code: Int(code.rawValue),
             userInfo: [NSLocalizedDescriptionKey: message])
     }
 }

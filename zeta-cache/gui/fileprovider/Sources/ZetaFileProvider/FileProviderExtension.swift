@@ -34,14 +34,38 @@ public struct FileProviderMount {
         self.cacheDir = cacheDir
     }
 
-    /// Default mount: the macOS default IPC socket (/tmp/zeta-cache.ipc)
-    /// and the daemon's default cache dir.
-    public static func standard() -> FileProviderMount {
+    // MARK: default locations (L41/L45)
+
+    /// The app-group container (when the entitlement defines one) is the
+    /// ONLY location a sandboxed appex can share with the daemon's
+    /// sandbox-adjacent cache; homeDirectoryForCurrentUser resolves into
+    /// the appex container in that case, which the daemon never writes.
+    /// CONSTRAINT: the project.yml entitlements define
+    /// group.com.zeta-object.zeta-cache; the daemon must be pointed at
+    /// (or symlink) the same group container for the data plane to line
+    /// up. TODO(appex-sandbox): the daemon does not read the group
+    /// container yet - until it does, the appex data plane only works in
+    /// the unsandboxed dev/test configuration (the SwiftPM/test path
+    /// below), and the registered appex needs the daemon-side change.
+    static func defaultCacheDir() -> URL {
+        if let group = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: "group.com.zeta-object.zeta-cache") {
+            return group
+        }
+        // Unsandboxed fallback (swift build / swift test, dev runs): the
+        // daemon's default cache dir under the user's home.
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return FileProviderMount(
-            socketPath: ProcessInfo.processInfo.environment["ZETA_CACHE_IPC"]
-                ?? "/tmp/zeta-cache.ipc",
-            cacheDir: home.appendingPathComponent("Library/Application Support/zeta-cache"))
+        return home.appendingPathComponent("Library/Application Support/zeta-cache")
+    }
+
+    /// Default mount. The socket default uses NSTemporaryDirectory(),
+    /// matching the daemon's os.TempDir()/zeta-cache.ipc on darwin ($TMPDIR,
+    /// not /tmp - L41) and the menu app's identical derivation
+    /// (ZetaCacheMenuApp.swift). Overridable via ZETA_CACHE_IPC.
+    public static func standard() -> FileProviderMount {
+        let socket = ProcessInfo.processInfo.environment["ZETA_CACHE_IPC"]
+            ?? (NSTemporaryDirectory() as NSString).appendingPathComponent("zeta-cache.ipc")
+        return FileProviderMount(socketPath: socket, cacheDir: defaultCacheDir())
     }
 
     // MARK: IPC wrappers (each one request per connection)
@@ -119,9 +143,24 @@ public struct FileProviderMount {
     }
 
     /// The cache URL for a server key (the Replicated extension copies
-    /// downloaded/uploaded bytes through this path before mark).
+    /// downloaded/uploaded bytes through this path before mark). The
+    /// daemon's data plane is <cacheDir>/files/<key> - exactly what the
+    /// IPC mark/stats layer expects (H6) -
+    /// so the key ALWAYS maps under the "files/" segment, matching
+    /// entry.cachePath ("files/<key>") and persistentIdentifierForItem's
+    /// "<cacheDir>/files/" prefix rule. Intermediate directories are
+    /// created on demand (the legacy createItem path does the same).
     public func cacheURL(ofKey key: String) -> URL {
-        cacheDir.appendingPathComponent(key)
+        cacheDir.appendingPathComponent("files").appendingPathComponent(key)
+    }
+
+    /// Same mapping as cacheURL(ofKey:), creating the parent directory
+    /// first so a copy into a nested key cannot fail on a missing dir.
+    public func cacheURLCreatingParents(ofKey key: String) throws -> URL {
+        let dst = cacheURL(ofKey: key)
+        try FileManager.default.createDirectory(
+            at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
+        return dst
     }
 }
 

@@ -96,17 +96,43 @@ final class ReplicatedExtensionTests: XCTestCase {
         try Data("new bytes".utf8).write(to: localFile)
         server.respond(to: "mark", with: #"{"v":1,"ok":true,"extra":{"path":"doc.txt","dirty":true}}"#)
         server.respond(to: "item", with:
-            ##"{"v":1,"ok":true,"extra":{"item":{"name":"doc.txt","key":"doc.txt","isDir":false,"size":9,"mtime":1728211200,"materialized":true,"dirty":true,"cachePath":"doc.txt"}}}"##)
+            ##"{"v":1,"ok":true,"extra":{"item":{"name":"doc.txt","key":"doc.txt","isDir":false,"size":9,"mtime":1728211200,"materialized":true,"dirty":true,"cachePath":"files/doc.txt"}}}"##)
 
         let template = ReplicatedTemplate(filename: "doc.txt", parent: .rootContainer)
         let exp = expectation(description: "create")
         _ = ext.createItem(basedOn: template, fields: [.contents], contents: localFile, options: [], request: NSFileProviderRequest()) { item, _, _, error in
             XCTAssertNil(error)
             XCTAssertEqual(item?.filename, "doc.txt")
-            // The bytes must have landed in the daemon's cache dir before
-            // mark (the copy-through-cache contract).
-            let cached = try? Data(contentsOf: self.cacheDir.appendingPathComponent("doc.txt"))
+            // The bytes must have landed in the daemon's DATA plane before
+            // mark: <cacheDir>/files/<key> - the exact path the daemon's
+            // mark handler stats (H6; the fixtures used to pin the wrong
+            // cacheDir/<key> path).
+            let cached = try? Data(contentsOf: self.cacheDir.appendingPathComponent("files/doc.txt"))
             XCTAssertEqual(cached, Data("new bytes".utf8))
+            // And nothing may strand at the OLD (pre-H6) location.
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: self.cacheDir.appendingPathComponent("doc.txt").path))
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 5)
+    }
+
+    /// H6 for nested keys: the "files/" segment must be PREPENDED, not
+    /// treated as an in-key prefix collision - files/fp/doc.txt under the
+    /// cache root, parents created on demand.
+    func testCreateItemNestedKeyWritesUnderFilesSegmentAndMarks() throws {
+        let localFile = cacheDir.appendingPathComponent("upload-src.txt")
+        try Data("nested bytes".utf8).write(to: localFile)
+        server.respond(to: "mark", with: #"{"v":1,"ok":true,"extra":{"path":"fp/doc.txt","dirty":true}}"#)
+        server.respond(to: "item", with:
+            ##"{"v":1,"ok":true,"extra":{"item":{"name":"doc.txt","key":"fp/doc.txt","isDir":false,"size":12,"mtime":1728211200,"materialized":true,"dirty":true,"cachePath":"files/fp/doc.txt"}}}"##)
+
+        let template = ReplicatedTemplate(filename: "doc.txt", parent: NSFileProviderItemIdentifier("fp"))
+        let exp = expectation(description: "create-nested")
+        _ = ext.createItem(basedOn: template, fields: [.contents], contents: localFile, options: [], request: NSFileProviderRequest()) { item, _, _, error in
+            XCTAssertNil(error)
+            let cached = try? Data(contentsOf: self.cacheDir.appendingPathComponent("files/fp/doc.txt"))
+            XCTAssertEqual(cached, Data("nested bytes".utf8))
             exp.fulfill()
         }
         wait(for: [exp], timeout: 5)
@@ -115,14 +141,16 @@ final class ReplicatedExtensionTests: XCTestCase {
     func testCreateItemWithoutContentsCreatesDirectory() throws {
         server.respond(to: "mark", with: #"{"v":1,"ok":true,"extra":{"path":"docs/","dirty":false}}"#)
         server.respond(to: "item", with:
-            ##"{"v":1,"ok":true,"extra":{"item":{"name":"docs","key":"docs","isDir":true,"size":0,"mtime":1728211200,"materialized":true,"dirty":false,"cachePath":"docs"}}}"##)
+            ##"{"v":1,"ok":true,"extra":{"item":{"name":"docs","key":"docs","isDir":true,"size":0,"mtime":1728211200,"materialized":true,"dirty":false,"cachePath":"files/docs"}}}"##)
 
         let template = ReplicatedTemplate(filename: "docs", parent: .rootContainer)
         let exp = expectation(description: "mkdir")
         _ = ext.createItem(basedOn: template, fields: [], contents: nil, options: [], request: NSFileProviderRequest()) { item, _, _, error in
             XCTAssertNil(error)
             var isDir: ObjCBool = false
-            XCTAssertTrue(FileManager.default.fileExists(atPath: self.cacheDir.appendingPathComponent("docs").path, isDirectory: &isDir))
+            // H6: the dir key maps under files/ too (the daemon's data
+            // plane is flat about this: EVERY key lives under files/).
+            XCTAssertTrue(FileManager.default.fileExists(atPath: self.cacheDir.appendingPathComponent("files/docs").path, isDirectory: &isDir))
             XCTAssertTrue(isDir.boolValue)
             exp.fulfill()
         }
@@ -134,7 +162,7 @@ final class ReplicatedExtensionTests: XCTestCase {
     func testModifyItemFilenameMoveRenamesThroughIPC() throws {
         server.respond(to: "move", with: #"{"v":1,"ok":true,"extra":{"from":"doc.txt","to":"renamed.txt"}}"#)
         server.respond(to: "item", with:
-            ##"{"v":1,"ok":true,"extra":{"item":{"name":"renamed.txt","key":"renamed.txt","isDir":false,"size":11,"mtime":1728211200,"materialized":true,"dirty":false,"cachePath":"renamed.txt"}}}"##)
+            ##"{"v":1,"ok":true,"extra":{"item":{"name":"renamed.txt","key":"renamed.txt","isDir":false,"size":11,"mtime":1728211200,"materialized":true,"dirty":false,"cachePath":"files/renamed.txt"}}}"##)
 
         let src = ReplicatedTemplate(filename: "doc.txt", parent: .rootContainer)
         let item = FileProviderItem(entry: entry(name: "renamed.txt", key: "renamed.txt"), parentKey: "")
@@ -145,6 +173,49 @@ final class ReplicatedExtensionTests: XCTestCase {
             exp.fulfill()
         }
         _ = src // template unused on modify
+        wait(for: [exp], timeout: 5)
+    }
+
+    /// H7: rename + content in ONE modifyItem - the IPC move re-points
+    /// the index first, so the content copy and mark must target the NEW
+    /// key (the old key is a tombstone after the move). The stub cannot
+    /// inspect request bodies, so the proof is on the data plane: the
+    /// bytes land under files/<newKey>, and the final item lookup (which
+    /// the extension issues for the key it marked) only succeeds for the
+    /// NEW key.
+    func testModifyItemRenameThenContentMarksTheNewKey() throws {
+        // Pre-state: the item's bytes live under the OLD key.
+        try FileManager.default.createDirectory(
+            at: cacheDir.appendingPathComponent("files"), withIntermediateDirectories: true)
+        try Data("old body".utf8).write(to: cacheDir.appendingPathComponent("files/doc.txt"))
+
+        server.respond(to: "move", with: #"{"v":1,"ok":true,"extra":{"from":"doc.txt","to":"renamed.txt"}}"#)
+        server.respond(to: "mark", with: #"{"v":1,"ok":true,"extra":{"path":"renamed.txt","dirty":true}}"#)
+        // The extension's final item(key) call: only the NEW key resolves.
+        server.respond(to: "item", with:
+            ##"{"v":1,"ok":true,"extra":{"item":{"name":"renamed.txt","key":"renamed.txt","isDir":false,"size":9,"mtime":1728211200,"materialized":true,"dirty":true,"cachePath":"files/renamed.txt"}}}"##)
+
+        let item = FileProviderItem(entry: entry(name: "renamed.txt", key: "doc.txt"), parentKey: "")
+        let newContents = cacheDir.appendingPathComponent("rename-src.txt")
+        try Data("new body".utf8).write(to: newContents)
+
+        let exp = expectation(description: "rename+content")
+        _ = ext.modifyItem(
+            item,
+            baseVersion: NSFileProviderItemVersion(contentVersion: Data("v1".utf8), metadataVersion: Data("v1".utf8)),
+            changedFields: [.filename, .contents],
+            contents: newContents, options: [], request: NSFileProviderRequest()) { modified, _, _, error in
+            XCTAssertNil(error)
+            XCTAssertEqual(modified?.filename, "renamed.txt")
+            // The content write must have re-pointed to the NEW key...
+            let renamed = try? Data(contentsOf: self.cacheDir.appendingPathComponent("files/renamed.txt"))
+            XCTAssertEqual(renamed, Data("new body".utf8))
+            // ...and must NOT have resurrected the tombstoned old key
+            // with the new bytes.
+            let old = try? Data(contentsOf: self.cacheDir.appendingPathComponent("files/doc.txt"))
+            XCTAssertEqual(old, Data("old body".utf8))
+            exp.fulfill()
+        }
         wait(for: [exp], timeout: 5)
     }
 
@@ -186,7 +257,67 @@ final class ReplicatedTemplate: NSObject, NSFileProviderItem {
 
 private func entry(name: String, key: String) -> FileProviderItemEntry {
     // Decode a full entry from JSON (the wire shape the daemon sends).
+    // cachePath is the daemon's data-plane path: "files/<key>" (H6).
     let json = "{\"name\":\"" + name + "\",\"key\":\"" + key
-        + "\",\"isDir\":false,\"size\":11,\"mtime\":1728211200,\"materialized\":true,\"dirty\":false,\"cachePath\":\"" + key + "\"}"
+        + "\",\"isDir\":false,\"size\":11,\"mtime\":1728211200,\"materialized\":true,\"dirty\":false,\"cachePath\":\"files/" + key + "\"}"
     return try! JSONDecoder().decode(FileProviderItemEntry.self, from: Data(json.utf8))
+}
+
+// MARK: - cacheURL mapping (H6) + sync anchor (L43)
+
+final class CachePathMappingTests: XCTestCase {
+    func testCacheURLOfKeyIncludesFilesSegment() {
+        let cacheDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("zfpH6-\(UUID().uuidString.prefix(8))")
+        let mount = FileProviderMount(socketPath: "/unused", cacheDir: cacheDir)
+        // Top-level key...
+        XCTAssertEqual(
+            mount.cacheURL(ofKey: "doc.txt"),
+            cacheDir.appendingPathComponent("files/doc.txt"))
+        // ...and nested key: "files/" is PREPENDED, not swallowed.
+        XCTAssertEqual(
+            mount.cacheURL(ofKey: "fp/doc.txt"),
+            cacheDir.appendingPathComponent("files/fp/doc.txt"))
+        // And it matches the wire's cachePath shape for the same key.
+        let entry = try! JSONDecoder().decode(
+            FileProviderItemEntry.self,
+            from: Data(##"{"name":"doc.txt","key":"fp/doc.txt","isDir":false,"size":1,"mtime":1,"materialized":true,"dirty":false,"cachePath":"files/fp/doc.txt"}"##.utf8))
+        XCTAssertEqual(
+            mount.cacheURL(of: entry), mount.cacheURL(ofKey: entry.key))
+    }
+
+    func testCacheURLCreatingParentsCreatesIntermediateDirs() throws {
+        let cacheDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("zfpH6-\(UUID().uuidString.prefix(8))")
+        let mount = FileProviderMount(socketPath: "/unused", cacheDir: cacheDir)
+        let url = try mount.cacheURLCreatingParents(ofKey: "a/b/c.txt")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.deletingLastPathComponent().path))
+    }
+}
+
+final class EnumeratorAnchorTests: XCTestCase {
+    private func entry(_ key: String, mtime: Int64, size: Int64 = 5) -> FileProviderItemEntry {
+        var json = "{\"name\":\"n\",\"key\":\"" + key
+        json += "\",\"isDir\":false,\"size\":" + String(size)
+        json += ",\"mtime\":" + String(mtime)
+        json += ",\"materialized\":true,\"dirty\":false,\"cachePath\":\"files/" + key + "\"}"
+        return try! JSONDecoder().decode(FileProviderItemEntry.self, from: Data(json.utf8))
+    }
+
+    func testAnchorIsDeterministicAndContentSensitive() {
+        let a = [entry("b.txt", mtime: 1), entry("a.txt", mtime: 2)]
+        // Order-independent (sorted rows)...
+        XCTAssertEqual(
+            FileProviderEnumerator.anchor(for: a),
+            FileProviderEnumerator.anchor(for: a.reversed()))
+        // ...but sensitive to set, mtime, and size.
+        let withExtra = a + [entry("c.txt", mtime: 3)]
+        XCTAssertNotEqual(
+            FileProviderEnumerator.anchor(for: a),
+            FileProviderEnumerator.anchor(for: withExtra))
+        let touched = [entry("b.txt", mtime: 9), entry("a.txt", mtime: 2)]
+        XCTAssertNotEqual(
+            FileProviderEnumerator.anchor(for: a),
+            FileProviderEnumerator.anchor(for: touched))
+    }
 }

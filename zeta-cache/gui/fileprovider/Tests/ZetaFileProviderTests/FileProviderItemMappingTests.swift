@@ -76,11 +76,45 @@ final class FileProviderItemMappingTests: XCTestCase {
         XCTAssertEqual(err.code, NSFileProviderError.noSuchItem.rawValue)
     }
 
-    func testOtherErrorsSurfaceAsServerUnreachable() {
-        let err = FileProviderErrorMapper.error(fromIPC: "download x: sync: refused")
-        XCTAssertEqual(err.domain, NSFileProviderErrorDomain)
-        XCTAssertEqual(err.code, NSFileProviderError.serverUnreachable.rawValue)
-        XCTAssertEqual(err.localizedDescription, "download x: sync: refused")
+    // L42: connectivity-shaped failures stay .serverUnreachable (the
+    // transient domain-wide signal); permanent refusals must NOT be.
+
+    func testConnectivityFailureSurfacesAsServerUnreachable() {
+        for message in [
+            "cannot reach the daemon at /tmp/z.ipc (errno 61)",
+            "mark docs/a.txt: the daemon closed the connection without a response",
+            "enumerate docs/: failed writing the request (errno 32)",
+        ] {
+            let err = FileProviderErrorMapper.error(fromIPC: message)
+            XCTAssertEqual(err.domain, NSFileProviderErrorDomain, message)
+            XCTAssertEqual(
+                err.code, NSFileProviderError.serverUnreachable.rawValue, message)
+        }
+    }
+
+    func testRefusalsSurfaceAsCannotSynchronizeNotServerUnreachable() {
+        // The daemon's real refusal shapes (gui_handler.go / ipc handlers):
+        // permanent, per-item - the OS must not domain-retry them (L42).
+        for message in [
+            "evict docs/a.txt: refused, file is dirty (upload it first)",
+            "evict docs/a.txt: refused, file is pinned",
+            "move docs/a.txt: refused, path is tombstoned",
+            "not supported: no file provider handler",
+            "download requires path",
+        ] {
+            let err = FileProviderErrorMapper.error(fromIPC: message)
+            XCTAssertEqual(err.domain, NSFileProviderErrorDomain, message)
+            XCTAssertEqual(
+                err.code, NSFileProviderError.cannotSynchronize.rawValue, message)
+        }
+    }
+
+    func testUnrecognizedErrorShapeDefaultsToCannotSynchronize() {
+        // Unknown shapes are treated as local/permanent (the honest EIO
+        // analog) rather than a transient outage.
+        let err = FileProviderErrorMapper.error(fromIPC: "something exploded")
+        XCTAssertEqual(err.code, NSFileProviderError.cannotSynchronize.rawValue)
+        XCTAssertEqual(err.localizedDescription, "something exploded")
     }
 }
 
