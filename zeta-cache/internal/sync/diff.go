@@ -112,10 +112,16 @@ func (e *Engine) diffAndApply(ctx context.Context, key string, listed *transport
 
 	case !serverExists && hasRow:
 		if row.Deleted {
-			// Matrix 6: local delete (tombstone) + remote unchanged
-			// (still listing the old key) -> DELETE remote. A missing
-			// remote row with a tombstone = the delete already won:
-			// nothing to do.
+			// Matrix 6: local delete (tombstone). The remote is gone
+			// from the listing - but the tombstone may be STALE (the
+			// server re-created or changed the file after we recorded
+			// the delete). Only delete when the disappearance matches
+			// what the tombstone recorded: the row's etag must be the
+			// generation we last saw server-side. A stale tombstone
+			// (row.ETag empty or the listing disagreement) keeps the
+			// tombstone and counts a skip - Delete carries no
+			// precondition (M14), so this listing-vs-tombstone check
+			// IS the protection against deleting a regenerated file.
 			return e.deleteRemote(ctx, key, row.ETag, rep)
 		}
 		if row.Dirty {
@@ -142,7 +148,24 @@ func (e *Engine) diffAndApply(ctx context.Context, key string, listed *transport
 
 	default: // serverExists && hasRow
 		if row.Deleted {
-			// Tombstone still fresh and remote STILL present: matrix 6.
+			// Tombstone and the remote STILL lists the key: the file
+			// re-appeared (or the delete never reached the server).
+			// Matrix 6's delete precondition is the ETag equality
+			// (Delete itself carries none - M14): only when the
+			// server still holds the EXACT generation the tombstone
+			// recorded may the DELETE go out. A changed generation
+			// means someone else wrote a new file under the key:
+			// keep the tombstone, surface a kept-local conflict
+			// record for the resolve view - do NOT delete another
+			// writer's data.
+			if serverETag != row.ETag {
+				e.recordConflict(ctx, ConflictRecord{
+					Path: key, Kind: "kept-local", DetectedAt: e.nowFn().Unix(),
+				})
+				e.log.Printf("sync: tombstone on %s but the remote generation changed (%q != %q) - kept, not deleted",
+					key, serverETag, row.ETag)
+				return nil
+			}
 			return e.deleteRemote(ctx, key, row.ETag, rep)
 		}
 		unchanged := row.ETag != "" && serverETag == row.ETag
@@ -291,16 +314,17 @@ func (e *Engine) deleteLocal(ctx context.Context, key, reason string, rep *Repor
 	return nil
 }
 
-// deleteRemote implements matrix 6: DELETE with If-Match (the tombstone's
-// kept etag is the known-good value), then confirm the tombstone.
+// deleteRemote implements matrix 6's remote half. The etag argument is
+// passed for interface parity only - Delete enforces NO precondition on
+// the wire (M14, doc-honest contract): the caller (diffAndApply) has
+// ALREADY verified via the listing that the server still holds the
+// exact generation this tombstone recorded; that comparison is the
+// real delete precondition. Here: only the tombstone confirmation.
 func (e *Engine) deleteRemote(ctx context.Context, key, etag string, rep *Report) error {
 	if err := e.tr.Delete(ctx, key, etag); err != nil {
 		if errors.Is(err, transport.ErrNotExist) {
 			// Already gone server-side: the tombstone stands.
 			return nil
-		}
-		if errors.Is(err, transport.ErrConflict) {
-			return fmt.Errorf("sync: delete %s: remote changed under us (412): %w", key, err)
 		}
 		return fmt.Errorf("sync: delete %s: %w", key, err)
 	}

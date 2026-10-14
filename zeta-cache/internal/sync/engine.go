@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bhodgens/zeta-object/zeta-cache/internal/index"
@@ -42,10 +43,12 @@ const (
 	StateError   = "error"
 )
 
-// meta keys owned by this package.
+// meta keys owned by this package. metaConflictCount ("conflict-count")
+// is RETIRED (L38): the IPC conflict number is derived from the live
+// conflict records (pendingConflictCount), so it can never drift from
+// Conflicts(). Old installs may still carry the row; nothing reads it.
 const (
-	metaLastSync      = "last-full-scan-time"
-	metaConflictCount = "conflict-count"
+	metaLastSync = "last-full-scan-time"
 )
 
 // Engine is the two-way sync engine. Construct with NewEngine.
@@ -61,9 +64,15 @@ type Engine struct {
 	state     string
 	lastSync  time.Time
 	lastErr   string
-	conflicts int
+	conflicts int  // RETIRED (L38): kept zeroed; Status derives from the live records
 	listAll   bool // FullRescan: bypass the collection-token skip
 	lastRep   Report
+
+	// running is the single-run gate (M19): the scheduler's watcher
+	// fallback can call SyncOnce concurrently with the sync loop; a
+	// second pass while one is live returns ErrSyncInProgress instead
+	// of interleaving two listAll/diff windows.
+	running atomic.Bool
 }
 
 // LastReport returns the Report of the most recent completed pass (the
@@ -123,38 +132,64 @@ func NewEngine(o Options) (*Engine, error) {
 		log:   logger,
 		state: StateIdle,
 	}
-	e.loadConflicts(context.Background())
 	return e, nil
 }
 
+// ErrSyncInProgress is returned by SyncOnce/FullRescan when a pass is
+// already running (the M19 single-run gate): the scheduler's watcher
+// fallback races the sync loop, and a second pass must never interleave
+// with the first (two listAll flags, two diff windows over one index).
+// The sync loop may treat it as a benign skip; the watcher fallback
+// logs it.
+var ErrSyncInProgress = errors.New("sync: a pass is already running")
+
 // SyncOnce runs one reconcile pass: delta (ChangeFeed) -> diff -> apply.
-// This is what leaf 07's scheduler calls on connect + backoff.
+// This is what leaf 07's scheduler calls on connect + backoff. A pass
+// that starts while another is live returns ErrSyncInProgress (benign:
+// the running pass covers the same index).
 func (e *Engine) SyncOnce(ctx context.Context) error {
 	return e.run(ctx, false)
 }
 
 // FullRescan forces the whole-tree walk regardless of what the feed says
 // (leaf 07's nightly full-scan cadence, and the token-mismatch fallback).
+// Subject to the same single-run gate as SyncOnce.
 func (e *Engine) FullRescan(ctx context.Context) error {
 	return e.run(ctx, true)
 }
 
 func (e *Engine) run(ctx context.Context, forceFull bool) error {
+	// M19 single-run gate: CompareAndSwap makes exactly one pass live;
+	// the flag stays set through the WHOLE pass (feed delta + scan +
+	// index stamping), so a concurrent SyncOnce/FullRescan is refused
+	// and a nightly FullRescan's listAll flag cannot be cleared by a
+	// concurrent pass before it even starts.
+	if !e.running.CompareAndSwap(false, true) {
+		return ErrSyncInProgress
+	}
+	defer e.running.Store(false)
+
 	e.setState(StateSyncing)
 	e.mu.Lock()
 	e.listAll = forceFull
 	e.mu.Unlock()
 
-	paths, feedFull, err := e.feed.Delta(ctx)
-	if err != nil {
+	// The feed may be an Acker (H11's at-least-once seam): Ack is sent
+	// ONLY after the pass's diff-apply committed. On any error or ctx
+	// cancellation below, no Ack goes out and the feed redelivers the
+	// page on the next Delta.
+	var feedErr error
+	paths, feedFull, feedErr := e.feed.Delta(ctx)
+	if feedErr != nil {
 		// Feed failure is "on any doubt": degrade to the full scan
 		// rather than skipping work (the feed is an optimization).
-		e.log.Printf("sync: feed delta failed (%v); falling back to full scan", err)
+		e.log.Printf("sync: feed delta failed (%v); falling back to full scan", feedErr)
 		paths, feedFull = nil, true
 	}
 	full := forceFull || feedFull
 
 	var rep Report
+	var err error
 	if full {
 		rep, err = e.fullScan(ctx)
 	} else {
@@ -164,6 +199,15 @@ func (e *Engine) run(ctx context.Context, forceFull bool) error {
 		e.setStateErr(err)
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		// Cancelled at the finish line: do NOT ack - the page
+		// redelivers (at-least-once).
+		e.setStateErr(err)
+		return err
+	}
+	if acker, ok := e.feed.(Acker); ok {
+		acker.Ack(ctx)
+	}
 
 	now := e.nowFn()
 	e.mu.Lock()
@@ -171,14 +215,10 @@ func (e *Engine) run(ctx context.Context, forceFull bool) error {
 	e.lastSync = now
 	e.lastErr = "" // recovered
 	e.listAll = false
-	e.conflicts = max(rep.ConflictCopies+rep.RemoteDeleteKept, 0)
 	e.lastRep = rep
 	e.mu.Unlock()
 	if err := e.store.MetaSet(ctx, metaLastSync, fmt.Sprintf("%d", now.Unix())); err != nil {
 		e.log.Printf("sync: stamping last-sync time: %v", err)
-	}
-	if err := e.store.MetaSet(ctx, metaConflictCount, fmt.Sprintf("%d", e.snapshotConflicts())); err != nil {
-		e.log.Printf("sync: stamping conflict count: %v", err)
 	}
 	e.log.Printf("sync: done (scanned=%d downloads=%d uploads=%d deletes=%d conflicts=%d, verified token=%d fullscan=%d)",
 		rep.Scanned, rep.Downloads, rep.Uploads, rep.RemoteDeletes, rep.ConflictCopies, rep.TokenVerified, rep.FullscanVerified)
@@ -200,7 +240,8 @@ func (e *Engine) setStateErr(err error) {
 	e.mu.Unlock()
 }
 
-// snapshotConflicts reads the current conflict counter.
+// snapshotConflicts reads the current conflict counter. RETIRED (L38):
+// the live count comes from pendingConflictCount (the conflict records).
 func (e *Engine) snapshotConflicts() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -215,20 +256,6 @@ func (e *Engine) listingAll() bool {
 	return e.listAll
 }
 
-// loadConflicts restores the persisted conflict count at construction.
-func (e *Engine) loadConflicts(ctx context.Context) {
-	v, err := e.store.MetaGet(ctx, metaConflictCount)
-	if err != nil {
-		return // fresh DB: zero conflicts
-	}
-	var n int
-	if _, err := fmt.Sscanf(v, "%d", &n); err == nil {
-		e.mu.Lock()
-		e.conflicts = n
-		e.mu.Unlock()
-	}
-}
-
 // Status is the engine-owned slice of the IPC status payload: state
 // (idle/syncing/sync-error), lastSync (unix seconds, 0 = never), dirty
 // count (live index rows with dirty=1) and conflicts count.
@@ -241,12 +268,21 @@ type Status struct {
 }
 
 // Status returns the live status values. It is safe for concurrent use
-// and is what main.go's IPC wiring reads.
+// and is what main.go's IPC wiring reads. Conflicts is the PENDING count
+// (the live conflict records - the same set Conflicts() lists), never a
+// per-pass counter: a pass that surfaces no new conflicts does not
+// reset the persisted ones (L38).
 func (e *Engine) Status() Status {
 	dirty, err := e.store.DirtyPaths(context.Background())
 	if err != nil {
 		e.log.Printf("sync: DirtyPaths for status: %v", err)
 		dirty = nil
+	}
+	conflicts := 0
+	if n, cerr := e.pendingConflictCount(context.Background()); cerr == nil {
+		conflicts = n
+	} else {
+		e.log.Printf("sync: pending conflict count for status: %v", cerr)
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -258,9 +294,20 @@ func (e *Engine) Status() Status {
 		State:     e.state,
 		LastSync:  last,
 		Dirty:     len(dirty),
-		Conflicts: e.conflicts,
+		Conflicts: conflicts,
 		LastErr:   e.lastErr,
 	}
+}
+
+// pendingConflictCount counts the live conflict records (the meta rows
+// under metaConflictPrefix) - the exact set Conflicts() returns, so the
+// IPC number and the resolve view can never disagree (L38).
+func (e *Engine) pendingConflictCount(ctx context.Context) (int, error) {
+	vals, err := e.store.MetaListPrefix(ctx, metaConflictPrefix)
+	if err != nil {
+		return 0, err
+	}
+	return len(vals), nil
 }
 
 // fullScan walks the whole tree from the root, then diffs the index-side
@@ -370,8 +417,11 @@ func (e *Engine) deltaScan(ctx context.Context, paths []string) (Report, error) 
 
 // walk lists dir ("" = root, Depth 1) and recurses into child
 // collections unless the collection-token skip fires, running the
-// per-file diff for every listed file. seen accumulates the file keys
-// the SERVER still lists (fullScan uses the complement).
+// per-file diff for every listed file. seen is SHARED across the whole
+// recursion (M18): the complement pass in fullScan reads it to know
+// every file key the server still lists - a fresh map per subtree
+// would make the complement re-diff (and re-PROPFIND) every descendant
+// of a skipped-then-walked collection.
 func (e *Engine) walk(ctx context.Context, dir string, seen map[string]bool) (Report, error) {
 	rep := Report{}
 	entries, err := e.tr.Propfind(ctx, dir, false)
@@ -407,7 +457,7 @@ func (e *Engine) walk(ctx context.Context, dir string, seen map[string]bool) (Re
 				continue // duplicate dir row: already walked
 			}
 			seen[key] = true
-			if err := e.walkDir(ctx, key, entry.ETag, &rep); err != nil {
+			if err := e.walkDir(ctx, key, entry.ETag, seen, &rep); err != nil {
 				return rep, err
 			}
 			continue
@@ -426,8 +476,8 @@ func (e *Engine) walk(ctx context.Context, dir string, seen map[string]bool) (Re
 // and the fresh token recorded. Dir rows live in the resources table
 // with the leaf's trailing-slash path convention. On ANY doubt (missing
 // or empty token, index error) the walk happens - the token is a hint,
-// never a correctness input.
-func (e *Engine) walkDir(ctx context.Context, dirKey, listedToken string, rep *Report) error {
+// never a correctness input. seen is the pass-wide shared map (M18).
+func (e *Engine) walkDir(ctx context.Context, dirKey, listedToken string, seen map[string]bool, rep *Report) error {
 	// Dir rows carry the trailing slash (rowToKey keeps it); normalize
 	// so the row key is exactly one slash (a caller passing 'sub/'
 	// produced 'sub//' rows - live-found 2026-10-09).
@@ -435,8 +485,9 @@ func (e *Engine) walkDir(ctx context.Context, dirKey, listedToken string, rep *R
 	rowKey := dirKey + "/" // dir rows carry the trailing slash
 	if e.listingAll() {
 		// FullRescan: every subtree is listed regardless of the token.
+		// seen is threaded, NOT re-created (M18).
 		rep.FullscanVerified++
-		sub, err := e.walk(ctx, dirKey, map[string]bool{})
+		sub, err := e.walk(ctx, dirKey, seen)
 		mergeReport(rep, sub)
 		if err != nil {
 			return err
@@ -462,8 +513,11 @@ func (e *Engine) walkDir(ctx context.Context, dirKey, listedToken string, rep *R
 	default:
 		// Mismatch, first sighting, tombstoned dir, or empty token:
 		// walk the subtree (and remember the new token afterwards).
+		// seen is threaded, NOT re-created (M18): one map covers the
+		// whole pass, so fullScan's complement loop never re-probes
+		// descendants this walk already listed.
 		rep.FullscanVerified++
-		sub, err := e.walk(ctx, dirKey, map[string]bool{})
+		sub, err := e.walk(ctx, dirKey, seen)
 		mergeReport(rep, sub)
 		if err != nil {
 			return err

@@ -298,8 +298,11 @@ func TestPutContentLengthAndConditionals(t *testing.T) {
 		wantIfMatch string
 		wantINM     string
 	}{
-		{"plain overwrite", "", false, "", ""},
-		{"if-match", "aabbccdd", false, `"aabbccdd"`, ""},
+		// H2: Put with an EMPTY etag = If-None-Match:* (create-only).
+		// "plain overwrite" now means "create or 412"; an explicit
+		// overwrite must send If-Match (case 2).
+		{"plain put (empty etag = create-only)", "", false, "", "*"},
+		{"if-match overwrite", "aabbccdd", false, `"aabbccdd"`, ""},
 		{"create (if-none-match:*)", "", true, "", "*"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

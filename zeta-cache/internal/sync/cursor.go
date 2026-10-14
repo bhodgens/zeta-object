@@ -73,6 +73,17 @@ type EventsSource interface {
 }
 
 // CursorFeed is the zmetad-backed ChangeFeed. Construct with NewCursorFeed.
+//
+// Durability follows the at-least-once protocol (leaf-05 spec 36-38):
+// Delta NEVER persists the cursor - it maps the page, keeps the newest
+// id + loss counters pending in memory, and returns the paths. The
+// ENGINE calls Ack AFTER the diff-apply pass succeeded; only then does
+// the feed durably plant/advance the stored cursor (and the loss
+// baseline). A crash between Delta and Ack leaves the stored cursor
+// behind, so the next Delta re-fetches from the old id and the page is
+// REDIRECTED (correct - the diff no-ops on unchanged ETags). A crash
+// after Ack never redelivers - also correct. At-most-once (advancing
+// inside Delta) would lose events and is forbidden.
 type CursorFeed struct {
 	src    EventsSource
 	store  *index.Store
@@ -85,6 +96,15 @@ type CursorFeed struct {
 	lastCursor int64
 	lastLoss   [2]uint64
 	haveLoss   bool
+
+	// pending is the page Delta mapped and the engine has NOT yet
+	// acked: the newest id + loss counters to commit on Ack, and
+	// plantCursor for the first-contact case.
+	pendingID    int64
+	pendingLoss  [2]uint64
+	pendValid    bool
+	plantCursor  bool // first contact: Ack plants the cursor at pendingID
+	skipProbedAt time.Time
 }
 
 // NewCursorFeed validates options and returns a ready feed. The cursor
@@ -110,9 +130,25 @@ func NewCursorFeed(src EventsSource, store *index.Store, bucket string, logger *
 // when the cursor path is live, (nil, true, nil) whenever the full scan
 // is the honest answer (no provider, loss counters advanced, un-cursored
 // page). A nil error with fullScan=true is authoritative for the engine.
+//
+// Delta NEVER advances the stored cursor (at-least-once, see the type
+// doc): the page's newest id + loss counters stay pending until the
+// engine calls Ack after its diff-apply commits.
 func (f *CursorFeed) Delta(ctx context.Context) ([]string, bool, error) {
+	f.pendValid = false
+	f.plantCursor = false
 	if err := f.loadState(ctx); err != nil {
 		f.log.Printf("sync: cursor state load failed (%v); full scan", err)
+		return nil, true, nil
+	}
+
+	// L37: a still-fresh negative probe (plain bucket) is TRUSTED -
+	// skip the fetch and answer the honest full scan directly. The
+	// stamp only expires with the wall clock, so no fetch is needed
+	// to know the answer will be 503 again.
+	if f.ProbeFresh(ctx) {
+		f.log.Printf("sync: negative events probe fresh (re-probe in %s); full scan without fetch",
+			time.Duration(probeInterval-(time.Duration(f.now().Unix()-f.probeStampedAt(ctx))*time.Second)).Round(time.Second))
 		return nil, true, nil
 	}
 
@@ -136,24 +172,34 @@ func (f *CursorFeed) Delta(ctx context.Context) ([]string, bool, error) {
 	// the page — compare against the last-seen values regardless of the
 	// cursor. Either advancing means records were DROPPED upstream (the
 	// ring is bounded; offline-past-retention shows up here): the cursor
-	// is invalid, full rescan.
+	// is invalid, full rescan. The baseline update is pending like any
+	// other commit: it lands on Ack, so a crash before the rescan
+	// finishes redelivers (the counters only ever move forward).
 	if f.haveLoss && (hist.RecordsLost > f.lastLoss[0] || hist.RingSwaps > f.lastLoss[1]) {
 		f.log.Printf("sync: event loss advanced (recordsLost %d>%d, ringSwaps %d>%d); cursor invalidated, full rescan",
 			f.lastLoss[0], hist.RecordsLost, f.lastLoss[1], hist.RingSwaps)
-		f.invalidate(ctx, hist)
+		f.pendValid = true
+		f.plantCursor = false
+		f.pendingID = 0
+		f.pendingLoss = [2]uint64{hist.RecordsLost, hist.RingSwaps}
+		f.dropCursorMemory()
+		f.clearCursorStorage(ctx)
 		return nil, true, nil
 	}
 
-	// First contact (no stored cursor): establish the cursor at the
-	// newest id WITHOUT feeding paths — the index was just reconciled at
-	// daemon start (leaf 03), so everything on disk is already reflected;
-	// feeding the full event stream would re-diff the world for nothing.
-	// A page that carries no ids (an un-cursored provider) plants
-	// nothing: scan-only stays permanent.
+	// First contact (no stored cursor): do NOT plant anything here -
+	// Ack of the initial full scan plants the cursor at the newest id.
+	// The index was just reconciled at daemon start (leaf 03), so
+	// everything on disk is already reflected; feeding the full event
+	// stream would re-diff the world for nothing. A page that carries
+	// no ids (an un-cursored provider) plants nothing: scan-only stays
+	// permanent.
 	if f.lastCursor == 0 {
 		if n := len(hist.Events); n > 0 && hist.Events[n-1].ID > 0 {
-			f.saveState(ctx, hist)
-			f.log.Printf("sync: cursor established at id %d (%d historical events skipped)", hist.Events[n-1].ID, n)
+			f.pendValid = true
+			f.plantCursor = true
+			f.pendingID = hist.Events[n-1].ID
+			f.pendingLoss = [2]uint64{hist.RecordsLost, hist.RingSwaps}
 		}
 		return nil, true, nil
 	}
@@ -165,8 +211,58 @@ func (f *CursorFeed) Delta(ctx context.Context) ([]string, bool, error) {
 	}
 
 	paths := eventsToPaths(hist.Events)
-	f.saveState(ctx, hist)
+	// Pending, NOT durable: a crash before the engine's Ack redelivers
+	// this page (the diff no-ops on unchanged ETags - harmless).
+	f.pendValid = true
+	f.plantCursor = false
+	newest := f.lastCursor
+	if n := len(hist.Events); n > 0 && hist.Events[n-1].ID > newest {
+		newest = hist.Events[n-1].ID
+	}
+	f.pendingID = newest
+	f.pendingLoss = [2]uint64{hist.RecordsLost, hist.RingSwaps}
 	return paths, false, nil
+}
+
+// Ack implements Acker: the engine calls it AFTER the pass's diff-apply
+// committed, and only then does the feed durably advance the cursor
+// (first contact plants it) and the loss baseline. Best-effort: a save
+// failure just means the next Delta redelivers (at-least-once).
+func (f *CursorFeed) Ack(ctx context.Context) {
+	if !f.pendValid {
+		return
+	}
+	if f.plantCursor && f.pendingID > 0 {
+		f.log.Printf("sync: cursor established at id %d (acked after the initial full scan)", f.pendingID)
+	} else if f.pendingID > f.lastCursor {
+		f.lastCursor = f.pendingID
+	}
+	if err := f.store.MetaSet(ctx, cursorMetaKey(f.bucket), strconv.FormatInt(f.pendingID, 10)); err != nil {
+		f.log.Printf("sync: cursor ack save failed (%v); next delta redelivers (at-least-once)", err)
+		return
+	}
+	f.lastCursor = f.pendingID
+	if err := f.store.MetaSet(ctx, lossMetaKey(f.bucket),
+		fmt.Sprintf("%d:%d", f.pendingLoss[0], f.pendingLoss[1])); err != nil {
+		f.log.Printf("sync: cursor loss baseline save failed: %v", err)
+	}
+	f.lastLoss = f.pendingLoss
+	f.haveLoss = true
+	f.pendValid = false
+	f.plantCursor = false
+}
+
+// dropCursorMemory resets the in-memory cursor after a loss invalidation
+// (the next delta is a fresh first contact; Ack re-plants).
+func (f *CursorFeed) dropCursorMemory() {
+	f.lastCursor = 0
+}
+
+// clearCursorStorage deletes the stored cursor (loss invalidation).
+func (f *CursorFeed) clearCursorStorage(ctx context.Context) {
+	if err := f.store.MetaDelete(ctx, cursorMetaKey(f.bucket)); err != nil {
+		f.log.Printf("sync: cursor invalidation failed: %v", err)
+	}
 }
 
 // eventsToPaths maps one events page onto changed FILE keys per the leaf-05
@@ -230,50 +326,25 @@ func (f *CursorFeed) loadState(ctx context.Context) error {
 	} else if !errors.Is(err, index.ErrNotFound) {
 		return err
 	}
-	// Negative-probe cache: a recent 503 means the full scan below is
-	// wasted anyway — but Delta must still return the honest fullScan,
-	// so we do NOT short-circuit here; the cache only exists so future
-	// work (skipping the probe inside its interval) can trust it.
 	return nil
 }
 
-// saveState persists the newest id and the loss counters read off this
-// page. Called only after the page's paths are fully mapped (the
-// at-least-once rule: a crash before this point redelivers the page; a
-// crash after it never loses one).
-func (f *CursorFeed) saveState(ctx context.Context, hist *transport.EventHistory) {
-	newest := f.lastCursor
-	if n := len(hist.Events); n > 0 && hist.Events[n-1].ID > newest {
-		newest = hist.Events[n-1].ID
-	}
-	if err := f.store.MetaSet(ctx, cursorMetaKey(f.bucket), strconv.FormatInt(newest, 10)); err != nil {
-		f.log.Printf("sync: cursor save failed (%v); next delta redelivers (at-least-once)", err)
-		return
-	}
-	f.lastCursor = newest
-	if err := f.store.MetaSet(ctx, lossMetaKey(f.bucket),
-		fmt.Sprintf("%d:%d", hist.RecordsLost, hist.RingSwaps)); err != nil {
-		f.log.Printf("sync: cursor loss baseline save failed: %v", err)
-	}
-	f.lastLoss = [2]uint64{hist.RecordsLost, hist.RingSwaps}
-	f.haveLoss = true
-}
+// Ack (above) is the ONLY writer of the cursor and loss baseline after
+// this point: Delta keeps the page pending so a crash between Delta and
+// Ack redelivers it (at-least-once).
 
-// invalidate drops the cursor after a loss advance: the rescan the engine
-// now runs is authoritative; the NEXT delta re-establishes the cursor at
-// the (already advanced) newest id without feeding its paths.
-func (f *CursorFeed) invalidate(ctx context.Context, hist *transport.EventHistory) {
-	if err := f.store.MetaDelete(ctx, cursorMetaKey(f.bucket)); err != nil {
-		f.log.Printf("sync: cursor invalidation failed: %v", err)
+// probeStampedAt returns the unix second the negative probe was stamped
+// at (0 = no stamp). L37: the write in stampProbe has a reader again.
+func (f *CursorFeed) probeStampedAt(ctx context.Context) int64 {
+	v, err := f.store.MetaGet(ctx, probeMetaKey(f.bucket))
+	if err != nil {
+		return 0
 	}
-	f.lastCursor = 0
-	// The loss baseline still updates: one invalidation per advance, not
-	// one per delta until the end of time.
-	if err := f.store.MetaSet(ctx, lossMetaKey(f.bucket),
-		fmt.Sprintf("%d:%d", hist.RecordsLost, hist.RingSwaps)); err != nil {
-		f.log.Printf("sync: cursor loss baseline save failed: %v", err)
+	stamped, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0
 	}
-	f.lastLoss = [2]uint64{hist.RecordsLost, hist.RingSwaps}
+	return stamped
 }
 
 // stampProbe records "probe negative at <now>" (the re-probe interval's

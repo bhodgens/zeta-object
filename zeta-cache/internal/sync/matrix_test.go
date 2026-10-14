@@ -108,11 +108,18 @@ func TestConflictMatrix(t *testing.T) {
 		},
 		{
 			// Matrix 6: local deleted (tombstone) + remote unchanged ->
-			// DELETE remote.
+			// DELETE remote. The tombstone must carry the generation it
+			// recorded (a synced file the user then deleted - the FUSE
+			// flow keeps the row's etag through DeletePath), because
+			// M14: the delete only fires when the server still holds
+			// THAT generation.
 			name:   "6-local-deleted-remote-unchanged-delete-remote",
 			server: "v1", hasServer: true,
 			indexETag: etagV1,
 			seed: func(h *harness, k string) {
+				// The file was synced first (clean row with the server's
+				// etag), THEN the user deleted it via the mount.
+				h.seedClean(k, etagV1)
 				if err := h.store.DeletePath(bg(), k, "user delete via mount"); err != nil {
 					t.Fatalf("tombstone: %v", err)
 				}

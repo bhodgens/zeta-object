@@ -216,10 +216,12 @@ func (m *MemFS) Put(_ context.Context, key string, body io.ReadSeeker, etag stri
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// Precondition model (mirrors the gateway): a non-empty etag is
-	// If-Match (412 on mismatch); an EMPTY etag is If-None-Match:* (412
-	// when the object already exists - a lost create race). Seeds that
-	// must overwrite use PutRaw.
+	// Precondition model (mirrors the gateway AND the real client's
+	// contract - ONE rule everywhere): a non-empty etag is If-Match
+	// (412 on mismatch); an EMPTY etag is If-None-Match:* (412 when
+	// the object already exists - a lost create race, mapped to
+	// ErrConflict). An unconditional overwrite does not exist in the
+	// contract; seeds that must overwrite use PutRaw.
 	if n, ok := m.nodes[key]; ok && !n.tomb && !n.dir {
 		if etag != "" && md5hex(n.body) != etag {
 			return "", ErrConflict

@@ -57,18 +57,28 @@ type Transport interface {
 	Get(ctx context.Context, key string, req *RangeRequest) (io.ReadCloser, *ObjectInfo, error)
 
 	// Put uploads body (the transport sends Content-Length; the server
-	// rejects chunked PUT bodies) with If-Match etag. An empty etag
-	// means "create unconditionally" (If-Match: * on a missing object
-	// would 412, so first-write uses no precondition). Returns the
-	// server ETag, which IS the stored body MD5.
+	// rejects chunked PUT bodies) under ONE precondition contract:
+	// a non-empty etag sends If-Match (the server answers 412 on a
+	// stale value, mapped to ErrConflict), and an EMPTY etag sends
+	// If-None-Match: * - create-only. An existing object answers 412
+	// (ErrConflict), so the sync engine's matrix-8 upload can never
+	// clobber a remote file that appeared after its listing, and no
+	// caller can overwrite blind: an overwrite must send If-Match with
+	// the generation it believes is current. Returns the server ETag,
+	// which IS the stored body MD5.
 	Put(ctx context.Context, key string, body io.ReadSeeker, etag string) (serverETag string, err error)
 
 	// Mkdir creates a collection (webdav MKCOL).
 	Mkdir(ctx context.Context, key string) error
 
-	// Delete removes a file (or an empty collection) server-side.
-	// The real transport maps HTTP 404 to ErrNotExist; a 409/424 on a
-	// non-empty collection maps to ErrNotEmpty.
+	// Delete removes a file (or an empty collection) server-side. The
+	// etag argument is accepted for interface parity and carries NO
+	// precondition: neither the gateway nor the implementations enforce
+	// If-Match on DELETE. A caller that must not delete an unchanged
+	// generation verifies the listed ETag itself before calling (the
+	// sync engine's matrix 6 does). The real transport maps HTTP 404
+	// to ErrNotExist; a 409/424 on a non-empty collection maps to
+	// ErrNotEmpty.
 	Delete(ctx context.Context, key string, etag string) error
 
 	// Move renames oldKey to newKey atomically server-side (webdav

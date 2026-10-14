@@ -174,10 +174,12 @@ func (c *Client) resourceURL(key string) string {
 	return c.base.String() + (&url.URL{Path: p}).EscapedPath()
 }
 
-// ErrAuthFailed is the DISTINCT h3 auth failure: the QUIC TLS handshake
-// died with a crypto error (missing/wrong client cert - there is no
-// HTTP 401 over h3). Callers surface it differently from network errors.
-var ErrAuthFailed = errors.New("transport: h3 handshake rejected (certificate auth failed)")
+// ErrAuthFailed is the DISTINCT auth failure, from either
+// authenticator: a TCP answer of 401/403 (Basic credentials rejected)
+// or an h3 QUIC TLS handshake killed by a crypto error (missing/wrong
+// client cert - there is no HTTP status over h3). errors.Is works for
+// both shapes. Callers surface it differently from network errors.
+var ErrAuthFailed = errors.New("transport: authentication failed")
 
 // asAuthFailed wraps err in ErrAuthFailed when it carries a quic-go
 // crypto TransportError; other errors pass through untouched.
@@ -186,7 +188,7 @@ func asAuthFailed(err error) error {
 		return nil
 	}
 	if terr, ok := errors.AsType[*quic.TransportError](err); ok && terr.ErrorCode.IsCryptoError() {
-		return fmt.Errorf("%w (%s)", ErrAuthFailed, terr.Error())
+		return fmt.Errorf("%w: h3 handshake rejected (%s)", ErrAuthFailed, terr.Error())
 	}
 	return err
 }
@@ -287,6 +289,9 @@ var ErrNotModified = errors.New("transport: not modified (304)")
 // UDP unreachable / handshake refused before any HTTP byte flowed.
 // quic-go surfaces TLS handshake failures as TransportError with a
 // crypto error code - the auth-failure shape (leaf-06 requirement).
+// The buckets are TYPE-based: string sniffing cannot tell a misclassified
+// dial failure from a mid-flight one, and re-driving the latter would
+// double-apply a PUT.
 func classifyH3Err(err error) (errClass, bool) {
 	if err == nil {
 		return classDial, false
@@ -309,8 +314,20 @@ func classifyH3Err(err error) (errClass, bool) {
 	if _, ok := errors.AsType[net.Error](err); ok {
 		return classDial, false
 	}
-	if strings.Contains(err.Error(), "handshake") || strings.Contains(err.Error(), "udp") ||
-		strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "network") {
+	// Typed quic-go connection-level errors (handshake timeout,
+	// stateless reset, idle timeout, version negotiation) are
+	// provably pre-send; anything else is treated as sent - the
+	// conservative side never retries a consumed body.
+	if _, ok := errors.AsType[*quic.StatelessResetError](err); ok {
+		return classDial, false
+	}
+	if _, ok := errors.AsType[*quic.HandshakeTimeoutError](err); ok {
+		return classDial, false
+	}
+	if _, ok := errors.AsType[*quic.IdleTimeoutError](err); ok {
+		return classDial, false
+	}
+	if _, ok := errors.AsType[*quic.VersionNegotiationError](err); ok {
 		return classDial, false
 	}
 	return classSent, false
@@ -377,6 +394,9 @@ func (c *Client) newRequest(ctx context.Context, method, key string, body io.Rea
 }
 
 // do issues one request over the chosen transport with auth applied.
+// The request body, when it is an io.ReadSeeker, is re-seekable: do sets
+// req.GetBody so the h3->TCP fallback (a classDial failure) can rebuild
+// a consumed body instead of resending nothing.
 func (c *Client) do(ctx context.Context, method, key string, body io.Reader, contentLen int64, hdr map[string]string) (*http.Response, error) {
 	req, err := c.newRequest(ctx, method, key, body)
 	if err != nil {
@@ -384,6 +404,22 @@ func (c *Client) do(ctx context.Context, method, key string, body io.Reader, con
 	}
 	if contentLen >= 0 {
 		req.ContentLength = contentLen // NEVER chunked: the gateway 400s chunked PUTs
+	}
+	// L37-adjacent safety: without GetBody an h3 dial-class fallback
+	// would re-drive the request with an already-consumed body reader.
+	if rs, ok := body.(io.ReadSeeker); ok && body != nil {
+		getBody := func() (io.ReadCloser, error) {
+			if _, err := rs.Seek(0, io.SeekStart); err != nil {
+				return nil, err
+			}
+			return io.NopCloser(rs), nil
+		}
+		req.GetBody = getBody
+		if err := req.Body.Close(); err == nil {
+			if b, berr := getBody(); berr == nil {
+				req.Body = b
+			}
+		}
 	}
 	for k, v := range hdr {
 		req.Header.Set(k, v)
@@ -414,6 +450,11 @@ func statusErr(resp *http.Response) error {
 		return ErrNoParent
 	case http.StatusMethodNotAllowed:
 		return ErrExist
+	case http.StatusUnauthorized, http.StatusForbidden:
+		// Both authenticators (Basic over TCP, mTLS over h3) surface
+		// through the same sentinel: errors.Is(err, ErrAuthFailed).
+		return fmt.Errorf("%w: server answered HTTP %d for %s %s",
+			ErrAuthFailed, resp.StatusCode, resp.Request.Method, resp.Request.URL.Path)
 	default:
 		return fmt.Errorf("transport: unexpected HTTP %d for %s %s", resp.StatusCode, resp.Request.Method, resp.Request.URL.Path)
 	}
@@ -455,15 +496,20 @@ func (c *Client) Get(ctx context.Context, key string, req *RangeRequest) (io.Rea
 // --- Transport: Put -------------------------------------------------------
 
 // Put implements Transport. Content-Length is ALWAYS set (chunked is a
-// 400); ifMatch non-empty sends If-Match, ifMatch empty AND ifNoneStar
-// (see PutOpts) sends If-None-Match: *.
+// 400). ONE precondition contract across the transport: an empty etag
+// means If-None-Match:* (create-only - an existing object answers 412,
+// mapped to ErrConflict), a non-empty etag means If-Match (overwrite
+// only when the server still holds that generation). A caller that
+// truly wants an unconditional overwrite must read the current ETag and
+// send it as If-Match; see the Transport interface doc.
 func (c *Client) Put(ctx context.Context, key string, body io.ReadSeeker, etag string) (string, error) {
-	return c.PutOpts(ctx, key, body, etag, false)
+	return c.PutOpts(ctx, key, body, etag, etag == "")
 }
 
-// PutOpts is Put with explicit control over the create precondition: the
-// sync engine's matrix-8 upload uses If-None-Match:* (create only), the
-// plain overwrite uses If-Match. size < 0 means "seek to measure".
+// PutOpts is Put with explicit control over the create precondition
+// (ifNoneStar forces If-None-Match:* regardless of ifMatch; the sync
+// engine's matrix-8 upload uses Put(ctx, key, body, "") which resolves
+// to the same thing). size < 0 means "seek to measure".
 func (c *Client) PutOpts(ctx context.Context, key string, body io.ReadSeeker, ifMatch string, ifNoneStar bool) (string, error) {
 	size, err := body.Seek(0, io.SeekEnd)
 	if err != nil {
@@ -476,8 +522,14 @@ func (c *Client) PutOpts(ctx context.Context, key string, body io.ReadSeeker, if
 	switch {
 	case ifMatch != "":
 		hdr["If-Match"] = quoteETag(ifMatch)
-	case ifNoneStar:
+	default:
+		// Empty etag (or explicit ifNoneStar): create-only. The sync
+		// engine's matrix-8 upload EXPECTS the 412 on a lost create
+		// race; an unconditional overwrite is never sent blind.
 		hdr["If-None-Match"] = "*"
+		if ifNoneStar && ifMatch != "" {
+			delete(hdr, "If-Match")
+		}
 	}
 	resp, err := c.do(ctx, http.MethodPut, key, body, size, hdr)
 	if err != nil {
@@ -513,9 +565,14 @@ func (c *Client) Mkdir(ctx context.Context, key string) error {
 
 // --- Transport: Delete ----------------------------------------------------
 
-// Delete implements Transport. The interface carries an etag argument the
-// gateway does not enforce on DELETE (no If-Match there); it is accepted
-// for interface parity and ignored.
+// Delete implements Transport. The interface carries an etag argument
+// for interface parity, but the gateway does not enforce a precondition
+// on DELETE (no If-Match on the wire) and this client does not add one;
+// the etag is accepted and IGNORED. Unchanged-ness is therefore the
+// CALLER's duty: the sync engine compares the listing's ETag against
+// the tombstone's known-good value BEFORE calling Delete (diff.go
+// matrix 6). Delete maps 404 to ErrNotExist and 409/424 on a
+// non-empty collection to ErrNotEmpty.
 func (c *Client) Delete(ctx context.Context, key string, _ string) error {
 	resp, err := c.do(ctx, http.MethodDelete, key, nil, -1, nil)
 	if err != nil {
