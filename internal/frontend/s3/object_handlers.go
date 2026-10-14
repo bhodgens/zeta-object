@@ -1473,6 +1473,19 @@ func validateObjectKey(key string) error {
 			return fmt.Errorf("object key cannot contain %q path segments", ".uploads")
 		}
 	}
+	// CANONICAL FORM (bughunt W2-M9): reject keys that Clean would collapse
+	// ("a//b", "a/./b", "/a", "a/", "a/b/"), the same rule fsbackend's
+	// validateKey enforces (paths.go). filepath.Clean silently folds these
+	// onto the same on-disk path, so Put("a//b") and Put("a/b") would alias
+	// one object — and the MULTIPART path (assembleCompletedObject's direct
+	// fs staging + rename) never re-validates through the backend, so the
+	// handler-side rule is the ONLY thing standing there. S3 keys are
+	// byte-exact; such keys are rejected as InvalidArgument instead of
+	// colliding. The bare key "." is rejected by the same check
+	// (Clean("/.") == "/" != "/.").
+	if cleaned != "/"+key {
+		return fmt.Errorf(`object key must be in canonical form (no empty or "." path segments, no leading/trailing slash)`)
+	}
 	return nil
 }
 
@@ -1636,11 +1649,23 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 		writeS3Error(w, code, message, status)
 		return
 	}
-	data, readErr := io.ReadAll(srcRC)
+	// BUGHUNT W2-M8: the source read is capped exactly like the batch twin
+	// (batch_endpoint.go's batchCopyMaxBytes LimitReader + oversize check).
+	// An unbounded io.ReadAll here let a single CopyObject buffer an
+	// arbitrarily large source — an object larger than the cap could never
+	// have been written by a single Put either (the batch copy's rationale,
+	// batch_endpoint.go:47-61), so nothing S3-reachable is rejected by the
+	// gate. The same LimitReader+1/oversize shape, the same error text.
+	data, readErr := io.ReadAll(io.LimitReader(srcRC, batchCopyMaxBytes+1))
 	srcRC.Close()
 	if readErr != nil {
 		log.Printf("Error reading source object data %s/%s: %v", strconv.Quote(srcBucket), strconv.Quote(srcKey), readErr)
 		writeS3ErrorFrom(w, readErr)
+		return
+	}
+	if int64(len(data)) > batchCopyMaxBytes {
+		log.Printf("CopyObject source %s/%s exceeds the maximum object size %d", strconv.Quote(srcBucket), strconv.Quote(srcKey), batchCopyMaxBytes)
+		writeS3Error(w, "InvalidArgument", fmt.Sprintf("object size exceeds the maximum allowed size %d", batchCopyMaxBytes), http.StatusBadRequest)
 		return
 	}
 
@@ -1688,6 +1713,34 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 		return
 	}
 
+	// s3-versioning (bughunt W2-H2): on a versioning-ENABLED destination
+	// bucket the object's CURRENT bytes become one version on overwrite.
+	// The capture mirrors putObjectHandler's gate exactly (state read →
+	// capture before the Put; the record lands after it — the backend
+	// rewrites the sidecar wholesale, so a pre-write record would be
+	// destroyed by the write itself). A state READ FAILURE FAILS CLOSED
+	// (bughunt M6 parity): treating an unreadable state as "not versioned"
+	// turned a transient EIO into a silent unversioned overwrite. OFF /
+	// Suspended buckets skip the capture (plain-overwrite semantics; the
+	// state read on a never-versioned bucket is one missing-file stat that
+	// answers Off with a nil error).
+	var copyCapturedOld *capturedObjectVersion
+	copyState, copyStateErr := versionStoreForBucket(dstBucketPath).State(bucketName)
+	if copyStateErr != nil {
+		log.Printf("Error reading versioning state for %s: %v", strconv.Quote(bucketName), copyStateErr)
+		writeS3Error(w, "InternalError", "Error reading bucket versioning state.", http.StatusInternalServerError)
+		return
+	}
+	if copyState == versioningEnabled {
+		captured, capErr := captureCurrentObjectVersion(dstBucketPath, objectName)
+		if capErr != nil && !errors.Is(capErr, errNoPriorVersion) {
+			log.Printf("Error capturing prior version for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), capErr)
+			writeS3Error(w, "InternalError", "Error capturing object version.", http.StatusInternalServerError)
+			return
+		}
+		copyCapturedOld = captured
+	}
+
 	_, putErr := backendCall(bucketName, func(b backend.Backend) (objectmodel.Object, error) {
 		return b.Put(r.Context(), bucketName, objectName, bytes.NewReader(data), int64(len(data)),
 			objectmodel.PutOptions{ContentType: dstContentType, Metadata: dstMeta, Principal: principalOfRequest(r)})
@@ -1703,6 +1756,20 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 		if tagStoreErr := tagStoreFor(dstBucketPath).Put(objectName, dstTags); tagStoreErr != nil {
 			log.Printf("Error storing tags for copy destination %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), tagStoreErr)
 			writeS3ErrorFrom(w, tagStoreErr)
+			return
+		}
+	}
+	// s3-versioning (bughunt W2-H2): record the CAPTURED old bytes as one
+	// version, after the successful write — the same Put → record order
+	// putObjectHandler documents (the backend owns and rewrites the sidecar
+	// on Put). A capture of nil means create/no prior object. Before this
+	// gate existed a CopyObject onto an existing destination wiped its
+	// version history (the sidecar is rewritten wholesale) — the same
+	// class as the CMPU H8 wipe, on the one write path H8 missed.
+	if copyCapturedOld != nil {
+		if recErr := recordCapturedObjectVersion(dstBucketPath, bucketName, objectName, copyCapturedOld); recErr != nil {
+			log.Printf("Error recording prior version for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), recErr)
+			writeS3Error(w, "InternalError", "Error recording object version.", http.StatusInternalServerError)
 			return
 		}
 	}

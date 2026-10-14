@@ -7,6 +7,7 @@ package webdav
 import (
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/frontend"
@@ -194,6 +195,20 @@ func (f *Frontend) authorize(w http.ResponseWriter, r *http.Request, id auth.Ide
 	if res.isRoot {
 		return f.authorizeRoot(w, r, id, write)
 	}
+	// BUGHUNT W2-M3: DELETE is governed by the DELETE grant (the s3 op
+	// adapter maps DELETE → OpDelete, never OpWrite), not by the write
+	// classification. The write-only classification let a write-only
+	// webdav identity delete while a delete-only s3 grant 403'd here;
+	// AuthorizeOp is the same single decision the s3 frontend's
+	// authorizeS3Request runs, so both frontends answer the same way for
+	// the same identity+bucket.
+	if requireDeleteOp(r.Method) {
+		if !auth.AuthorizeOp(id, auth.OpDelete, res.bucket, res.key, time.Now().UTC()) {
+			writeDavError(w, http.StatusForbidden, "")
+			return false
+		}
+		return true
+	}
 	if err := frontend.AuthorizeRequest(id, res.bucket, write); err != nil {
 		writeDavError(w, http.StatusForbidden, "")
 		return false
@@ -248,17 +263,35 @@ func (f *Frontend) authorizeRoot(w http.ResponseWriter, r *http.Request, id auth
 // source; the destination check happens in handleCopyMove against the
 // parsed Destination, so classification here only decides the source gate
 // (read) — the write gate is enforced there before any Backend call.
+//
+// BUGHUNT W2-M3 (grant-vocabulary drift): the two-bit write classification
+// alone drifted from the s3 frontend's op mapping in two ways. LOCK/UNLOCK
+// fell to the default (read), so a read-only principal could lock every
+// key it can read and 423 every writer off the object — locking MUTATES
+// lock state, so it requires write. And DELETE required only write, so a
+// write-only webdav identity could delete (the s3 DELETE requires
+// OpDelete) while a delete-only s3 grant 403'd here. The op-level rules
+// now mirror the s3 adapter table exactly; requireDeleteOp names the
+// methods the extra AuthorizeOp(OpDelete) check applies to (dispatch's
+// authorize, after the write check).
 func requestGrantsWrite(method string) bool {
 	switch method {
-	case "PUT", "DELETE", "MKCOL":
-		return true
-	case "MOVE":
-		// MOVE's destructive half (source delete) needs Write on the
-		// source bucket; COPY's source needs only Read.
+	case "PUT", "DELETE", "MKCOL", "MOVE", "LOCK", "UNLOCK":
 		return true
 	default:
 		return false
 	}
+}
+
+// requireDeleteOp reports whether method is governed by the delete grant
+// INSTEAD of the write grant (bughunt W2-M3: DELETE → OpDelete, mirroring
+// the s3 adapter's DELETE mapping exactly — the s3 adapter classifies
+// DELETE as OpDelete, never OpWrite, so a delete-only grant works there
+// while a write-only one cannot delete). MKCOL/MOVE/PUT stay write-only —
+// a directory create or a rename is not a deletion, and the v1 write floor
+// covers them exactly as it does on the s3 surface.
+func requireDeleteOp(method string) bool {
+	return method == "DELETE"
 }
 
 // handleOPTIONS advertises the DAV class-1 subset (leaf 02 Task 4).

@@ -30,8 +30,12 @@
 package webdav
 
 import (
+	"log"
 	"net/http"
+	"strconv"
+	"time"
 
+	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/frontend"
 	s3 "github.com/bhodgens/zeta-object/internal/frontend/s3"
 )
@@ -76,7 +80,24 @@ func (f *Frontend) batchDispatch(w http.ResponseWriter, r *http.Request, res res
 	// for POST); this re-checks the SUB-RESOURCE's classification,
 	// the same one-request-two-scope shape as COPY/MOVE's independent
 	// destination gate.
+	//
+	// BUGHUNT W2-M1 (s3-mount parity): a manifest executes put/copy AND
+	// delete items, and the executor runs no per-item grant check — so the
+	// write check alone still let a WRITE-ONLY grant delete through the
+	// mount while the single-op DELETE path required the delete grant.
+	// Require OpDelete too (auth.AuthorizeOp directly — AuthorizeRequest's
+	// bool vocabulary cannot express a second op). Deletes are the
+	// destructive subset: write covers the put/copy items, delete the
+	// delete items, and an identity holding both is exactly what the s3
+	// mount now requires (dispatch.go's W2-M1 gate), so both mounts make
+	// the SAME decision for the SAME identity.
 	if err := frontend.AuthorizeRequest(identityOf(r), res.bucket, true); err != nil {
+		writeDavError(w, http.StatusForbidden, "")
+		return true
+	}
+	if !auth.AuthorizeOp(identityOf(r), auth.OpDelete, res.bucket, "", time.Now().UTC()) {
+		log.Printf("webdav batch: identity %s denied on %s (POST ?batch requires write AND delete grants)",
+			strconv.Quote(identityOf(r).AccessKeyID), strconv.Quote(res.bucket))
 		writeDavError(w, http.StatusForbidden, "")
 		return true
 	}

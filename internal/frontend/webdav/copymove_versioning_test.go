@@ -1,29 +1,22 @@
-// copymove_versioning_test.go — bughunt L3: a webdav COPY manufactured a
-// version record its S3 CopyObject counterpart never would.
+// copymove_versioning_test.go — bughunt L3, superseded by W2-H2 COPY
+// parity: BOTH copy paths now record the destination's pre-copy bytes as
+// one version on a versioning-Enabled bucket.
 //
-// copymove.go ran the destination Put of BOTH COPY and MOVE through
-// captureBeforePut/recordAfterPut. That is right for MOVE (a rename the fs
-// performs, with no s3 counterpart standing in for it) and WRONG for a
-// plain COPY:
+// History: copymove.go once ran only MOVE's destination Put through
+// captureBeforePut/recordAfterPut, because s3's copyObjectHandler had NO
+// capture/record call — a plain webdav COPY recording a version its s3
+// counterpart never wrote was the L3 divergence, and the pins here held
+// both sides at "records nothing".
 //
-//	copyObjectHandler has NO capture/record/version call for the
-//	destination write at all. Its only version reference REJECTS
-//	?versionId= in the copy SOURCE. So on a versioning-Enabled bucket,
-//	s3 CopyObject overwrites the destination and records NO version,
-//	while the webdav COPY recorded one.
-//
-// Consequences the pins below make concrete:
-//   - sidecar/reflink/both: the destination gains a version entry the
-//     same copy via s3 would never have written.
-//   - reflink/both on a bucket with per-bucket
-//     zfs_versioning_reflinkRetention: 0 (keep ZERO version copies): the
-//     manufactured record invokes pruneReflinkVersions, which DELETES
-//     prior version data files. A plain COPY must not destroy version
-//     history that the identical copy via s3 preserves.
-//
-// PINNED DECISION: a plain webdav COPY records NO version on the
-// destination — s3 CopyObject parity. MOVE keeps its destination capture,
-// and MOVE's source-delete half is unchanged.
+// W2-H2 closed the s3 gap instead: copyObjectHandler got the same
+// capture→Put→record gate every other write path had, so s3 CopyObject
+// now records the destination's pre-copy bytes. A webdav COPY that
+// skipped the capture became the divergence (the pins failed the moment
+// the s3 fix landed — the two wire paths disagreed on recorded entries).
+// The pinned decision is now: a plain webdav COPY records the SAME
+// version entry the identical copy via s3 records — identical history
+// after either path. MOVE keeps its destination capture (unchanged), and
+// MOVE's source-delete half is unchanged.
 package webdav
 
 import (
@@ -172,18 +165,36 @@ func TestWebdavCOPY_NoVersionRecordMatchesS3CopyObject(t *testing.T) {
 				t.Fatalf("%s mode: webdav COPY recorded %d version entries, s3 CopyObject recorded %d — the two copy paths must agree:\n dav: %+v\n s3:  %+v",
 					mode, len(davVersions), len(s3Versions), davVersions, s3Versions)
 			}
-			// The MANUFACTURED-RECORD discriminator, independent of how
-			// many pre-existing entries either side ends up listing (the
-			// backend Put rewrites the sidecar wholesale, so the s3 copy
-			// starts from an empty array — a pre-existing entry's fate is
-			// CopyObject's own pre-existing question, not COPY parity's):
-			// only a capture would leave an entry whose bytes are the
-			// destination's PRE-COPY content.
+			// W2-H2 parity: BOTH copies must have recorded the
+			// destination's pre-copy bytes (the fixture held exactly one
+			// prior entry; the copy adds the second for it). A missing
+			// entry on either side means that path wiped history — the
+			// sidecar is rewritten wholesale by the backend Put.
+			if len(davVersions) != 2 {
+				t.Fatalf("%s mode: after the COPY the destination history = %d entries, want 2 (the fixture's one + the pre-copy bytes BOTH copy paths now record — W2-H2): dav %+v, s3 %+v",
+					mode, len(davVersions), davVersions, s3Versions)
+			}
 			for _, v := range davVersions {
-				if v.Size == int64(len("old-v2-dav")) && !v.IsDeleteMarker {
-					t.Fatalf("%s mode: the webdav COPY manufactured a version entry for the destination's pre-copy bytes (%d bytes): %+v — s3 CopyObject records no version for the destination write",
-						mode, len("old-v2-dav"), v)
+				if v.Size != int64(len("old-v2-dav")) || v.IsDeleteMarker {
+					t.Fatalf("%s mode: the webdav COPY recorded %+v, want one entry of the destination's pre-copy bytes (%d bytes) — W2-H2 parity with s3 CopyObject",
+						mode, v, len("old-v2-dav"))
 				}
+			}
+			// Byte fidelity of the recorded versions (both on-disk layouts,
+			// via the shared helper): the set must be exactly the two
+			// historical byte generations - the second PUT recorded the
+			// first put's bytes (a create records nothing), and the COPY
+			// recorded the pre-copy bytes.
+			got := map[string]bool{}
+			for _, v := range davVersions {
+				b := string(readVersionDataFile(t, e.bucketPath, "dst-dav.txt", v.ID))
+				if b != "old-v1-dav" && b != "old-v2-dav" {
+					t.Fatalf("%s mode: recorded version %s bytes = %q, want one of the dst historical generations", mode, v.ID, b)
+				}
+				got[b] = true
+			}
+			if !got["old-v1-dav"] || !got["old-v2-dav"] {
+				t.Fatalf("%s mode: recorded version bytes %v, want both historical generations", mode, got)
 			}
 			// Both copies really wrote the destination bytes.
 			for _, key := range []string{"dst-dav.txt", "dst-s3.txt"} {
@@ -250,20 +261,18 @@ func TestWebdavCOPY_RetentionZeroDoesNotPrunePriorVersionData(t *testing.T) {
 		t.Fatalf("webdav COPY onto an existing destination = %d, want 204", code)
 	}
 
-	// The prior version data MUST still be on disk: a plain COPY is not
-	// allowed to prune history that s3 CopyObject preserves.
-	if got := versionDataFilesFor(t, e.bucketPath, "dst.txt"); got != dataFilesBefore {
-		t.Fatalf("webdav COPY pruned version data files for dst.txt: %d on disk, want %d preserved (per-bucket reflinkRetention 0 must not fire for a plain COPY)",
-			got, dataFilesBefore)
-	}
-	// The prior version's BYTES are still on disk, readable at the exact
-	// path the fixture's PUT recorded (a prune DELETES that file, so this
-	// is the destruction check proper — List cannot see it because the
-	// backend Put rewrote the sidecar wholesale, which happens on the s3
-	// copy path identically; see the parity assert below).
-	preserved := readVersionDataFile(t, e.bucketPath, "dst.txt", fixtureVersions[0].ID)
-	if string(preserved) != "old-v1" {
-		t.Fatalf("preserved version bytes = %q, want old-v1", preserved)
+	// W2-H2: the COPY now records the pre-copy bytes (parity with s3
+	// CopyObject), so the retention-0 prune fires for it exactly as it
+	// fires for a plain PUT (the control test below). Retention is host
+	// policy — keep-zero means keep-zero for EVERY recording write, copy
+	// included. The L3-era expectation ("a COPY must not prune") pinned
+	// the no-record special case; with both paths recording, pruning here
+	// is the CONSISTENT behavior, and the destruction risk the old pin
+	// guarded (webdav pruning bytes s3's copy preserved) cannot recur:
+	// the parity assert below holds both paths to the same outcome.
+	if got := versionDataFilesFor(t, e.bucketPath, "dst.txt"); got != 0 {
+		t.Fatalf("webdav COPY on a retention-0 bucket left %d version data file(s) for dst.txt, want 0 (retention is host policy for every recording write — W2-H2 parity)",
+			got)
 	}
 
 	// Parity: the same-shaped destination copied through the s3 handler

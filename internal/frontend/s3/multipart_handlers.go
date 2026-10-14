@@ -691,16 +691,21 @@ func tagsForCompletion(w http.ResponseWriter, bucketPath, objectName string, ok 
 // and CopyObject use.
 func finalizeComplete(w http.ResponseWriter, r *http.Request, bucketName, objectName, uploadID, bucketPath, mpUploadMetaPath, partsDir, finalObjectPath, objectMetadataPath, finalTempPath string, meta ObjectMetadata, finalETag string, totalSize int64, priorTags map[string]string, capturedOld *capturedObjectVersion, failCleanup *bool) {
 
-	if err := writeFileAtomicJSON(objectMetadataPath, meta, 0644); err != nil {
-		log.Printf("Error writing final object metadata file %s: %v", strconv.Quote(objectMetadataPath), err)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(errorToXML("InternalError", "Error writing metadata.")))
-		return
-	}
-
 	// Rename the fully assembled temp file over the final object. Until this
 	// point the previous object version was untouched.
+	//
+	// BUGHUNT W2-M7: this rename runs BEFORE the sidecar write below. The
+	// old order (sidecar first) let a rename failure strand a sidecar
+	// claiming the NEW ETag over the OLD bytes — data and bookkeeping
+	// disagreed with no rollback. The crash-safe order every other write
+	// path documents (recordCapturedObjectVersion's "data first, then
+	// bookkeeping"; putObjectHandler/batch copy's Put-then-record) puts
+	// the data commit first: a rename failure now leaves the previous
+	// object (bytes AND sidecar) completely untouched, and the 500 answers
+	// over a consistent state. A sidecar failure AFTER a successful rename
+	// is the pre-existing residual (data committed, sidecar stale) — the
+	// same residual a crash between the two writes leaves, unchanged in
+	// kind by this reorder.
 	if err := os.Rename(finalTempPath, finalObjectPath); err != nil { //nolint:gosec // G703: derived from validated objectName; no traversal possible.
 		log.Printf("Error renaming temporary assembly file %s over %s: %v", strconv.Quote(finalTempPath), strconv.Quote(finalObjectPath), err)
 		w.Header().Set("Content-Type", "application/xml")
@@ -709,6 +714,14 @@ func finalizeComplete(w http.ResponseWriter, r *http.Request, bucketName, object
 		return
 	}
 	*failCleanup = false // rename consumed the temp file
+
+	if err := writeFileAtomicJSON(objectMetadataPath, meta, 0644); err != nil {
+		log.Printf("Error writing final object metadata file %s: %v", strconv.Quote(objectMetadataPath), err)
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(errorToXML("InternalError", "Error writing metadata.")))
+		return
+	}
 
 	// BUGHUNT F2: the version record runs BEFORE the tags restore. A
 	// tag-restore failure 500s either way, but with the old order (tags

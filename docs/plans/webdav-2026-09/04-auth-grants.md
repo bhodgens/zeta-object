@@ -27,7 +27,13 @@ After this leaf:
 2. Credentials validated by the auth tree's BasicAuthenticator yield an
    `Identity`; enforcement uses ONLY `Identity.BucketGrants`:
    - `Grant.Read` false ⇒ 403 on GET, HEAD, PROPFIND, COPY (source), MOVE (source)
-   - `Grant.Write` false ⇒ 403 on PUT, DELETE, MKCOL, COPY (destination), MOVE (destination)
+   - `Grant.Write` false ⇒ 403 on PUT, MKCOL, COPY (destination), MOVE (destination), LOCK, UNLOCK
+   - DELETE requires the DELETE grant (not write) — the s3 op adapter maps
+     DELETE → OpDelete; the webdav gate must answer the same way for the
+     same grant set (bughunt W2-M3, 2026-10: a write-only webdav identity
+     could delete while a delete-only s3 grant 403'd here; LOCK/UNLOCK also
+     moved from the read class to write — locking mutates lock state, so a
+     read-only principal must not be able to lock keys it can read).
 3. Read-only identities can mount and browse; every write attempt gets 403.
 4. The 401-vs-403 distinction is exact: 401 = "who are you" (absent/bad
    credentials), 403 = "I know you, and no" (valid identity, missing grant).

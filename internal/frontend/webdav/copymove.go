@@ -114,28 +114,29 @@ func (f *Frontend) handleCopyMove(w http.ResponseWriter, r *http.Request, src re
 		ContentType: srcObj.ContentType,
 		IfNoneMatch: conditionForOverwrite(r, dstExists),
 	}
-	// Leaf 05 (quic-h3-2026-10): MOVE's destination Put goes through the
-	// SAME versioning capture path as a plain PUT (an overwrite of a
-	// versioned object records the old bytes — the rename the fs performs
-	// has no s3 operation standing in for it). The SOURCE delete half of a
-	// MOVE manufactures NO versions beyond what its own DeleteObject
-	// counterpart records (a delete marker where the mode has them), and
-	// the deliberate no-op on an unversioned source is pinned by
-	// TestWebdavMOVE_NoVersionsPinned.
+	// Leaf 05 (quic-h3-2026-10) + bughunt W2-H2 parity: BOTH COPY and
+	// MOVE now run the destination Put through the SAME versioning capture
+	// path as a plain PUT (an overwrite of a versioned object records the
+	// old bytes). The SOURCE delete half of a MOVE manufactures NO versions
+	// beyond what its own DeleteObject counterpart records (a delete marker
+	// where the mode has them), and the deliberate no-op on an unversioned
+	// source is pinned by TestWebdavMOVE_NoVersionsPinned.
 	//
-	// A plain COPY records NOTHING (bughunt L3). copyObjectHandler has NO
-	// capture/record/version call for the destination write at all — its
-	// only version reference REJECTS ?versionId= in the copy SOURCE — so
-	// s3 CopyObject overwrites the destination and leaves the version
-	// history untouched. Running the capture here made the webdav COPY
-	// manufacture an entry its s3 counterpart never would, and in the
-	// reflink modes the extra record invoked pruneReflinkVersions: on a
-	// bucket with per-bucket zfs_versioning_reflinkRetention 0 (keep ZERO
-	// version copies) a plain COPY DELETED prior version data that the same
-	// copy via s3 preserved. The old comment here reasoned about MOVE's
-	// CopyObject+DeleteObject pair, which does not hold for a COPY — the
-	// pair's destination leg IS a CopyObject, and CopyObject records
-	// nothing.
+	// WHY COPY CAPTURES NOW (W2-H2): copyObjectHandler had NO
+	// capture/record call, so a plain COPY originally recorded NOTHING here
+	// to stay in s3-CopyObject parity (bughunt L3). W2-H2 gave s3
+	// CopyObject the same capture→Put→record gate every other write path
+	// (PutObject, CMPU completion, batch copy) already had — on a
+	// versioning-Enabled bucket the wholesale sidecar rewrite was silently
+	// destroying the destination's history. With the s3 handler recording,
+	// a webdav COPY that skipped the capture became the divergence: the
+	// two copies of the same file disagreed about whether history
+	// survives. The parity pins (copymove_versioning_test.go) assert
+	// IDENTICAL post-copy state on both wire paths, which only a capture
+	// on BOTH sides satisfies. The L3 destruction hazard the no-record
+	// decision guarded against (reflinkRetention 0 pruning prior version
+	// data) is equally present in s3 CopyObject and is the versioning
+	// gate's deliberate semantics, not a COPY-specific defect.
 	//
 	// A capture failure FAILS the whole request (fail-closed, PUT parity):
 	// the destination bytes must not land while the versioning record of
@@ -144,10 +145,10 @@ func (f *Frontend) handleCopyMove(w http.ResponseWriter, r *http.Request, src re
 	// production wires only WithLockStoreRoot, so the old
 	// `f.bucketPathFn != nil` test made this branch dead and a MOVE
 	// overwrite recorded no version in production.
-	if dstBucketPath := f.bucketPath(dstRes.bucket); dstBucketPath != "" && isMove {
+	if dstBucketPath := f.bucketPath(dstRes.bucket); dstBucketPath != "" {
 		capturedOld, captured, capErr := captureBeforePut(dstBucketPath, dstRes.bucket, dstRes.key)
 		if capErr != nil {
-			log.Printf("webdav MOVE %s/%s: capturing prior version: %v", strconv.Quote(dstRes.bucket), strconv.Quote(dstRes.key), capErr)
+			log.Printf("webdav COPY/MOVE %s/%s: capturing prior version: %v", strconv.Quote(dstRes.bucket), strconv.Quote(dstRes.key), capErr)
 			writeDavError(w, http.StatusInternalServerError, "")
 			return
 		}
@@ -158,7 +159,7 @@ func (f *Frontend) handleCopyMove(w http.ResponseWriter, r *http.Request, src re
 		}
 		if captured {
 			if recErr := recordAfterPut(dstBucketPath, dstRes.bucket, dstRes.key, capturedOld); recErr != nil {
-				log.Printf("webdav MOVE %s/%s: recording prior version: %v", strconv.Quote(dstRes.bucket), strconv.Quote(dstRes.key), recErr)
+				log.Printf("webdav COPY/MOVE %s/%s: recording prior version: %v", strconv.Quote(dstRes.bucket), strconv.Quote(dstRes.key), recErr)
 				writeDavError(w, http.StatusInternalServerError, "")
 				return
 			}

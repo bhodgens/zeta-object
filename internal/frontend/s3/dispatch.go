@@ -225,6 +225,29 @@ func authorizeS3Request(w http.ResponseWriter, id auth.Identity, bucket, key str
 		writeAuthFailure(w, authFailureError{"AccessDenied", "Access Denied", httpStatusForbidden})
 		return false
 	}
+	// BUGHUNT W2-M1: POST ?batch executes manifest items that write AND
+	// delete, but opForMethod can classify it with only ONE op (OpWrite).
+	// The executor runs no per-item grant check, so a write-only grant
+	// could delete through the batch mount while the single-op DELETE path
+	// correctly required OpDelete. Deletes are the destructive subset, so
+	// the batch sub-resource requires the identity to hold BOTH: OpWrite
+	// (the put/copy items) and OpDelete (the delete items). Reading the
+	// body to inspect the manifest before authorizing would trade this
+	// coarse gate for a pre-auth body read — not worth it; requiring both
+	// ops is the conservative direction on every axis. The double-param
+	// ?delete&batch form is excluded here: it never reaches the batch
+	// handler (conflictingBatchParams rejects it 400 in
+	// bucketLevelDispatch — the F1 pin), so requiring OpDelete for it in
+	// authz would change that answer to 403 and silently re-order the F1
+	// rejection behind the grant gate.
+	if r.Method == "POST" && key == "" && r.URL.Query().Has("batch") && !r.URL.Query().Has("delete") {
+		if !auth.AuthorizeOp(id, auth.OpDelete, bucket, key, time.Now().UTC()) {
+			log.Printf("Authorization Denied: identity %s, bucket %s (POST ?batch requires write AND delete grants)",
+				strconv.Quote(id.AccessKeyID), strconv.Quote(bucket))
+			writeAuthFailure(w, authFailureError{"AccessDenied", "Access Denied", httpStatusForbidden})
+			return false
+		}
+	}
 	return true
 }
 
@@ -245,6 +268,8 @@ func authorizeS3Request(w http.ResponseWriter, id auth.Identity, bucket, key str
 // always needs is a write-level grant (OpWrite). Authorizing either as
 // OpCreate let a create-only rich grant execute writes and deletes it
 // never held. Plain bucket-root POST (CreateBucket) keeps OpCreate.
+// (W2-M1 tightened this further: authorizeS3Request additionally requires
+// OpDelete for POST ?batch, since one op per method cannot express "both".)
 func opForMethod(r *http.Request, bucket, key string) auth.Op {
 	switch r.Method {
 	case "GET", "HEAD":
