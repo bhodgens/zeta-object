@@ -99,8 +99,11 @@ type Store struct {
 //
 // diskCheck reports whether the file backing path exists in the local cache
 // dir right now; ReconcilePass uses it for the "disk" column of the rules
-// table. Callers that do not reconcile may pass nil (ReconcilePass then
-// reports zero resolutions and returns no error).
+// table. Callers that do not reconcile may pass nil: the nil sentinel means
+// "skip the disk column" - ReconcilePass then treats every path as PRESENT,
+// so rule R2 never fires and nothing is demoted (a nil probe must never
+// count as "file missing", or a restart would demote the whole clean
+// hydrated set).
 func Open(path string) (*Store, error) {
 	return OpenWithDiskCheck(path, nil)
 }
@@ -288,20 +291,26 @@ func putPathTx(ctx context.Context, tx *sql.Tx, r Resource) error {
 }
 
 // DeletePath records the deletion of path: the row becomes a tombstone
-// (deleted=1, hydrated=0, dirty=0, etag kept for the grace table) and the
-// journal gets a delete row in the SAME transaction. It is NOT an error to
-// delete an unknown path; the tombstone is created either way.
+// (deleted=1, hydrated=0, dirty=0, etag kept for the grace table; the row's
+// mtime is restamped with the DELETE time) and the journal gets a delete
+// row in the SAME transaction. The mtime restamp is what feeds the
+// deletion-grace window: PruneTombstones/ExpiredTombstones measure the
+// retention window FROM the tombstone's mtime, so without it a tombstone of
+// a long-unmodified file would be pruned almost immediately. It is NOT an
+// error to delete an unknown path; the tombstone is created either way.
 func (s *Store) DeletePath(ctx context.Context, path, detail string) error {
 	tx, err := s.write.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("index: delete %s: %w", path, err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Same clock convention as journalAppendTx: wall clock at the call.
 	const q = `INSERT INTO resources (path, etag, mtime, size, hydrated, dirty, deleted)
-	           VALUES (?, '', 0, 0, 0, 0, 1)
+	           VALUES (?, '', ?, 0, 0, 0, 1)
 	           ON CONFLICT(path) DO UPDATE SET
+	             mtime = excluded.mtime,
 	             hydrated = 0, dirty = 0, deleted = 1`
-	if _, err := tx.ExecContext(ctx, q, path); err != nil {
+	if _, err := tx.ExecContext(ctx, q, path, time.Now().Unix()); err != nil {
 		return fmt.Errorf("index: tombstone %s: %w", path, err)
 	}
 	if err := journalAppendTx(ctx, tx, OpDelete, path, detail); err != nil {
@@ -658,12 +667,16 @@ type ReconcileReport struct {
 //
 // Rows matching no rule are untouched; tombstones are never touched.
 // Corrections are recovery, not operations: they write NO journal rows.
-// diskCheck may be nil (nothing on disk then, so R2 fires for every
-// hydrated row - tests always pass a real probe).
+// diskCheck may be nil: the sentinel then means "skip the disk column" -
+// every path is treated as PRESENT, so R1 keeps dirty rows (counted in
+// KeptDirty on the same assumption) and R2 never fires: DemotedDry stays 0
+// and no row is demoted. A nil probe must never mean "file missing", or a
+// caller without a cache-dir probe would demote every clean hydrated row
+// on open.
 func (s *Store) ReconcilePass(ctx context.Context, diskCheck func(string) bool) (ReconcileReport, error) {
 	rep := ReconcileReport{}
 	if diskCheck == nil {
-		diskCheck = func(string) bool { return false }
+		diskCheck = func(string) bool { return true }
 	}
 
 	// Paths my journal ever touched, and which of those saw upload-ok.

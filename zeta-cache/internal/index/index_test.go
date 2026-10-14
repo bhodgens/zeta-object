@@ -591,6 +591,108 @@ func TestExpiredTombstonesRetention(t *testing.T) {
 	}
 }
 
+// --- nil disk probe sentinel (H1 regression) -----------------------------
+
+func TestNilDiskCheckKeepsHydratedRows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "i.db")
+
+	// Seed journalled clean hydrated rows with a real probe, then close.
+	s, err := OpenWithDiskCheck(path, diskSet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"a", "b"} {
+		if err := s.PutPath(ctx, Resource{Path: p, Hydrated: true}, OpHydrate, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen with NO disk probe: the nil sentinel means "treat every path
+	// as present", so the daemon-start reconcile must not demote anything.
+	// (The old nil->absent sentinel demoted the whole clean hydrated set.)
+	s2, err := OpenWithDiskCheck(path, nil)
+	if err != nil {
+		t.Fatalf("OpenWithDiskCheck(nil probe) = %v, want nil", err)
+	}
+	defer s2.Close()
+	for _, p := range []string{"a", "b"} {
+		r, err := s2.Get(ctx, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !r.Hydrated {
+			t.Errorf("nil probe demoted %q: %+v", p, r)
+		}
+	}
+
+	// The counting stays honest: an explicit nil-probe pass reports
+	// DemotedDry = 0 (and dirty rows are kept as present).
+	rep, err := s2.ReconcilePass(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.DemotedDry != 0 {
+		t.Errorf("nil probe: DemotedDry = %d, want 0; %+v", rep.DemotedDry, rep)
+	}
+	if rep.Examined != 2 {
+		t.Errorf("nil probe: Examined = %d, want 2; %+v", rep.Examined, rep)
+	}
+}
+
+// --- tombstone mtime (M17 regression) ------------------------------------
+
+func TestDeletePathStampsTombstoneMtime(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	oldMtime := time.Now().Add(-45 * 24 * time.Hour).Unix()
+	if err := s.PutPath(ctx, Resource{Path: "d/old", ETag: "\"e\"", Mtime: oldMtime, Hydrated: true}, OpHydrate, ""); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now()
+	if err := s.DeletePath(ctx, "d/old", "rm"); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now()
+
+	r, err := s.Get(ctx, "d/old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Deleted {
+		t.Fatalf("DeletePath did not tombstone: %+v", r)
+	}
+	// The tombstone's mtime is the DELETE time, not the file's old mtime:
+	// the grace window is measured from it.
+	if r.Mtime < before.Unix() || r.Mtime > after.Unix() {
+		t.Errorf("tombstone mtime = %d, want within [%d, %d]", r.Mtime, before.Unix(), after.Unix())
+	}
+	// The grace window measured from the fresh mtime protects the
+	// tombstone: nothing is expired or pruned yet.
+	retention := 30 * 24 * time.Hour
+	now := time.Now()
+	expired, err := s.ExpiredTombstones(ctx, retention, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expired) != 0 {
+		t.Errorf("ExpiredTombstones = %v, want none (fresh mtime)", expired)
+	}
+	pruned, err := s.PruneTombstones(ctx, retention, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pruned) != 0 {
+		t.Errorf("PruneTombstones pruned %v, want none (fresh mtime)", pruned)
+	}
+	if _, err := s.Get(ctx, "d/old"); err != nil {
+		t.Errorf("fresh tombstone did not survive PruneTombstones: %v", err)
+	}
+}
+
 // --- meta ---------------------------------------------------------------
 
 func TestMetaSetGet(t *testing.T) {
