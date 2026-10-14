@@ -437,3 +437,44 @@ Harness fix commit: run-zfs-validation.sh db_schema range 5..9 +
 lockstep 9<->3 (committed with this update).
 
 CAMPAIGN COMPLETE except the push decision (17+1 commits on local main).
+
+## WAVE 3 (2026-10-14, COMPLETE): the sibling efficacy audit's findings
+
+A sibling session's fix-efficacy audit (deleg_5a15ae75, report at
+.hermes/audits/2026-10-13-wave2-fix-efficacy.md) re-audited the window.
+Its findings were triaged and fixed in this session:
+
+- W2-H1 (HIGH, CONFIRMED LIVE then fixed, 650d455): the H2 fix's do()
+  change req.Body.Close()'d the CALLER's *os.File body - every real
+  upload failed with "file already closed" (invisible to tests: doubles
+  pass strings.Reader, which net/http wraps itself; the only e2e over
+  the write path is FUSE-gated). newRequest now wraps the body in
+  NopCloser itself (nil-safe). Reproduced with a probe test before
+  fixing; the probe is the permanent pin.
+- W2-H3 (HIGH, fixed, 20c1d61): dir items reported themselves as their
+  own parent (parentKeyOf("docs/") -> "docs"). Both helper paths strip
+  the trailing slash before cutting.
+- W2-H2 + M1 residual + M3 + M7 + M8 + M9 + M13 + M14 (24cda6c + 8cc873a):
+  CopyObject capture (s3 AND webdav COPY parity), ?batch requires
+  write+delete on both mounts, webdav grant vocabulary (DELETE->OpDelete,
+  LOCK/UNLOCK->write), CMPU rename-first ordering, CopyObject source cap,
+  canonical-form key rules, zeta-cache CI coverage floor (59, measured
+  61.5-61.6) + module-aware floor guard, M34 first-listing rc capture.
+- W2-M2/M4/M5/M6/M10 + M11/M12 (e0d4a6d + c9b5c00): real disk probe wired
+  in main, ErrSyncInProgress benign (1m retry, no backoff, non-
+  unreachable IPC shape), O_RDWR staging (read-after-write works),
+  staging sweep at daemon start, all IPC null arrays normalized,
+  modifyItem handles parent moves (single move for rename+move), folder
+  delete recurses client-side.
+- Lint-driven refactors: readCopySource extraction (b90af10), earlier
+  conflictingBatchParams (eac477f).
+
+FINAL GATES on b90af10: make check exit 0; make e2e 968/0/2 exit 0;
+root 21/21; zeta-cache 8/8 (incl. -race); swift fileprovider 45/45,
+macos 11/11.
+
+CAMPAIGN COMPLETE. 25 commits on local main, unpushed (push = owner
+decision). Known-open, documented: L44 (Xcode link path unverified - the
+gitignored xcodeproj still references the deleted Appex/main.swift),
+H8's tag-restore error policy (fail-closed 500; owner call), L45's
+daemon-side app-group dependency (TODO in code).
