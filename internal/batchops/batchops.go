@@ -97,12 +97,24 @@ type Executor interface {
 	Delete(ctx context.Context, key, ifMatch string) error
 }
 
-// DefaultKeyValidator pins the SAME key rules the frontends' validators
-// enforce for single ops (s3 validateObjectKey / fsbackend validateKey):
-// no empty key, ≤1024 bytes, no null bytes, and no ".", "..",
-// ".metadata" or ".zfs" path segments. Batch keys MUST pass the same
-// rules single ops do — this validator is the shared shape, and the
-// frontends ALSO run their own per-key validation on Executor calls
+// DefaultKeyValidator pins the SAME key rules the s3 frontend's
+// validateObjectKey (keyvalidate.go's exported ValidateObjectKey — the
+// shared rule set both ?batch mounts govern manifest keys with) enforces
+// for single ops: no empty key, ≤1024 bytes, no null bytes, no ".."-
+// escape, and no ".", "..", ".metadata", ".zfs", "!data" or ".uploads"
+// path segments (bughunt L40 added the shadow-dir "!data" and staging
+// ".uploads" segments — a "!data" segment aliases the shadow data
+// directory, so key "b/!data/<pct-encoded>" collided with the shadow file
+// of key "b/<pct-encoded>"). "." is rejected segment-exactly like the s3
+// validator's sibling rules; lookalike names ("a..b", "x.metadata",
+// "..hidden", "x.zfs") stay legal.
+//
+// WHY A COPY, not delegation: the s3 frontend imports THIS package (the
+// runner), so importing the frontend back would be an import cycle — the
+// packaged copy is the parity mechanism, pinned segment-for-segment
+// against ValidateObjectKey by TestDefaultKeyValidatorPinsTheSharedRules
+// in this package. Batch keys MUST pass the same rules single ops do —
+// the frontends ALSO run their own per-key validation on Executor calls
 // (defense in depth, identical rules).
 func DefaultKeyValidator(key string) error {
 	if key == "" {
@@ -131,6 +143,16 @@ func DefaultKeyValidator(key string) error {
 			// mountpoint (zfs-bucket-datasets, 2026-10-03): rejected
 			// exactly like .metadata.
 			return fmt.Errorf("object key cannot contain %q path segments", ".zfs")
+		case "!data":
+			// !data is the shadow data directory (object_paths.go in
+			// the s3 frontend): a segment of that name aliases the
+			// shadowed data file of another key (bughunt L40).
+			return fmt.Errorf("object key cannot contain %q path segments", "!data")
+		case ".uploads":
+			// .uploads is the transient multipart staging directory
+			// under .metadata; a key segment would alias session state
+			// (bughunt L40).
+			return fmt.Errorf("object key cannot contain %q path segments", ".uploads")
 		}
 	}
 	return nil

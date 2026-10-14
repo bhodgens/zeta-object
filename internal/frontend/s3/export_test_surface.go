@@ -348,7 +348,7 @@ func CopyPartsToAssembly(w httpResponseWriter, uploadID string, mpUpload Multipa
 }
 
 func FinalizeComplete(w httpResponseWriter, r *httpRequest, bucketName, objectName, uploadID, bucketPath, mpUploadMetaPath, partsDir, finalObjectPath, objectMetadataPath, finalTempPath string, meta ObjectMetadata, finalETag string, totalSize int64, failCleanup *bool) {
-	finalizeComplete(w, r, bucketName, objectName, uploadID, bucketPath, mpUploadMetaPath, partsDir, finalObjectPath, objectMetadataPath, finalTempPath, meta, finalETag, totalSize, failCleanup)
+	finalizeComplete(w, r, bucketName, objectName, uploadID, bucketPath, mpUploadMetaPath, partsDir, finalObjectPath, objectMetadataPath, finalTempPath, meta, finalETag, totalSize, nil, nil, failCleanup)
 }
 
 // ---------- Listing internals (object_handlers.go) ----------

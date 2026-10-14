@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -421,11 +422,32 @@ func completeMultipartUploadHandler(w http.ResponseWriter, r *http.Request, buck
 		}
 	}()
 
+	// BUGHUNT H8: capture the CURRENT object's version + tags BEFORE the
+	// finalize step rewrites the sidecar — the exact gate shape the plain
+	// PutObject handler runs (object_handlers.go). finalizeComplete writes
+	// the sidecar wholesale with the multipart metadata, which destroys
+	// the versions/tags bookkeeping a prior object carried unless it rides
+	// the capture. A state READ FAILURE FAILS CLOSED (bughunt M6 parity):
+	// an unreadable versioning state must never become a silent
+	// unversioned overwrite. OFF/Suspended buckets skip the capture
+	// (plain-overwrite semantics); tags are snapshotted in BOTH cases —
+	// the sidecar rewrite drops them regardless of versioning state, and
+	// CompleteMultipartUpload carries no tag header of its own to re-set.
+	// Runs only when assembly succeeded (an assembly failure has already
+	// written its own error response and must keep it).
+	var capturedOld *capturedObjectVersion
+	var savedTags map[string]string
+	if ok {
+		capturedOld = captureForCompletion(w, bucketName, bucketPath, objectName, &ok)
+	}
+	if ok {
+		savedTags = tagsForCompletion(w, bucketPath, objectName, &ok)
+	}
 	if !ok {
 		return // error response already written
 	}
 
-	finalizeComplete(w, r, bucketName, objectName, uploadID, bucketPath, mpUploadMetaPath, partsDir, finalObjectPath, objectMetadataPath, finalTempPath, meta, finalETag, totalSize, &failCleanup)
+	finalizeComplete(w, r, bucketName, objectName, uploadID, bucketPath, mpUploadMetaPath, partsDir, finalObjectPath, objectMetadataPath, finalTempPath, meta, finalETag, totalSize, savedTags, capturedOld, &failCleanup)
 }
 
 // assembleCompletedObject verifies each requested part, copies part data
@@ -604,10 +626,67 @@ func computeMultipartETag(partETags []string) string {
 	return fmt.Sprintf("\"%s-%d\"", hex.EncodeToString(finalETagHash.Sum(nil)), len(partETags))
 }
 
+// captureForCompletion is the H8 versioning capture for the multipart
+// completion path: on a versioning-Enabled bucket it captures the CURRENT
+// object (bytes + prior version history) exactly like the plain PutObject
+// gate, BEFORE finalizeComplete rewrites the sidecar. A state read
+// failure fails closed (writes the 500 and flips ok=false); a capture
+// failure likewise. errNoPriorVersion is a create — a nil capture.
+func captureForCompletion(w http.ResponseWriter, bucketName, bucketPath, objectName string, ok *bool) *capturedObjectVersion {
+	state, stErr := versionStoreForBucket(bucketPath).State(bucketName)
+	if stErr != nil {
+		log.Printf("Error reading versioning state for %s: %v", strconv.Quote(bucketName), stErr)
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(errorToXML("InternalError", "Error reading bucket versioning state.")))
+		*ok = false
+		return nil
+	}
+	if state != versioningEnabled {
+		return nil
+	}
+	captured, capErr := captureCurrentObjectVersion(bucketPath, objectName)
+	if capErr != nil && !errors.Is(capErr, errNoPriorVersion) {
+		log.Printf("Error capturing prior version for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), capErr)
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(errorToXML("InternalError", "Error capturing object version.")))
+		*ok = false
+		return nil
+	}
+	return captured
+}
+
+// tagsForCompletion snapshots the existing object's tags BEFORE the
+// sidecar rewrite (bughunt H8, tags half). The completion path writes the
+// sidecar wholesale and carries no tag header of its own, so without this
+// snapshot a multipart completion wiped the tags a prior object carried.
+// A missing sidecar (fresh upload to a new key) carries no tags; a store
+// read error OTHER than NoSuchKey fails closed — silently dropping tags
+// on a real I/O failure repeats the H8 shape for the tag half.
+func tagsForCompletion(w http.ResponseWriter, bucketPath, objectName string, ok *bool) map[string]string {
+	tags, tagErr := tagStoreFor(bucketPath).Get(objectName)
+	if tagErr != nil && !isNoSuchKeyErr(tagErr) {
+		log.Printf("Error reading tags for %s before multipart complete: %v", strconv.Quote(objectName), tagErr)
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(errorToXML("InternalError", "Error reading object tags.")))
+		*ok = false
+		return nil
+	}
+	return tags
+}
+
 // finalizeComplete writes the object metadata, renames the temp assembly
 // file over the final object, cleans up the upload session, and writes the
 // success XML. Every failure path writes its own error response.
-func finalizeComplete(w http.ResponseWriter, r *http.Request, bucketName, objectName, uploadID, bucketPath, mpUploadMetaPath, partsDir, finalObjectPath, objectMetadataPath, finalTempPath string, meta ObjectMetadata, finalETag string, totalSize int64, failCleanup *bool) {
+//
+// BUGHUNT H8: priorTags and capturedOld ride from the pre-rewrite capture
+// (completeMultipartUploadHandler). After the rename succeeds, the tag map
+// and the captured version are restored — the same crash-safe order
+// recordCapturedObjectVersion documents (data first, then bookkeeping) and
+// the same tag-after-the-object-exists order PutObject and CopyObject use.
+func finalizeComplete(w http.ResponseWriter, r *http.Request, bucketName, objectName, uploadID, bucketPath, mpUploadMetaPath, partsDir, finalObjectPath, objectMetadataPath, finalTempPath string, meta ObjectMetadata, finalETag string, totalSize int64, priorTags map[string]string, capturedOld *capturedObjectVersion, failCleanup *bool) {
 
 	if err := writeFileAtomicJSON(objectMetadataPath, meta, 0644); err != nil {
 		log.Printf("Error writing final object metadata file %s: %v", strconv.Quote(objectMetadataPath), err)
@@ -627,6 +706,39 @@ func finalizeComplete(w http.ResponseWriter, r *http.Request, bucketName, object
 		return
 	}
 	*failCleanup = false // rename consumed the temp file
+
+	// BUGHUNT H8 (tags): restore the previous object's tags AFTER the
+	// sidecar rewrite (read-modify-write of the new sidecar, the same
+	// tags-land-after-the-object-exists order PutObject/CopyObject use).
+	// An empty/nil map writes nothing (byte-compat sidecar form — an
+	// untagged prior object keeps the untagged completion). A restore
+	// failure fails LOUD (500) rather than silently untagging: the object
+	// data is already committed, but the sidecar answer would be wrong.
+	if len(priorTags) > 0 {
+		if tagErr := tagStoreFor(bucketPath).Put(objectName, priorTags); tagErr != nil {
+			log.Printf("Error restoring tags for %s after multipart complete: %v", strconv.Quote(objectName), tagErr)
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(errorToXML("InternalError", "Error restoring object tags.")))
+			return
+		}
+	}
+
+	// BUGHUNT H8 (versions): record the CAPTURED old bytes as one version
+	// AFTER the final rename — the identical record step the plain
+	// PutObject handler runs (the sidecar was rewritten wholesale above;
+	// recordCapturedObjectVersion restores the captured history beneath
+	// the new entry). A nil capture (create, or Off/Suspended bucket)
+	// records nothing; plain-bucket behavior is byte-identical.
+	if capturedOld != nil {
+		if recErr := recordCapturedObjectVersion(bucketPath, bucketName, objectName, capturedOld); recErr != nil {
+			log.Printf("Error recording prior version for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), recErr)
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(errorToXML("InternalError", "Error recording object version.")))
+			return
+		}
+	}
 
 	// Principal breadcrumbs (auth extensions leaf 10): the multipart
 	// assembly is pinned ABOVE the seam (master Contract 4), so the

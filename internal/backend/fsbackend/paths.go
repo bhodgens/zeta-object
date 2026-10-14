@@ -102,7 +102,12 @@ func resolveDataPath(bucketPath, key string, meta *legacyMeta) string {
 
 // validateKey mirrors the pre-seam validateObjectKey rules (object_handlers.go):
 // non-empty, <= 1024 chars, no null bytes, no escaping the bucket, and no
-// ".." or ".metadata" path segments. Handlers keep first-line validation;
+// "..", ".metadata", ".zfs", "!data" or ".uploads" path segments. The
+// shadow-dir ("!data") and multipart staging (".uploads") segments are
+// reserved control names exactly like ".metadata": a "!data" segment
+// aliases the shadow data directory (fsbackend's own shadow layout,
+// object.go) and ".uploads" aliases the multipart staging area (bughunt
+// L40). Handlers keep first-line validation;
 // the backend re-validates defensively per the seam contract.
 func validateKey(key string) error {
 	if len(key) == 0 {
@@ -130,6 +135,18 @@ func validateKey(key string) error {
 			// mountpoint; reject like .metadata (zfs-bucket-datasets,
 			// 2026-10-03).
 			return keyInvalidError(`object key cannot contain ".zfs" path segments`)
+		}
+		if seg == "!data" {
+			// !data is the shadow data directory (object.go's shadow
+			// layout): a segment of that name aliases the shadowed data
+			// file of another key (bughunt L40).
+			return keyInvalidError(`object key cannot contain "!data" path segments`)
+		}
+		if seg == ".uploads" {
+			// .uploads is the multipart staging directory (cleaned by
+			// the expiry sweeper); a key segment would alias session
+			// state (bughunt L40).
+			return keyInvalidError(`object key cannot contain ".uploads" path segments`)
 		}
 	}
 	// CANONICAL FORM (bughunt B5 fix): reject keys that Clean would collapse

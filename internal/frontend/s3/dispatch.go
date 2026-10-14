@@ -64,7 +64,7 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("Authentication Error: dev authenticator rejected request: %v", err)
 			writeAuthFailure(w, authFailureError{"AccessDenied", "Access Denied", httpStatusForbidden})
-			recordAudit("", r.Method, bucketName, objectName, string(opForMethod(r.Method, bucketName, objectName)), httpStatusForbidden, true)
+			recordAudit("", r.Method, bucketName, objectName, string(opForMethod(r, bucketName, objectName)), httpStatusForbidden, true)
 			return
 		}
 		identity = id
@@ -75,7 +75,7 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			if failure != nil {
 				writeAuthFailure(w, *failure)
 			}
-			recordAudit(presentedAccessKey(r), r.Method, bucketName, objectName, string(opForMethod(r.Method, bucketName, objectName)), authFailureStatus(failure), true)
+			recordAudit(presentedAccessKey(r), r.Method, bucketName, objectName, string(opForMethod(r, bucketName, objectName)), authFailureStatus(failure), true)
 			return
 		}
 		identity = id
@@ -84,7 +84,7 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		if failure != nil {
 			writeAuthFailure(w, *failure)
 		}
-		recordAudit(presentedAccessKey(r), r.Method, bucketName, objectName, string(opForMethod(r.Method, bucketName, objectName)), authFailureStatus(failure), true)
+		recordAudit(presentedAccessKey(r), r.Method, bucketName, objectName, string(opForMethod(r, bucketName, objectName)), authFailureStatus(failure), true)
 		return
 	} else {
 		identity = id
@@ -97,7 +97,7 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	// method+key adapter in authorizeS3Request; this site only renders the
 	// S3 wire error.
 	if !authorizeS3Request(w, identity, bucketName, objectName, r) {
-		recordAudit(identity.AccessKeyID, r.Method, bucketName, objectName, string(opForMethod(r.Method, bucketName, objectName)), httpStatusForbidden, true)
+		recordAudit(identity.AccessKeyID, r.Method, bucketName, objectName, string(opForMethod(r, bucketName, objectName)), httpStatusForbidden, true)
 		return
 	}
 
@@ -113,7 +113,7 @@ func (f *Frontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if rec.status == 0 {
 		rec.status = http.StatusOK
 	}
-	recordAudit(identity.AccessKeyID, r.Method, bucketName, objectName, string(opForMethod(r.Method, bucketName, objectName)), rec.status, false)
+	recordAudit(identity.AccessKeyID, r.Method, bucketName, objectName, string(opForMethod(r, bucketName, objectName)), rec.status, false)
 }
 
 // routeAuthorized is the post-auth/post-authz dispatch switch (extracted
@@ -218,7 +218,7 @@ func authorizeS3Request(w http.ResponseWriter, id auth.Identity, bucket, key str
 	if bucket == "" {
 		return true
 	}
-	op := opForMethod(r.Method, bucket, key)
+	op := opForMethod(r, bucket, key)
 	if !auth.AuthorizeOp(id, op, bucket, key, time.Now().UTC()) {
 		log.Printf("Authorization Denied: identity %s, bucket %s, key %s, method %s",
 			strconv.Quote(id.AccessKeyID), strconv.Quote(bucket), strconv.Quote(key), strconv.Quote(r.Method))
@@ -237,12 +237,28 @@ func authorizeS3Request(w http.ResponseWriter, id auth.Identity, bucket, key str
 // grants had no separate bit, and a delete-only rich entry still denies
 // the root through its own op set). POST with object key = multipart
 // initiate/completion = write.
-func opForMethod(method, bucket, key string) auth.Op {
-	switch method {
+//
+// EXCEPTION (bughunt M13): the two batch sub-resources ride a bucket-root
+// POST but are NOT creates. POST ?delete (DeleteObjects) only deletes, so
+// it requires OpDelete; POST ?batch executes arbitrary copy/move/delete
+// manifest items — writes AND deletes — so the strongest single op it
+// always needs is a write-level grant (OpWrite). Authorizing either as
+// OpCreate let a create-only rich grant execute writes and deletes it
+// never held. Plain bucket-root POST (CreateBucket) keeps OpCreate.
+func opForMethod(r *http.Request, bucket, key string) auth.Op {
+	switch r.Method {
 	case "GET", "HEAD":
 		return auth.OpRead
 	case "PUT", "POST":
 		if key == "" {
+			if r.Method == "POST" {
+				if r.URL.Query().Has("batch") {
+					return auth.OpWrite
+				}
+				if r.URL.Query().Has("delete") {
+					return auth.OpDelete
+				}
+			}
 			return auth.OpCreate
 		}
 		return auth.OpWrite

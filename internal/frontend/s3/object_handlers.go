@@ -812,6 +812,21 @@ func headObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 		return
 	}
 
+	// s3-versioning: a plain HEAD on a delete-marked key answers 404 with
+	// x-amz-delete-marker: true — the SAME visibility rule GET applies
+	// (bughunt M22: HEAD skipped the gate and served 200 over surviving
+	// data a DELETE had marker-hidden). OFF/never-versioned buckets are
+	// unaffected (the consult short-circuits on the Off state; the normal
+	// path below keeps answering the plain 404). HEAD writes no body, so
+	// only the header rides the answer — matching what GET returns for
+	// headers on this class.
+	bucketPath := getBucketPath(bucketName)
+	if markerHidden, mErr := plainObjectDeleteMarker404(bucketPath, bucketName, objectName); mErr == nil && markerHidden {
+		w.Header().Set("x-amz-delete-marker", "true")
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
 	// Data-plane flip (leaf 02): Stat through the Backend seam. The backend
 	// performs the corrupt-storagePath fallback, serves the ACTUAL file
 	// size, and holds the leaf-4.8 reader locks across stat.
@@ -1407,6 +1422,13 @@ func parseInt(valueStr string, paramName string) (int, error) {
 // key reach the metadata subtree or collide with the metadata directory
 // itself). Segments like "a..b", "..hidden", "x.metadata" are fine — only
 // whole segments match.
+//
+// The shadow-dir and uploads-dir segments are rejected too (bughunt L40):
+// a "!data" segment aliases the shadow data directory (object_paths.go)
+// — key "b/!data/<pct-encoded>" collides with the shadow file of the key
+// "b/<pct-encoded>" — and ".uploads" aliases the multipart staging
+// directory under .metadata's sibling slot. The shadow dir comment in
+// object_paths.go already claimed these were gated; now they are.
 func validateObjectKey(key string) error {
 	if len(key) == 0 {
 		return fmt.Errorf("object key cannot be empty")
@@ -1437,6 +1459,18 @@ func validateObjectKey(key string) error {
 			// buckets a key segment .zfs would collide with it - reject
 			// like .metadata (zfs-bucket-datasets, 2026-10-03).
 			return fmt.Errorf("object key cannot contain %q path segments", ".zfs")
+		}
+		if seg == shadowDataDirName {
+			// !data is the shadow data directory (object_paths.go): a
+			// segment of that name aliases the shadowed data file of
+			// another key (bughunt L40).
+			return fmt.Errorf("object key cannot contain %q path segments", shadowDataDirName)
+		}
+		if seg == ".uploads" {
+			// .uploads is the transient multipart staging directory
+			// under .metadata (charter: cleaned by the expiry sweeper);
+			// a key segment of that name would alias session state.
+			return fmt.Errorf("object key cannot contain %q path segments", ".uploads")
 		}
 	}
 	return nil
@@ -1783,13 +1817,23 @@ func deleteObjectsHandler(w http.ResponseWriter, r *http.Request, bucketName str
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	// BUGHUNT L39: the manifest body is capped exactly like the sibling
+	// JSON batch surface (batch_endpoint.go / batch_bridge.go): a
+	// LimitReader one byte past the budget, then the oversize check — an
+	// unbounded ReadAll here let a single POST ?delete buffer an
+	// arbitrarily large body.
+	body, err := io.ReadAll(io.LimitReader(r.Body, bucketBatchMaxBytes+1))
 	if err != nil {
 		log.Printf("Error reading DeleteObjects body for bucket %s: %v", strconv.Quote(bucketName), err)
 		writeS3Error(w, "InternalError", "Error reading request body.", http.StatusInternalServerError)
 		return
 	}
 	defer r.Body.Close() //nolint:errcheck // server-side close.
+	if len(body) > bucketBatchMaxBytes {
+		log.Printf("DeleteObjects body for bucket %s exceeds the maximum request size %d", strconv.Quote(bucketName), int64(bucketBatchMaxBytes))
+		writeS3Error(w, "InvalidArgument", "Batch manifest exceeds the maximum request size.", http.StatusBadRequest)
+		return
+	}
 
 	var req DeleteRequest
 	if err := xml.Unmarshal(body, &req); err != nil {
