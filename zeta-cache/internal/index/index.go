@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -140,6 +141,25 @@ func OpenWithDiskCheck(path string, diskCheck func(path string) bool) (*Store, e
 	return s, nil
 }
 
+// restampPreUpgradeTombstones gives pre-upgrade tombstones (mtime=0,
+// written by the old DeletePath before the mtime-restamp convention) a
+// FULL grace window from the upgrade moment: without this, the first
+// PruneTombstones after upgrade prunes them immediately (mtime 0 < any
+// cutoff). R5, one-time by construction: every restamped row has
+// mtime > 0, so the UPDATE matches nothing on subsequent opens.
+func (s *Store) restampPreUpgradeTombstones(ctx context.Context) error {
+	res, err := s.write.ExecContext(ctx,
+		`UPDATE resources SET mtime = ? WHERE deleted = 1 AND mtime = 0`,
+		time.Now().Unix())
+	if err != nil {
+		return fmt.Errorf("index: restamp pre-upgrade tombstones: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("index: restamped %d pre-upgrade tombstone(s) to the current time", n)
+	}
+	return nil
+}
+
 // init applies per-connection pragmas, migrates the schema to
 // schemaVersion, and (on a fresh open) runs the reconcile pass.
 func (s *Store) init(diskCheck func(string) bool) error {
@@ -147,6 +167,11 @@ func (s *Store) init(diskCheck func(string) bool) error {
 		return fmt.Errorf("index: pragmas: %w", err)
 	}
 	if err := s.migrate(); err != nil {
+		return err
+	}
+	// R5: old-format tombstones (mtime=0) get a full retention window
+	// from this open, or the first prune after an upgrade wipes them.
+	if err := s.restampPreUpgradeTombstones(context.Background()); err != nil {
 		return err
 	}
 	// Daemon-start reconcile: journal vs disk vs index disagreement

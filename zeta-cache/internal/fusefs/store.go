@@ -244,10 +244,15 @@ func md5File(path string) (string, int64, error) {
 }
 
 // UploadFile pushes one dirty cache file: PUT with If-Match of the last
-// known clean ETag, verify the response ETag equals our MD5, then
-// dirty=0. This is the entry point leaf 07's prompt-upload scheduler
-// calls in on (leaf-02 doc: "this leaf provides the upload entry point
-// as an interface").
+// known server ETag (R1: read from KnownETag so a DIRTY row still
+// carries its pre-edit generation - an edit of an already-synced file
+// overwrites with If-Match; a never-uploaded row has etag=="" and stays
+// create-only If-None-Match:*), verify the response ETag equals our MD5,
+// then dirty=0. A 412 (another client moved the object) surfaces as
+// ErrConflict and the file STAYS dirty - the sync scan's conflict path
+// owns that reconciliation. This is the entry point leaf 07's
+// prompt-upload scheduler calls in on (leaf-02 doc: "this leaf provides
+// the upload entry point as an interface").
 func (f *FS) UploadFile(ctx context.Context, key string) error {
 	local := f.cachePath(key)
 	etag, size, err := md5File(local)
@@ -257,7 +262,7 @@ func (f *FS) UploadFile(ctx context.Context, key string) error {
 		}
 		return fmt.Errorf("fusefs: hashing %s: %w", key, err)
 	}
-	ifMatch, _ := f.idx.CleanETag(key)
+	ifMatch, _ := f.idx.KnownETag(key)
 	serverETag, err := f.tr.Put(ctx, key, mustSeek(local), ifMatch)
 	if err != nil {
 		// Server 412 (transport.ErrConflict) = lost race: upload-failed,

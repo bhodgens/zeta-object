@@ -141,6 +141,7 @@ type Server struct {
 	wg         *sync.WaitGroup
 	connsMu    sync.Mutex
 	conns      map[net.Conn]struct{} // live connections, closed by Stop
+	stopped    bool                  // set under connsMu before Stop's snapshot
 }
 
 // ReplaceHandler swaps the status source and handler on the LIVE listener:
@@ -208,7 +209,19 @@ func ServeWithHandler(socketPath string, serverURL, bucket string, status Status
 			// BEFORE the bounded-flush unmount). Conns are tracked
 			// so Stop can force-close them, and the generous idle
 			// read deadline bounds even a silent client.
+			// R2: arm the deadline AND track the conn HERE, in the
+			// accept loop - before the per-conn goroutine exists. If a
+			// conn were tracked only inside its goroutine, a conn
+			// dequeued just before Stop's snapshot would register in
+			// the WaitGroup AFTER Stop's Wait ran: the goroutine then
+			// sits in a blocking read (deadline still unarmed) until
+			// the 5-min idleReadDeadline fires. Tracking here means
+			// every conn Stop force-closes is already in the set and
+			// its goroutine's deadline is already armed.
 			srv.trackConn(conn)
+			if err := conn.SetReadDeadline(time.Now().Add(idleReadDeadline)); err != nil {
+				log.Printf("ipc: arming idle deadline: %v", err)
+			}
 			wg.Go(func() {
 				defer srv.untrackConn(conn)
 				srv.mu.Lock()
@@ -222,8 +235,24 @@ func ServeWithHandler(socketPath string, serverURL, bucket string, status Status
 }
 
 // trackConn/untrackConn maintain the live-connection set Stop force-closes.
+// R2: trackConn runs in the ACCEPT LOOP (before the per-conn goroutine is
+// registered with the WaitGroup), so a conn Stop's snapshot already sees is
+// also already armed with the idle deadline. The stopped flag closes the
+// last residual window: a conn dequeued from Accept just before ln.Close()
+// would otherwise be tracked AFTER Stop's snapshot - force-closing it here
+// keeps Stop's bounded-return guarantee airtight.
 func (s *Server) trackConn(conn net.Conn) {
 	s.connsMu.Lock()
+	if s.stopped {
+		s.connsMu.Unlock()
+		// Stop already passed: this conn was accepted in the residual
+		// window; closing it is the whole point (a Close error means the
+		// peer already reset, which is the state Stop wants).
+		if err := conn.Close(); err != nil {
+			log.Printf("ipc: stop-window conn close: %v", err)
+		}
+		return
+	}
 	s.conns[conn] = struct{}{}
 	s.connsMu.Unlock()
 }
@@ -251,6 +280,7 @@ func (s *Server) Stop() {
 	// Stop (main.go calls it BEFORE the bounded-flush unmount) must
 	// return within a bounded time.
 	s.connsMu.Lock()
+	s.stopped = true
 	for conn := range s.conns {
 		// Best-effort close during teardown: a failure here means the
 		// peer already reset the socket, which is the state Stop wants.

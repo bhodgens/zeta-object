@@ -33,6 +33,16 @@ func (m *memIndex) CleanETag(key string) (string, error) {
 	return "", nil
 }
 
+// KnownETag returns the row's etag even when dirty (R1 seam).
+func (m *memIndex) KnownETag(key string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if r, ok := m.rows[key]; ok {
+		return r.etag, nil
+	}
+	return "", nil
+}
+
 func (m *memIndex) MarkDirty(key string, size, mtime int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -237,11 +237,20 @@ func (f *CursorFeed) Ack(ctx context.Context) {
 	} else if f.pendingID > f.lastCursor {
 		f.lastCursor = f.pendingID
 	}
-	if err := f.store.MetaSet(ctx, cursorMetaKey(f.bucket), strconv.FormatInt(f.pendingID, 10)); err != nil {
-		f.log.Printf("sync: cursor ack save failed (%v); next delta redelivers (at-least-once)", err)
-		return
+	// R3: pendingID==0 is the loss-invalidation Ack (the rescan's
+	// baseline refresh). The cursor is DELETED in that state - do not
+	// re-plant a literal "0": a crash after such an Ack would parse the
+	// stored 0 as first contact again and force an extra full scan on
+	// restart. Leave the cursor absent; the next Delta is a clean first
+	// contact that re-plants at the newest id. The loss baseline below
+	// still refreshes.
+	if f.pendingID > 0 {
+		if err := f.store.MetaSet(ctx, cursorMetaKey(f.bucket), strconv.FormatInt(f.pendingID, 10)); err != nil {
+			f.log.Printf("sync: cursor ack save failed (%v); next delta redelivers (at-least-once)", err)
+			return
+		}
+		f.lastCursor = f.pendingID
 	}
-	f.lastCursor = f.pendingID
 	if err := f.store.MetaSet(ctx, lossMetaKey(f.bucket),
 		fmt.Sprintf("%d:%d", f.pendingLoss[0], f.pendingLoss[1])); err != nil {
 		f.log.Printf("sync: cursor loss baseline save failed: %v", err)

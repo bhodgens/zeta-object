@@ -41,8 +41,35 @@ func (a indexAdapter) CleanETag(key string) (string, error) {
 	return r.ETag, nil
 }
 
+// KnownETag returns the row's server ETag for key REGARDLESS of the
+// dirty flag: the last generation this client uploaded or hydrated.
+// R1: this (not CleanETag, which blanks dirty rows) is what an edit
+// upload If-Matches - MarkDirty preserves the etag exactly so a Flush
+// of an edited synced file keeps the one known-good precondition.
+func (a indexAdapter) KnownETag(key string) (string, error) {
+	r, err := a.store.Get(a.ctx, key)
+	if err != nil {
+		if errors.Is(err, index.ErrNotFound) {
+			return "", nil
+		}
+		return "", fmt.Errorf("KnownETag %s: %w", key, err)
+	}
+	return r.ETag, nil
+}
+
 func (a indexAdapter) MarkDirty(key string, size, mtime int64) error {
+	// R1: PRESERVE the row's ETag across the dirty flip. It is the
+	// last uploaded generation - the only known-good If-Match a later
+	// edit upload can send. Clearing it here used to turn every edit
+	// of an already-synced file into a create-only PUT (412 on the
+	// existing object, row stuck dirty forever, unmount refused).
+	// A genuinely-never-uploaded row has no etag to preserve and keeps
+	// "" (matrix-8 create-only semantics unchanged; diff.go treats a
+	// dirty row with etag=="" as never-uploaded).
 	r := index.Resource{Path: key, Size: size, Mtime: mtime, Dirty: true, Hydrated: true}
+	if prev, err := a.store.Get(a.ctx, key); err == nil {
+		r.ETag = prev.ETag
+	}
 	if err := a.store.PutPath(a.ctx, r, index.OpLocalWrite, "dirty=1 at Flush"); err != nil {
 		return fmt.Errorf("MarkDirty %s: %w", key, err)
 	}

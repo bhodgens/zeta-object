@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -120,6 +121,44 @@ func watchAll(root string) (<-chan fsnotify.Event, func(), error) {
 	return events, func() { _ = w.Close() }, nil
 }
 
+// subtreeWatchers is the R6 dedupe set: one claim per directory root, so
+// a create/delete/recreate cycle of the same dir cannot stack duplicate
+// recursive watchers (each claim would otherwise hold fsnotify fds and a
+// fan-in goroutine until shutdown). claim atomically takes the root
+// (false = already watched); release returns it after a failed watchAll.
+type subtreeWatchers struct {
+	mu    sync.Mutex
+	roots map[string]bool
+}
+
+func newSubtreeWatchers() *subtreeWatchers {
+	return &subtreeWatchers{roots: map[string]bool{}}
+}
+
+func (s *subtreeWatchers) claim(root string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.roots[root] {
+		return false
+	}
+	s.roots[root] = true
+	return true
+}
+
+func (s *subtreeWatchers) release(root string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.roots, root)
+}
+
+// activeCount is the number of currently-claimed roots (test seam; the
+// deterministic assertion that churn keeps the watcher count bounded).
+func (s *subtreeWatchers) activeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.roots)
+}
+
 // watcher carries the loop state.
 type watcher struct {
 	store    StoreView
@@ -201,9 +240,19 @@ func runWatcher(
 	// addSubtree watches a newly-created directory (the recursive watch
 	// from watchAll only covers subtrees that existed at build time) and
 	// folds its events into the same merged stream.
+	// R6: the subtreeWatchers set guards it - directory churn (create +
+	// delete + recreate of the same dir) used to stack one recursive
+	// watcher PER create (fds + fan-in goroutines grow without bound
+	// until shutdown). The root watch itself still covers the whole
+	// tree, so skipping an already-covered root loses no events.
+	subs := newSubtreeWatchers()
 	addSubtree := func(root string) {
+		if !subs.claim(root) {
+			return
+		}
 		sub, stopSub, err := watchAll(root)
 		if err != nil {
+			subs.release(root)
 			return
 		}
 		go func() {

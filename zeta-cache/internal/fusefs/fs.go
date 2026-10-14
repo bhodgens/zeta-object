@@ -63,8 +63,15 @@ import (
 // implementation behind it - see the report's "for leaf 03" list).
 type Index interface {
 	// CleanETag returns the last confirmed-clean server ETag for key
-	// ("" when unknown). Used as PUT If-Match.
+	// ("" when unknown or when the row is dirty). Used as rename's
+	// destination If-Match.
 	CleanETag(key string) (string, error)
+	// KnownETag returns the row's server ETag for key even when the
+	// row is DIRTY: the last generation this client uploaded/hydrated.
+	// R1: the edit-upload precondition - a dirty row keeps its etag
+	// through MarkDirty, so an edit can overwrite with If-Match; ""
+	// (never uploaded) stays create-only.
+	KnownETag(key string) (string, error)
 	// MarkDirty records key as locally dirty (dirty=1) with the local
 	// size/mtime. Called at Flush.
 	MarkDirty(key string, size, mtime int64) error
@@ -791,6 +798,13 @@ func (h *fileHandle) Flush(ctx context.Context) syscall.Errno {
 				return errnoToErrno(err)
 			}
 			h.dirtyNoCommit = false
+			// R4: fire the prompt-upload hook exactly like the commit
+			// path below - a truncated-only close changed the file, so
+			// the prompt upload must fire or the row sits dirty until
+			// the next poll/sync cycle.
+			if f := h.fs; f.up != nil {
+				f.up.UploadNow(ctx, h.key)
+			}
 		}
 		return 0
 	}
