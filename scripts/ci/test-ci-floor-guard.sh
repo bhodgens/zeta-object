@@ -288,21 +288,32 @@ fi
 # above can never reach it — its CI job (zeta-cache-test) must carry its own
 # floor line, and this guard must assert it exists. Module-aware: the check
 # parses the job's own step, never the root case block.
+#
+# Since the W2-LOW single-source-of-truth fix, the job DELEGATES the gate to
+# `make zeta-cache-test-race`, so the job body must be pinned two ways at
+# once: it calls the make target (no inline copy to drift), and the TARGET
+# itself carries the coverage profile, the awk floor line, and a numeric
+# floor — read out of the Makefile, not the workflow.
 ZC_STEP=$(awk '/zeta-cache-test:/{f=1} f&&/lint:/{exit} f{print}' "$WF")
+ZC_FLOOR=""
 if [ -z "$ZC_STEP" ]; then
 	bad "could not extract the zeta-cache-test job from $WF"
-elif ! printf '%s\n' "$ZC_STEP" | grep -qE 'coverprofile'; then
-	bad "the zeta-cache-test job runs no coverage profile - the module is ungated"
-elif ! printf '%s\n' "$ZC_STEP" | grep -qE 'awk.*total:.*exit 1'; then
-	bad "the zeta-cache-test job has no awk floor check on the total line"
+elif ! printf '%s\n' "$ZC_STEP" | grep -qE 'run: *make zeta-cache-test-race'; then
+	bad "the zeta-cache-test job does not call make zeta-cache-test-race - CI and the local gate have drifted apart"
+elif [ ! -f Makefile ] || ! grep -q '^zeta-cache-test-race:' Makefile; then
+	bad "make zeta-cache-test-race does not exist in the Makefile - the CI job calls a missing target"
+elif ! sed -n '/^zeta-cache-test-race:/,/^$/p' Makefile | grep -qE 'coverprofile'; then
+	bad "the zeta-cache-test-race target runs no coverage profile - the module is ungated"
+elif ! sed -n '/^zeta-cache-test-race:/,/^$/p' Makefile | grep -qE 'awk.*total:.*exit 1'; then
+	bad "the zeta-cache-test-race target has no awk floor check on the total line"
 else
-	ZC_FLOOR=$(printf '%s\n' "$ZC_STEP" | grep -oE 'below floor [0-9]+' | grep -oE '[0-9]+' | head -1)
+	ZC_FLOOR=$(grep -oE 'ZETA_CACHE_COVER_MIN \:?= [0-9]+' Makefile | grep -oE '[0-9]+' | head -1)
 	if [ -z "$ZC_FLOOR" ]; then
-		bad "the zeta-cache floor check has no numeric floor value"
+		bad "the zeta-cache floor check has no numeric floor value (ZETA_CACHE_COVER_MIN)"
 	elif [ "$ZC_FLOOR" -le 0 ] || [ "$ZC_FLOOR" -ge 100 ]; then
 		bad "the zeta-cache floor is $ZC_FLOOR - not a plausible percentage"
 	else
-		ok "the zeta-cache-test job enforces an aggregate floor of $ZC_FLOOR"
+		ok "the zeta-cache-test job calls make zeta-cache-test-race, which enforces an aggregate floor of $ZC_FLOOR"
 	fi
 fi
 

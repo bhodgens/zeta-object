@@ -68,6 +68,72 @@ else
 	echo '  ok   no case fakes a pass on a skip path'
 fi
 
+# --- run-one.sh: verdict + tally handoff (W2 LOW, M28 recurrence shape) ------
+# run-one.sh duplicates the three-way verdict logic: it forks each case into a
+# generated body script whose LAST line writes "<pass> <fail> <skip>" to
+# .case-tally, reads that tally back, then applies the skip rules. Both halves
+# are hand-maintained, so both are pinned here — the same reason fold_verdict
+# above is re-declared rather than sourced.
+#
+# THE HOLE (M28 shape): if the generated body stops writing the tally (a
+# rewrite drops the printf, or the case's own `exit` fires before it), the
+# read-back falls into the missing-tally branch and counts the run as a
+# failure — OR a hand-edit of the verdict rules turns "0 asserts" into a
+# PASS again. Neither would break any test: nothing pinned this copy.
+
+# 1. The verdict rules. Extracted from run-one.sh and executed with a stub
+#    tally — same pin mechanics as the CASE_BLOCK extraction from check.yml
+#    in test-ci-floor-guard.sh. Starts at the FAILURE branch (cf != 0), which
+#    run-one.sh checks first, and runs through the PASS line.
+VERDICT_BLOCK=$(awk '/^if \[ "\$cf" -ne 0 \]; then$/,0' scripts/e2e/run-one.sh \
+	| awk "/^echo 'PASS'\$/{print; exit} {print}")
+if [ -z "$VERDICT_BLOCK" ]; then
+	echo '  FAIL could not extract run-one.sh verdict block'
+	fails=$((fails + 1))
+else
+	verdict_harness=$(mktemp "${TMPDIR:-/tmp}/runone-pin.XXXXXX")
+	verdict_work=$(mktemp -d "${TMPDIR:-/tmp}/runone-pin-work.XXXXXX")
+	: > "$verdict_work/server.log"
+	trap 'rm -rf "$verdict_harness" "$verdict_work"' EXIT
+	{
+		printf '#!/usr/bin/env bash\nset -u\n'
+		printf 'WORK=%q\n' "$verdict_work"
+		printf '%s\n' "$VERDICT_BLOCK"
+	} > "$verdict_harness"
+	# cp/cs/cf are the harness's inputs (run-one.sh's variable names); the
+	# block's own `exit` codes are the verdict under test.
+	v_out() { ( export cp=$1 cf=$2 cs=$3; bash "$verdict_harness" 2>/dev/null ); echo "rc=$?"; }
+	check 'run-one: 0 asserts, 0 fails, 0 skip -> SKIP' \
+		'SKIP (0 asserts — preconditions not met on this host)
+rc=0' "$(v_out 0 0 0)"
+	check 'run-one: 0 asserts + skip -> SKIP' \
+		'SKIP (preconditions not met on this host)
+rc=0' "$(v_out 0 0 1)"
+	check 'run-one: 12 asserts, 0 fails -> PASS' \
+		'PASS
+rc=0' "$(v_out 12 0 0)"
+	check 'run-one: any failure exits 1 (server-log path)' \
+		'rc=1' "$(v_out 3 1 0 | tail -1)"
+fi
+
+# 2. The tally handoff: the generated body's last line must write the
+#    three counters, in run-e2e.sh's field order (pass fail skip).
+if grep -qE 'printf "%s %s %s.{0,4}n" "\$E2E_PASS" "\$E2E_FAIL" "\$\{E2E_SKIP:-0\}" > .*\.case-tally' scripts/e2e/run-one.sh; then
+	echo '  ok   run-one.sh writes the pass/fail/skip tally from the case body'
+else
+	echo '  FAIL run-one.sh no longer writes the .case-tally line — the read-back below counts every run as a failure'
+	fails=$((fails + 1))
+fi
+
+# 3. The read-back is honest: a missing tally is a FAILURE (cf=1), never a
+#    pass — mirrored in the text and enforced by the else branch.
+if grep -q 'case bailed before any assert' scripts/e2e/run-one.sh; then
+	echo '  ok   run-one.sh treats a missing tally as a failure, not a pass'
+else
+	echo '  FAIL run-one.sh lost the missing-tally-is-failure branch'
+	fails=$((fails + 1))
+fi
+
 printf '\n'
 if [ "$fails" -eq 0 ]; then
 	echo 'ALL SKIP-REPORTING PINS PASS'

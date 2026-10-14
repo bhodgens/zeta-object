@@ -131,8 +131,30 @@ zeta-cache:
 zeta-cache-test:
 	@cd zeta-cache && CGO_ENABLED=0 go test -count=1 ./...
 
+# Coverage floor for the zeta-cache module (W2-M13): the aggregate module
+# floor is the measured value minus 2, following the root matrix's convention
+# but with the extra point of margin because the two 0%-coverage main-only
+# cmd/ binaries drag the aggregate (the per-package matrix floors use
+# measured-minus-1 on a fixed toolchain).
+# MEASURED 2026-10-14 (darwin/arm64, go1.27.x, -race AND non-race both —
+# race changed the number by only 0.1): module aggregate 61.5-61.6% (floor
+# 59). Per-package at the same run: config 88.1, fusefs 63.2, index 67.4,
+# ipc 74.9, scheduler 75.8, sync 80.2, transport 43.4, root main 42.3,
+# cmd/* 0 (main-only).
+# RAISE as tests land (do not lower). A toolchain bump in zeta-cache/go.mod
+# is a coverage event: re-measure in the SAME change (see the root matrix's
+# coverage-is-toolchain-dependent note in .github/workflows/check.yml — the
+# same law applies to this module).
+#
+# This target is the SINGLE source of truth for the module's race gate: CI's
+# zeta-cache-test job calls it (W2 LOW: an inline copy of the command there
+# drifted from this one), and `make check` runs it locally — same flags, same
+# floor, both places.
+ZETA_CACHE_COVER_MIN := 59
+
 zeta-cache-test-race:
-	@cd zeta-cache && CGO_ENABLED=0 go test -count=1 -race ./...
+	@cd zeta-cache && CGO_ENABLED=0 go test -count=1 -race -coverprofile=cover.out ./...
+	@cd zeta-cache && go tool cover -func=cover.out | tee /dev/stderr | awk '/^total:/ {gsub(/%/,"",$$3); if ($$3+0 < $(ZETA_CACHE_COVER_MIN)) {print "zeta-cache aggregate coverage " $$3 "% below floor $(ZETA_CACHE_COVER_MIN)"; exit 1}}'; rc=$$?; rm -f cover.out; exit $$rc
 
 clean:
 	@echo "Cleaning up..."

@@ -85,6 +85,12 @@ w19_cleanup() {
 		kill -9 "$W19_PID" 2>/dev/null
 	fi
 	[ -n "$W19_FAILOG" ] && rm -f "$W19_FAILOG"
+	# The per-request response body FILE created outside W19_ROOT
+	# (mktemp /tmp/e2e19-ro.XXXXXX): every failure path - a failed assert
+	# between mktemp and the inline rm - left it in /tmp (the wave-2 audit's
+	# trap-leak finding). The trap owns it; the inline rm's stay as prompt
+	# reuse hygiene but are no longer load-bearing for cleanup.
+	[ -n "${W19_RO_BODY:-}" ] && rm -f "$W19_RO_BODY"
 	rm -rf "$W19_ROOT" "$W19_WORK" "$W19_CERT"
 }
 trap w19_cleanup EXIT

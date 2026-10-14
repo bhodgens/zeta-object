@@ -28,7 +28,7 @@ if [ ! -x "$MC_BIN" ]; then
 	esac
 	MC_URL="https://github.com/minio/mc/releases/download/$MC_RELEASE_TAG/$MC_ASSET"
 	echo "  (downloading mc: $MC_URL)"
-	TMP_MC=$(mktemp /tmp/e2e13-mc.XXXXXX)
+	TMP_MC=$(mktemp /tmp/zetaobject-e2e.13-mc.XXXXXX)
 	if curl -fsSL -o "$TMP_MC" "$MC_URL" && chmod +x "$TMP_MC"; then
 		mkdir -p "$REPO_ROOT/vendor"
 		mv "$TMP_MC" "$MC_BIN"
@@ -44,16 +44,22 @@ BKT='e2e-13-interop'
 ALIAS=zetaobject
 export INTEROP_ENDPOINT="$ENDPOINT"
 export INTEROP_MC_BIN="$MC_BIN"
-INTEROP_SHIM_ERR=$(mktemp /tmp/e2e13-shimerr.XXXXXX)
+INTEROP_SHIM_ERR=$(mktemp /tmp/zetaobject-e2e.13-mc.XXXXXX)
 INTEROP_MC_SHIM="$E2E_ROOT/mc-runner.sh"
 INTEROP_EXPECT_DATA=''
 
-# TMPD holds the mc alias-set debug output. Named under the suite's swept
-# namespace (/tmp/zetaobject-e2e.*) and removed in the case's EXIT trap -
-# every mktemp FILE or DIR this case creates must be named in a trap's rm
-# (AGENTS.md cleanup rule 1; bughunt 2026-10-13 M33).
+# TMPD holds the mc alias-set debug output. Every mktemp FILE or DIR this
+# case creates is named under the suite's swept namespace
+# (/tmp/zetaobject-e2e.*) AND removed in the case's EXIT trap - both layers,
+# because an early exit between a mktemp and its rm (the shim-err file, the
+# mc_put staging file) must be caught by the trap, and a SIGKILL'd case must
+# be caught by the sweeper (AGENTS.md cleanup rule 1; bughunt 2026-10-13 M33,
+# W2 LOW: the five pre-fix /tmp/e2e13-* files leaked on early exit).
 TMPD=$(mktemp -d /tmp/zetaobject-e2e.13-mc.XXXXXX)
-cleanup_mc_tmp() { rm -rf "$TMPD"; }
+cleanup_mc_tmp() {
+	rm -rf "$TMPD"
+	rm -f "$INTEROP_SHIM_ERR" 2>/dev/null
+}
 trap cleanup_mc_tmp EXIT
 MC_DEBUG=1 "$MC_BIN" alias set "$ALIAS" "$ENDPOINT" zetaadmin zetaadmin --insecure \
 	>"$TMPD/mcout.txt" 2>"$TMPD/mcerr.txt"
@@ -69,7 +75,7 @@ assert_eq 'mc alias set' 0 "$ALIAS_RC"
 # stage the payload in a temp file (mc accepts regular files only).
 mc_put() {
 	local dst=$1 payload=$2 pf
-	pf=$(mktemp /tmp/e2e13-put.XXXXXX)
+	pf=$(mktemp /tmp/zetaobject-e2e.13-mc.XXXXXX)
 	printf %s "$payload" >"$pf"
 	"$MC_BIN" --insecure cp "$pf" "$ALIAS/$dst" >/dev/null 2>&1
 	local rc=$?
@@ -116,7 +122,7 @@ INTEROP_EXPECT_DATA=''
 # --- range GET (parity: case 06) ------------------------------------------------
 # mc cannot send Range headers (no CLI flag for conditional/range gets).
 # Closest observable: the object still GETs whole via mc cat (shim hashes it).
-RANGE_BIN=$(mktemp /tmp/e2e13-range.XXXXXX)
+RANGE_BIN=$(mktemp /tmp/zetaobject-e2e.13-mc.XXXXXX)
 python3 -c "print(''.join(chr(97 + i % 26) for i in range(119)), end='')" \
 	>"$RANGE_BIN"
 "$MC_BIN" cp --insecure "$RANGE_BIN" "$ALIAS/$BKT/r.bin" >/dev/null 2>&1
@@ -136,7 +142,7 @@ INTEROP_EXPECT_DATA=''
 # three-phase MPU API; a manual 3-part upload is impossible in mc. Closest
 # observable: byte-exact streaming round-trip of a >5 MiB object (the actual
 # multipart wire protocol is covered by boto3 case 12).
-BIG_BIN=$(mktemp /tmp/e2e13-big.XXXXXX)
+BIG_BIN=$(mktemp /tmp/zetaobject-e2e.13-mc.XXXXXX)
 python3 -c 'import sys; sys.stdout.write("m" * (5*1024*1024))' >"$BIG_BIN"
 INTEROP_EXPECT_DATA='mpu-ok'
 scenario_pass mc multipart_roundtrip "$BKT" <"$BIG_BIN"
