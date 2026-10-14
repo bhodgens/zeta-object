@@ -53,6 +53,27 @@ func (f *fakeRunner) counts() (int, int) {
 	return f.syncs, f.rescans
 }
 
+// waitTimerSettled spins until the FakeClock holds at least one timer: the
+// loop registers its next sleep timer AFTER updating the count, so an
+// Advance that races the registration is a silent no-op (the exact flake
+// TestSyncLoopBackoffOnFailures hit under -race).
+func waitTimerSettled(t *testing.T, clock *FakeClock, what string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		clock.mu.Lock()
+		n := len(clock.timers)
+		clock.mu.Unlock()
+		if n > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: no sleep timer registered within 2s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // waitSyncs polls until syncs >= want (the loop goroutine needs a
 // scheduling beat to record a call; nothing here sleeps on the FAKE
 // clock, only the poll loop on the real one, bounded).
@@ -106,14 +127,17 @@ func TestSyncLoopBackoffOnFailures(t *testing.T) {
 		close(done)
 	}()
 	waitSyncs(t, run, 1, "connect") // fail 1 -> backoff 30s
+	waitTimerSettled(t, clock, "backoff-30s timer")
 	clock.Advance(30 * time.Second)
 	waitSyncs(t, run, 2, "after first backoff") // fail 2 -> backoff 60s
+	waitTimerSettled(t, clock, "backoff-60s timer")
 	clock.Advance(45 * time.Second)
 	if s, _ := run.counts(); s != 2 {
 		t.Fatalf("sync fired early at 45s of a 60s backoff: %d", s)
 	}
 	clock.Advance(15 * time.Second)
 	waitSyncs(t, run, 3, "after second backoff") // success -> reset to 15m
+	waitTimerSettled(t, clock, "post-success interval timer")
 	clock.Advance(syncInterval)
 	waitSyncs(t, run, 4, "after success interval")
 	cancel()
