@@ -186,9 +186,14 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
 // MARK: - key helpers
 
 func parentKeyOf(_ key: String) -> String {
-    // The parent path of a key: "" for top-level entries.
-    guard let slash = key.lastIndex(of: "/") else { return "" }
-    return String(key[key.startIndex..<slash])
+    // The parent path of a key: "" for top-level entries. A DIR key carries
+    // a trailing slash - strip it FIRST or the dir becomes its own child
+    // (W2-H3: "docs/" cut at its trailing slash yielded "docs", the dir
+    // itself, as its own parent).
+    var k = key
+    if k.hasSuffix("/") { k.removeLast() }
+    guard let slash = k.lastIndex(of: "/") else { return "" }
+    return String(k[k.startIndex..<slash])
 }
 
 /// F1: parent identifiers of nested items are DIR identifiers, which

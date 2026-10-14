@@ -388,4 +388,14 @@ final class EnumeratorAnchorTests: XCTestCase {
             FileProviderEnumerator.anchor(for: a),
             FileProviderEnumerator.anchor(for: touched))
     }
+
+
+    /// W2-H3: a DIR key's trailing slash is its OWN - parentKeyOf must strip
+    /// it before cutting, or the dir becomes its own child.
+    func testParentKeyOfDirKeyIsNotSelf() {
+        XCTAssertEqual(parentKeyOf("docs/"), "")
+        XCTAssertEqual(parentKeyOf("a/b/"), "a")
+        XCTAssertEqual(parentKeyOf("a/b.txt"), "a")
+        XCTAssertEqual(parentKeyOf("top.txt"), "")
+    }
 }

@@ -55,8 +55,12 @@ public final class FileProviderItem: NSObject, NSFileProviderItem {
     /// The dir key of a file key's parent ("a/b.txt" -> "a/b/";
     /// top-level -> root).
     static func parentDirKey(of key: String) -> String {
-        guard let idx = key.lastIndex(of: "/") else { return "" }
-        return String(key[...idx])
+        // W2-H3: a DIR key's trailing slash is its OWN, not its parent's -
+        // strip it first or "docs/" yields parent "docs/" (itself).
+        var k = key
+        if k.hasSuffix("/") { k.removeLast() }
+        guard let idx = k.lastIndex(of: "/") else { return "" }
+        return String(k[...idx])
     }
 
     /// The server key backing an identifier (reverse of the above).

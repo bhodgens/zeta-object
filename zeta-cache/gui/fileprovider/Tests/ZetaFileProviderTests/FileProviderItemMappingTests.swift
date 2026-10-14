@@ -217,4 +217,14 @@ final class DownloadTriggerTests: XCTestCase {
                            "dehydrate x: refused, file is dirty (upload it first)")
         }
     }
+
+
+    /// W2-H3: parentDirKey must strip a dir key's own trailing slash before
+    /// cutting, or the dir becomes its own child.
+    func testParentDirKeyOfDirKeyIsNotSelf() {
+        XCTAssertEqual(FileProviderItem.parentDirKey(of: "docs/"), "")
+        XCTAssertEqual(FileProviderItem.parentDirKey(of: "a/b/"), "a/")
+        XCTAssertEqual(FileProviderItem.parentDirKey(of: "a/b.txt"), "a/")
+        XCTAssertEqual(FileProviderItem.parentDirKey(of: "top.txt"), "")
+    }
 }
