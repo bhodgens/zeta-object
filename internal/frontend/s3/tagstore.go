@@ -126,26 +126,34 @@ func (s sidecarTagStore) sidecarPath(key string) string {
 // readSidecar loads the object's sidecar. A missing sidecar is
 // ErrNoSuchKey (the sidecar exists iff the object exists — both are
 // written/deleted together by the backend).
-func (s sidecarTagStore) readSidecar(key string) (objectmodel.LegacyObjectMetadata, error) {
+//
+// The sidecar is read as the VERSIONED envelope (versionstore.go): the
+// versioning fields ride the same file, and a tag read-modify-write that
+// parsed only the legacy shape would silently DROP the object's version
+// history on write-back (the tags Put of a versioned multipart
+// completion would erase the record just written).
+func (s sidecarTagStore) readSidecar(key string) (versionedSidecar, error) {
 	//nolint:gosec // G703: key is validateObjectKey-checked at every handler entry (traversal/`.metadata` segments rejected); the path is the frozen sidecar layout shared with every handler.
 	raw, err := os.ReadFile(s.sidecarPath(key))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return objectmodel.LegacyObjectMetadata{}, objectmodel.ErrNoSuchKey(key)
+			return versionedSidecar{}, objectmodel.ErrNoSuchKey(key)
 		}
-		return objectmodel.LegacyObjectMetadata{}, err
+		return versionedSidecar{}, err
 	}
-	var meta objectmodel.LegacyObjectMetadata
+	var meta versionedSidecar
 	if err := json.Unmarshal(raw, &meta); err != nil {
-		return objectmodel.LegacyObjectMetadata{}, fmt.Errorf("parsing sidecar for %s: %w", key, err)
+		return versionedSidecar{}, fmt.Errorf("parsing sidecar for %s: %w", key, err)
 	}
 	return meta, nil
 }
 
 // writeSidecar atomically replaces the sidecar (temp file + rename in the
 // same directory, the same durability shape as the backend's
-// writeFileAtomicJSON) so a crash never leaves a truncated sidecar.
-func (s sidecarTagStore) writeSidecar(key string, meta objectmodel.LegacyObjectMetadata) error {
+// writeFileAtomicJSON) so a crash never leaves a truncated sidecar. The
+// versioned envelope is written whole (omitempty keeps unversioned
+// sidecars byte-compat).
+func (s sidecarTagStore) writeSidecar(key string, meta versionedSidecar) error {
 	path := s.sidecarPath(key)
 	raw, err := json.Marshal(meta)
 	if err != nil {

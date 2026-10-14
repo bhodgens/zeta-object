@@ -682,10 +682,13 @@ func tagsForCompletion(w http.ResponseWriter, bucketPath, objectName string, ok 
 // success XML. Every failure path writes its own error response.
 //
 // BUGHUNT H8: priorTags and capturedOld ride from the pre-rewrite capture
-// (completeMultipartUploadHandler). After the rename succeeds, the tag map
-// and the captured version are restored — the same crash-safe order
-// recordCapturedObjectVersion documents (data first, then bookkeeping) and
-// the same tag-after-the-object-exists order PutObject and CopyObject use.
+// (completeMultipartUploadHandler). After the rename succeeds, the
+// captured version is recorded FIRST and the tag map restored SECOND
+// (BUGHUNT F2): a tag-restore failure then leaves data + history
+// committed with only tags lost. Both steps follow the same crash-safe
+// order recordCapturedObjectVersion documents (data first, then
+// bookkeeping) and the same tag-after-the-object-exists order PutObject
+// and CopyObject use.
 func finalizeComplete(w http.ResponseWriter, r *http.Request, bucketName, objectName, uploadID, bucketPath, mpUploadMetaPath, partsDir, finalObjectPath, objectMetadataPath, finalTempPath string, meta ObjectMetadata, finalETag string, totalSize int64, priorTags map[string]string, capturedOld *capturedObjectVersion, failCleanup *bool) {
 
 	if err := writeFileAtomicJSON(objectMetadataPath, meta, 0644); err != nil {
@@ -707,6 +710,24 @@ func finalizeComplete(w http.ResponseWriter, r *http.Request, bucketName, object
 	}
 	*failCleanup = false // rename consumed the temp file
 
+	// BUGHUNT F2: the version record runs BEFORE the tags restore. A
+	// tag-restore failure 500s either way, but with the old order (tags
+	// first) the failure hit BEFORE recordCapturedObjectVersion — the
+	// sidecar was already rewritten wholesale, the captured old version
+	// was never restored under it, and the pre-overwrite history was
+	// dropped forever. With this order a tag-restore failure leaves data
+	// + history committed and only tags lost (the 500 stays correct); the
+	// crash-safe invariant (data rename precedes both) is unchanged.
+	if capturedOld != nil {
+		if recErr := recordCapturedObjectVersion(bucketPath, bucketName, objectName, capturedOld); recErr != nil {
+			log.Printf("Error recording prior version for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), recErr)
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(errorToXML("InternalError", "Error recording object version.")))
+			return
+		}
+	}
+
 	// BUGHUNT H8 (tags): restore the previous object's tags AFTER the
 	// sidecar rewrite (read-modify-write of the new sidecar, the same
 	// tags-land-after-the-object-exists order PutObject/CopyObject use).
@@ -720,22 +741,6 @@ func finalizeComplete(w http.ResponseWriter, r *http.Request, bucketName, object
 			w.Header().Set("Content-Type", "application/xml")
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte(errorToXML("InternalError", "Error restoring object tags.")))
-			return
-		}
-	}
-
-	// BUGHUNT H8 (versions): record the CAPTURED old bytes as one version
-	// AFTER the final rename — the identical record step the plain
-	// PutObject handler runs (the sidecar was rewritten wholesale above;
-	// recordCapturedObjectVersion restores the captured history beneath
-	// the new entry). A nil capture (create, or Off/Suspended bucket)
-	// records nothing; plain-bucket behavior is byte-identical.
-	if capturedOld != nil {
-		if recErr := recordCapturedObjectVersion(bucketPath, bucketName, objectName, capturedOld); recErr != nil {
-			log.Printf("Error recording prior version for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), recErr)
-			w.Header().Set("Content-Type", "application/xml")
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(errorToXML("InternalError", "Error recording object version.")))
 			return
 		}
 	}

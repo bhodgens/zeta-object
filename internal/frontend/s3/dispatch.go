@@ -352,6 +352,25 @@ func (f *Frontend) bucketLevelDispatch(w http.ResponseWriter, r *http.Request, b
 	// Leaf 3.5: DeleteObjects sub-resource (POST /bucket?delete) and the
 	// quic-h3-2026-10 leaf 07 JSON batch extension (POST /bucket?batch).
 	// Both are batch surfaces over the shared internal/batchops core.
+	//
+	// BUGHUNT F1: a request carrying BOTH ?delete and ?batch is malformed
+	// — no legitimate client sends both — and the double param used to be
+	// an authz/dispatch precedence mismatch: opForMethod checked ?batch
+	// first (OpWrite) while this dispatch routed ?delete first, so a
+	// write-only grant could execute DeleteObjects by appending both
+	// params. Reject the combination 400 InvalidArgument BEFORE either
+	// handler runs; plain ?delete (OpDelete) and plain ?batch (OpWrite)
+	// keep their pinned M13 classifications.
+	if r.Method == "POST" {
+		_, hasDelete := r.URL.Query()["delete"]
+		_, hasBatch := r.URL.Query()["batch"]
+		if hasDelete && hasBatch {
+			writeS3Error(w, "InvalidArgument",
+				"Conflicting query parameters: ?delete and ?batch cannot be combined.",
+				http.StatusBadRequest)
+			return
+		}
+	}
 	if _, ok := r.URL.Query()["delete"]; ok && r.Method == "POST" {
 		deleteObjectsHandler(w, r, bucketName)
 		return

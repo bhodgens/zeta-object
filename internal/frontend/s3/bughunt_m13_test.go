@@ -10,10 +10,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
+	"github.com/bhodgens/zeta-object/internal/frontend/s3"
 )
 
 // m13Serve drives the signed request through the full pipeline and
@@ -75,6 +78,63 @@ func TestBughuntM13_BatchSubresourcesNotCreate(t *testing.T) {
 	req = signPath(t, "POST", "/m13-bucket/big.bin?uploads", "AKM13", "sk-m13", "")
 	if w := m13Serve(t, handler, req); w.Code != http.StatusForbidden {
 		t.Fatalf("multipart initiate as create-only = %d, want 403 (write-class)", w.Code)
+	}
+}
+
+// TestBughuntF1_DeleteBatchDoubleParamRejected pins the post-wave F1 fix:
+// POST /bucket?delete&batch (BOTH sub-resource params) is malformed — no
+// legitimate client sends both — and used to be an authz/dispatch
+// precedence mismatch (opForMethod: ?batch→OpWrite checked first; dispatch:
+// ?delete routed first), so a WRITE-ONLY grant could execute DeleteObjects
+// by appending both params. The dispatch now rejects the combination 400
+// InvalidArgument BEFORE any handler runs. Plain ?delete (needs OpDelete)
+// and plain ?batch (needs OpWrite) keep their M13 pins above.
+func TestBughuntF1_DeleteBatchDoubleParamRejected(t *testing.T) {
+	writeOnly, err := auth.ParseGrantValue("f1-test", "f1-bucket", json.RawMessage(`{"ops":["write"]}`))
+	if err != nil {
+		t.Fatalf("grant fixture: %v", err)
+	}
+	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
+		{Name: "writer", AccessKey: "AKF1", SecretKey: "sk-f1", Grants: map[string]json.RawMessage{
+			"f1-bucket": m13GrantJSON(t, writeOnly),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newRegistryTestServer(t, reg)
+	handler := srv.Config.Handler
+
+	// Create the bucket DIRECTORY directly (mkdir) — the bucket must
+	// exist, but a write-only grant cannot PUT /bucket (OpCreate), and
+	// granting create would weaken the escalation fixture. newTestServer
+	// (via newRegistryTestServer) exposes its backend root through the
+	// installed config view's DataDir.
+	if err := os.MkdirAll(filepath.Join(strings.TrimSuffix(s3.InstalledDataDir(), "/"), "f1-bucket"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sanity: the write-only identity CAN write (grant shape proves the
+	// escalation below is real, not a broken fixture).
+	if w := m13Serve(t, handler, signPath(t, "PUT", "/f1-bucket/own.txt", "AKF1", "sk-f1", "data")); w.Code >= 400 {
+		t.Fatalf("write-only identity PUT (allowed): %d %s", w.Code, w.Body.String())
+	}
+
+	// POST ?delete&batch as write-only → 400 InvalidArgument, NOT a
+	// DeleteObjects execution under the OpWrite classification.
+	req := signPath(t, "POST", "/f1-bucket?delete&batch", "AKF1", "sk-f1",
+		`<Delete><Object><Key>victim.txt</Key></Object></Delete>`)
+	if w := m13Serve(t, handler, req); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "InvalidArgument") {
+		t.Fatalf("POST ?delete&batch as write-only = %d %s, want 400 InvalidArgument (F1)", w.Code, w.Body.String())
+	}
+
+	// Plain ?delete still needs OpDelete → 403 for this identity (the
+	// double-param rejection must not widen or narrow the single-param
+	// classifications).
+	req = signPath(t, "POST", "/f1-bucket?delete", "AKF1", "sk-f1",
+		`<Delete><Object><Key>victim.txt</Key></Object></Delete>`)
+	if w := m13Serve(t, handler, req); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "AccessDenied") {
+		t.Fatalf("POST ?delete as write-only = %d %s, want 403 AccessDenied (plain ?delete keeps OpDelete)", w.Code, w.Body.String())
 	}
 }
 
