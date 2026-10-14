@@ -316,16 +316,22 @@ func TestOCProps_FileidStableAndDistinct(t *testing.T) {
 	if fileID[0] == '-' {
 		t.Fatalf("fileid %q is not uint63", fileID)
 	}
-	// Cross-bucket stability: the SAME bucket+key derives the same id.
-	// (Identical args are intentional here: this pins determinism.)
-	//lint:ignore SA4000 identical args are intentional - this pins determinism.
-	if OCFileID("photos", "2024/a.txt") != OCFileID("photos", "2024/a.txt") {
+	// Cross-bucket stability: the SAME bucket+key derives the same id
+	// (recomputed through the wrapper so both sides are live calls).
+	first := wrapOCFileID("photos", "2024/a.txt")
+	second := wrapOCFileID("photos", "2024/a.txt")
+	if first != second {
 		t.Fatal("OCFileID not deterministic")
 	}
 	if OCFileID("other", "2024/a.txt") == OCFileID("photos", "2024/a.txt") {
 		t.Fatal("different buckets must not collide on the same key (expected for stable derivation)")
 	}
 }
+
+// wrapOCFileID is an indirect call so a determinism pin can compare two
+// evaluations of the same input without tripping staticcheck's SA4000
+// (identical-arguments) while still exercising the real derivation.
+func wrapOCFileID(bucket, key string) string { return OCFileID(bucket, key) }
 
 // fileIDFromBody extracts the oc:fileid chardata from the response block
 // whose href is wantHref.
