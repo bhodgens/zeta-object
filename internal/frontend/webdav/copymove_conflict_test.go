@@ -16,6 +16,7 @@ package webdav
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -70,5 +71,84 @@ func TestWebdavMOVE_NormalModeStillSucceeds(t *testing.T) {
 	}
 	if !hidden {
 		t.Fatal("the MOVE source delete recorded no delete marker (a versioned MOVE must leave the same store state DELETE does)")
+	}
+}
+
+// TestWebdavMOVE_SelfDestinationIs403 (bughunt H9, RFC 4918 §9.9.4): a MOVE
+// whose Destination IS the request URI must be refused with 403 BEFORE any
+// backend call. Without the guard the flow Puts the source bytes back onto
+// the same key and then runs the source delete — on a versioning-Enabled
+// bucket that delete records a marker while the wire answered 204, so the
+// plain object vanishes: a self-MOVE destroyed the object.
+func TestWebdavMOVE_SelfDestinationIs403(t *testing.T) {
+	for _, mode := range []string{"sidecar", "snapshots"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newVerParityEnv(t, "self-move-"+mode+"-bkt", mode)
+			e.enable()
+
+			e.davPut("self.txt", "keep me")
+
+			code := e.davMoveStatus("self.txt", "self.txt")
+			if code != http.StatusForbidden {
+				t.Fatalf("%s-mode self-MOVE = %d, want 403 (RFC 4918 9.9.4)", mode, code)
+			}
+
+			// The object must be UNTOUCHED: the bytes survive the
+			// refused MOVE.
+			if raw, err := os.ReadFile(filepath.Join(e.bucketPath, "self.txt")); err != nil || string(raw) != "keep me" {
+				t.Fatalf("self-MOVE clobbered the object: %q err=%v", raw, err)
+			}
+			// The core of the defect: no delete marker recorded, so
+			// every plain view still serves the object. (The marker
+			// consult runs in sidecar mode only — a snapshots-store
+			// List in this env has no tracked zfs dataset to resolve,
+			// the same env limit TestWebdavPUT_SnapshotsModeParity
+			// documents; the 403 + intact bytes above carry the
+			// snapshots arm.)
+			if mode == "sidecar" {
+				hidden, err := s3.PlainObjectDeleteMarker404(e.bucketPath, e.bucket, "self.txt")
+				if err != nil {
+					t.Fatalf("marker consult: %v", err)
+				}
+				if hidden {
+					t.Fatal("self-MOVE recorded a delete marker (the guard must refuse before the source delete)")
+				}
+			}
+		})
+	}
+}
+
+// TestWebdavMOVE_SelfDestinationAcrossModes pins the guard's comparison
+// rules on an unversioned (stub-backend, mode A) mount: the same bucket+key
+// is refused whether the Destination arrives as a bare path or a full URL,
+// and a same-bucket DIFFERENT key still moves (the guard must not overfire).
+func TestWebdavMOVE_SelfDestinationAcrossModes(t *testing.T) {
+	f, be := newTestFrontend(Config{})
+	be.seed("photos", "a.txt", []byte("x"))
+
+	move := func(dest string) int {
+		req := httptest.NewRequest("MOVE", "/photos/a.txt", nil)
+		req.Header.Set("Destination", dest)
+		rec := httptest.NewRecorder()
+		f.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if got := move("/photos/a.txt"); got != http.StatusForbidden {
+		t.Fatalf("self-MOVE bare path = %d, want 403", got)
+	}
+	if got := move("https://example.test/photos/a.txt"); got != http.StatusForbidden {
+		t.Fatalf("self-MOVE full URL = %d, want 403", got)
+	}
+	if be.hasKey("photos", "a.txt") == false {
+		t.Fatal("self-MOVE deleted the object")
+	}
+	// A different key in the same bucket is a legal MOVE (the guard must
+	// not refuse renames).
+	if got := move("/photos/b.txt"); got != http.StatusCreated {
+		t.Fatalf("normal MOVE after guard = %d, want 201 (guard overfired)", got)
+	}
+	if !be.hasKey("photos", "b.txt") || be.hasKey("photos", "a.txt") {
+		t.Fatal("normal MOVE did not rename")
 	}
 }

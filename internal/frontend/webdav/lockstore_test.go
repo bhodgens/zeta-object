@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -236,4 +237,50 @@ func TestFileLockStore_Race(t *testing.T) {
 		}
 	})
 	wg.Wait()
+}
+
+// TestFileLockStore_LockFileNameInjective (bughunt M31): lockFileName must
+// be INJECTIVE — the old underscore flattening mapped "a/b_c.txt" and
+// "a/b/c.txt" onto the same "a_b_c.txt.lock" file, so locking one
+// spuriously 423'd the other. Percent-encoding keeps the name flat AND
+// collision-free; both keys also map to names that survive as ONE flat
+// file-system entry (no slash inside).
+func TestFileLockStore_LockFileNameInjective(t *testing.T) {
+	cases := []string{"/a/b_c.txt", "/a/b/c.txt", "/doc.txt", "/a_b/c.txt", "/sp ace/x.txt"}
+	seen := map[string]string{}
+	for _, key := range cases {
+		name := lockFileName(key)
+		if strings.Contains(name[:len(name)-len(".lock")], "/") {
+			t.Fatalf("lockFileName(%q) = %q: not flat (a path structure)", key, name)
+		}
+		if prev, dup := seen[name]; dup {
+			t.Fatalf("lockFileName collision: %q and %q both map to %q", prev, key, name)
+		}
+		seen[name] = key
+	}
+	// The historical collision pair in particular must differ.
+	if lockFileName("/a/b_c.txt") == lockFileName("/a/b/c.txt") {
+		t.Fatal("the b/a/b_c.txt vs b/a/b/c.txt collision pair still shares one lock file name")
+	}
+}
+
+// TestFileLockStore_DistinctNestedKeysDoNotConflict is the wire-level M31
+// pin: acquiring a lock on a/b_c.txt must NOT make a/b/c.txt ErrLocked
+// (the store files must be distinct on disk, too).
+func TestFileLockStore_DistinctNestedKeysDoNotConflict(t *testing.T) {
+	s, dir := newTestLockStore(t)
+	if _, err := s.Acquire("/a/b_c.txt", LockInfo{Depth: "0", Timeout: 600}); err != nil {
+		t.Fatalf("Acquire a/b_c.txt: %v", err)
+	}
+	if _, err := s.Acquire("/a/b/c.txt", LockInfo{Depth: "0", Timeout: 600}); err != nil {
+		t.Fatalf("Acquire a/b/c.txt: %v (must be free — distinct keys map to distinct lock files)", err)
+	}
+	// Both lock files exist as separate flat entries under .locks/.
+	entries, err := os.ReadDir(filepath.Join(dir, ".locks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("on-disk lock files = %d, want 2 (one per distinct key)", len(entries))
+	}
 }

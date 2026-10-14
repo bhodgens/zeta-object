@@ -52,6 +52,16 @@ func (f *Frontend) handleCopyMove(w http.ResponseWriter, r *http.Request, src re
 		writeDavError(w, http.StatusForbidden, "")
 		return
 	}
+	// H9 (RFC 4918 §9.9.4): a MOVE whose destination IS the source must
+	// be refused with 403 BEFORE any backend call. Without the guard the
+	// flow below Puts the source bytes back onto the same key and then
+	// deletes the source — on a versioning-Enabled bucket the delete
+	// records a marker, so the object ends up gone from every plain view
+	// while the wire answered 204: a self-MOVE destroys the object.
+	if dstRes.bucket == src.bucket && dstRes.key == src.key {
+		writeDavError(w, http.StatusForbidden, "")
+		return
+	}
 	srcObj, kind, err := f.resolveKind(r.Context(), src)
 	if err != nil {
 		writeDavErrorFrom(w, err)

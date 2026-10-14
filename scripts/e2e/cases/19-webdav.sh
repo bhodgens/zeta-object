@@ -70,6 +70,9 @@ mkdir -p "$W19_WORK/data"
 
 W19_USER='wd-user'
 W19_PASS='wd-pass'
+# Read-only identity for the H3 batch-authorization pin (part 19h).
+W19_RO_USER='wd-readonly'
+W19_RO_PASS='wd-readonly-pass'
 W19_FAILOG=''
 
 w19_cleanup() {
@@ -113,7 +116,8 @@ cat > "$W19_WORK/config.json" <<EOF
     {"type": "webdav", "listenAddr": "127.0.0.1:$W19_PORT_B", "bucket": "$W19_BKT"}
   ],
   "identities": [
-    {"name": "webdav-ro", "accessKey": "$W19_USER", "secretKey": "$W19_PASS", "grants": {"*": "readwrite"}}
+    {"name": "webdav-ro", "accessKey": "$W19_USER", "secretKey": "$W19_PASS", "grants": {"*": "readwrite"}},
+    {"name": "webdav-readonly", "accessKey": "$W19_RO_USER", "secretKey": "$W19_RO_PASS", "grants": {"$W19_BKT": "readonly"}}
   ]
 }
 EOF
@@ -456,5 +460,55 @@ w19_req DELETE "/$W19_BKT/tokdir/deeper/leaf.txt" > /dev/null
 w19_req DELETE "/$W19_BKT/tokdir/deeper/" > /dev/null
 w19_req DELETE "/$W19_BKT/tokdir/nested.txt" > /dev/null
 w19_req DELETE "/$W19_BKT/tokdir/" > /dev/null
+
+# --- part 19h: bughunt H3/H9 pins (read-only batch + self-MOVE) -------------
+# H9: MOVE whose Destination IS the request URI must be 403 (RFC 4918
+# 9.9.4) and leave the object UNTOUCHED. The old flow Put the source onto
+# itself and then deleted the source — the wire said 204 while the object
+# vanished.
+w19_req PUT "/$W19_BKT/e2e19-self.txt" --data-binary 'self-move-victim'
+assert_eq 'H9 seed: self-MOVE victim' 201 "$W19_STATUS"
+w19_req MOVE "/$W19_BKT/e2e19-self.txt" -H "Destination: /$W19_BKT/e2e19-self.txt"
+assert_eq 'H9 self-MOVE refused 403' 403 "$W19_STATUS"
+w19_req GET "/$W19_BKT/e2e19-self.txt"
+assert_eq 'H9 self-MOVE left the object intact' 200 "$W19_STATUS"
+assert_contains 'H9 self-MOVE left the bytes intact' "$W19_BODY" 'self-move-victim'
+w19_req DELETE "/$W19_BKT/e2e19-self.txt"
+assert_eq 'H9 cleanup: victim deleted' 204 "$W19_STATUS"
+
+# H10: a recursive collection DELETE is a wire-visible behavior this case
+# already drives (19c DELETE dir); on the UNVERSIONED server here the
+# recursive path is byte-identical pre/post fix, so the versioned marker
+# behavior stays pinned by the unit tests (delete_versioning_test.go).
+
+# H3: the webdav ?batch sub-resource executes put/copy/move/delete, so it
+# is a WRITE: the read-only identity's POST ?batch with a delete manifest
+# must be 403 and must execute NOTHING; the read-write identity's identical
+# manifest still goes through (positive control).
+w19_req PUT "/$W19_BKT/e2e19-batch-victim.txt" --data-binary 'batch-victim'
+assert_eq 'H3 seed: batch victim' 201 "$W19_STATUS"
+W19_RO_BODY=$(mktemp /tmp/e2e19-ro.XXXXXX)
+W19_RO_STATUS=$(curl -sk -o "$W19_RO_BODY" -w '%{http_code}' \
+	--user "${W19_RO_USER}:${W19_RO_PASS}" \
+	-X POST "https://127.0.0.1:$W19_PORT_A/$W19_BKT?batch" \
+	-H 'Content-Type: application/json' \
+	--data-binary '{"operations":[{"op":"delete","from":"e2e19-batch-victim.txt"}]}' 2>/dev/null)
+assert_eq 'H3 read-only POST ?batch rejected 403' 403 "$W19_RO_STATUS"
+w19_req GET "/$W19_BKT/e2e19-batch-victim.txt"
+assert_eq 'H3 403 executed nothing (victim survives)' 200 "$W19_STATUS"
+rm -f "$W19_RO_BODY"
+# Positive control: the read-write identity deletes through ?batch.
+w19_req POST "/$W19_BKT?batch" -H 'Content-Type: application/json' \
+	--data-binary '{"operations":[{"op":"delete","from":"e2e19-batch-victim.txt"}]}'
+assert_eq 'H3 read-write POST ?batch succeeds' 200 "$W19_STATUS"
+w19_req GET "/$W19_BKT/e2e19-batch-victim.txt"
+assert_eq 'H3 read-write batch delete really executed' 404 "$W19_STATUS"
+# And GET ?batch stays the mount's 405 for the read-only identity too.
+W19_RO_BODY=$(mktemp /tmp/e2e19-ro.XXXXXX)
+W19_RO_STATUS=$(curl -sk -o /dev/null -w '%{http_code}' \
+	--user "${W19_RO_USER}:${W19_RO_PASS}" \
+	-X GET "https://127.0.0.1:$W19_PORT_A/$W19_BKT?batch" 2>/dev/null)
+assert_eq 'H3 read-only GET ?batch stays 405' 405 "$W19_RO_STATUS"
+rm -f "$W19_RO_BODY"
 
 e2e_finish

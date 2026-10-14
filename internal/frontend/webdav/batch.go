@@ -14,6 +14,13 @@
 //     bucket scope). The combined parity env pins both shapes.
 //   - A GET (or any other method) with ?batch is 405 — the sub-resource
 //     is POST-only.
+//   - A POST ?batch requires WRITE on the bucket (bughunt H3): a manifest
+//     executes put/copy/move/delete operations, so the read-classified
+//     POST method alone must not be the gate. The grant check runs AFTER
+//     the 405s (a GET ?batch stays the mount's 405) and BEFORE
+//     HandleBatchForBucket, whose per-item executor performs no grant
+//     check of its own — without this gate a read-only identity could
+//     execute deletes and writes over the mount.
 //   - Auth and grants run BEFORE the batch resolves (the serveHTTP
 //     pipeline): an unauthenticated request 401s, an unauthorized one
 //     403s — one request = one bucket = one auth decision covering every
@@ -25,6 +32,7 @@ package webdav
 import (
 	"net/http"
 
+	"github.com/bhodgens/zeta-object/internal/frontend"
 	s3 "github.com/bhodgens/zeta-object/internal/frontend/s3"
 )
 
@@ -57,6 +65,20 @@ func (f *Frontend) batchDispatch(w http.ResponseWriter, r *http.Request, res res
 	if bucketPath == "" {
 		// Unwired seam (unit-test shape): no batch surface.
 		return false
+	}
+	// H3: a manifest executes put/copy/move/delete, so the batch
+	// sub-resource is a WRITE regardless of the POST method (which
+	// requestGrantsWrite classifies as read). Enforce Write on the
+	// bucket BEFORE HandleBatchForBucket — its per-item executor runs
+	// no grant check, so a read-only identity reaching this line would
+	// execute deletes and writes over the mount. The serveHTTP
+	// authorize pass above checked the METHOD's classification (read
+	// for POST); this re-checks the SUB-RESOURCE's classification,
+	// the same one-request-two-scope shape as COPY/MOVE's independent
+	// destination gate.
+	if err := frontend.AuthorizeRequest(identityOf(r), res.bucket, true); err != nil {
+		writeDavError(w, http.StatusForbidden, "")
+		return true
 	}
 	// The key validator is the mounting frontend's own rule set. The
 	// webdav path parser has already proven the bucket scope; the

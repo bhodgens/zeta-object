@@ -48,30 +48,33 @@ func (f *Frontend) handleDELETE(w http.ResponseWriter, r *http.Request, res reso
 		// `f.bucketPathFn != nil` test made this branch dead: a DELETE on a
 		// versioning-Enabled bucket took the plain path, destroying the
 		// bytes and recording no recoverable delete marker.
-		bucketPath := f.bucketPath(res.bucket)
-		if bucketPath != "" {
-			suppress, markerErr := deleteMarkerOrPlain(bucketPath, res.bucket, res.key)
-			if markerErr != nil {
-				log.Printf("webdav DELETE %s/%s: versioned marker: %v", strconv.Quote(res.bucket), strconv.Quote(res.key), markerErr)
-				if webdavVersioningConflict(markerErr) {
-					writeDavError(w, http.StatusConflict, "")
-				} else {
-					writeDavError(w, http.StatusInternalServerError, "")
-				}
-				return
+		if err := f.deleteCollectionKey(r.Context(), res.bucket, res.key); err != nil {
+			if webdavVersioningConflict(err) {
+				writeDavError(w, http.StatusConflict, "")
+			} else {
+				writeDavErrorFrom(w, err)
 			}
-			if suppress {
-				w.Header().Set("Content-Length", "0")
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
-		}
-		if err := f.be.Delete(r.Context(), res.bucket, res.key); err != nil {
-			writeDavErrorFrom(w, err)
 			return
 		}
 	case kindCollection:
+		// H10: the recursive sweep must drive the SAME per-key
+		// marker-aware delete the kindFile branch drives — on a
+		// versioning-Enabled bucket a plain f.be.Delete destroys the
+		// bytes with no marker and no captured versions, and the
+		// sweep loop would happily "confirm" an emptied prefix while
+		// every plain view still lists nothing. Each removed key goes
+		// through deleteCollectionKey (deleteMarkerOrPlain + 409 on
+		// the snapshots refusal), preserving the sweep bounds.
 		if err := f.deleteCollection(r.Context(), res.bucket, res.collectionPrefix()); err != nil {
+			// Snapshots mode refuses the marker: the sentinel maps to
+			// 409 Conflict — the same answer a single-key DELETE gives
+			// for the identical store state (davStatus has no case for
+			// the versioning sentinels; without this branch it would
+			// render a 500 for a conflict).
+			if webdavVersioningConflict(err) {
+				writeDavError(w, http.StatusConflict, "")
+				return
+			}
 			writeDavErrorFrom(w, err)
 			return
 		}
@@ -86,10 +89,43 @@ func (f *Frontend) handleDELETE(w http.ResponseWriter, r *http.Request, res reso
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// deleteCollectionKey is the ONE marker-aware per-key delete both the
+// single-key DELETE and the recursive collection sweep drive (bughunt H10:
+// the sweep used to call f.be.Delete directly, destroying versioned data
+// with no marker and no captured history on a versioning-Enabled bucket).
+// On a versioning-Enabled bucket it records a delete marker and suppresses
+// the plain delete (the data file stays; plain views hide it — identical to
+// the s3 DELETE handler's marker step); OFF/Suspended take the plain
+// delete; in snapshots mode the store refuses the marker and the sentinel
+// (ErrDeleteMarkersUnsupported) is returned for the caller's 409 mapping.
+func (f *Frontend) deleteCollectionKey(ctx context.Context, bucket, key string) error {
+	if bucketPath := f.bucketPath(bucket); bucketPath != "" {
+		suppress, markerErr := deleteMarkerOrPlain(bucketPath, bucket, key)
+		if markerErr != nil {
+			log.Printf("webdav DELETE %s/%s: versioned marker: %v", strconv.Quote(bucket), strconv.Quote(key), markerErr)
+			return markerErr
+		}
+		if suppress {
+			return nil
+		}
+	}
+	return f.be.Delete(ctx, bucket, key)
+}
+
 // deleteCollection removes every key under the prefix. The loop re-lists
 // until the prefix is empty (guarding against concurrent puts during the
 // delete) with a bounded retry count — termination is guaranteed: bounded
 // retries then a 500 with a clear message, never a hang (leaf 03 Task 4).
+//
+// Each key is removed through deleteCollectionKey (the SAME marker-aware
+// path a single-key DELETE takes — bughunt H10). On a versioning-Enabled
+// bucket a suppressed key keeps its data file in the backend listing, so
+// the sweep cannot wait for an empty listing: keys whose latest history
+// entry is a delete marker count as REMOVED (every plain view already
+// hides them — the same visibility rule PROPFIND/GET apply), and the loop
+// terminates when every listed key is marker-hidden or actually gone.
+// Snapshots mode refuses the marker: the sentinel propagates and the wire
+// answers 409, the same conflict a single-key DELETE answers.
 func (f *Frontend) deleteCollection(ctx context.Context, bucket, prefix string) error {
 	const maxSweeps = 100
 	for sweep := 0; ; sweep++ {
@@ -129,11 +165,24 @@ func (f *Frontend) deleteCollection(ctx context.Context, bucket, prefix string) 
 		if len(keys) == 0 {
 			return nil
 		}
+		remaining := 0
 		for _, key := range keys {
-			if err := f.be.Delete(ctx, bucket, key); err != nil {
+			if err := f.deleteCollectionKey(ctx, bucket, key); err != nil {
 				return err
 			}
+			// A marker-suppressed key stays listed by the backend; it
+			// is removed from every plain view (markerhide.go's rule)
+			// and must not keep the sweep looping. An unsuppressed
+			// key (plain delete) is gone — re-check anyway: if it
+			// still lists it is marker-hidden or a concurrent write.
+			if !f.objectHiddenByDeleteMarker(bucket, key) {
+				remaining++
+			}
 		}
-		// Loop: re-list and confirm the prefix is empty before returning.
+		if remaining == 0 {
+			return nil
+		}
+		// Loop: re-list and confirm the prefix is plain-view-empty
+		// before returning.
 	}
 }

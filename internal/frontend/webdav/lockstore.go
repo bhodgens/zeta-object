@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,13 +56,15 @@ func newLockErr(base error, format string, args ...any) error {
 }
 
 // lockFileName maps a resource key onto the on-disk lock file name. The
-// key is slash-led; slashes become underscores after stripping the lead so
-// every key maps to a single flat file name (depth-1 keys only — that is
-// all v1 issues LOCKs for). Keys arrive from parseResource, which rejects
-// dot-segment traversal, and the underscore flattening leaves no path
-// structure for an escaped segment to exploit.
+// key is slash-led; the slash-led key minus its leading slash is
+// percent-encoded (url.PathEscape) so every key maps to a single flat,
+// INJECTIVE file name. The old underscore flattening was not injective:
+// "a/b_c.txt" and "a/b/c.txt" both flattened to "a_b_c.txt", so locking
+// one spuriously 423'd the other (bughunt M31). Escaping keeps the file
+// flat (no path structure for an escaped segment to exploit); keys arrive
+// from parseResource, which rejects dot-segment traversal.
 func lockFileName(key string) string {
-	return strings.ReplaceAll(strings.TrimPrefix(key, "/"), "/", "_") + ".lock"
+	return url.PathEscape(strings.TrimPrefix(key, "/")) + ".lock"
 }
 
 // fileLockStore stores one JSON file per lock under <dir>/.locks/. A

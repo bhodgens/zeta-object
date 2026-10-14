@@ -178,3 +178,88 @@ func TestWebdavBatch_GETIs405(t *testing.T) {
 		t.Fatalf("GET ?batch status = %d, want 405", w.Code)
 	}
 }
+
+// TestWebdavBatch_ReadOnlyIdentityIs403 (bughunt H3): a POST ?batch is a
+// WRITE (the manifest executes put/copy/move/delete and the batch executor
+// runs no per-item grant check), so a read-only identity must be refused
+// with 403 BEFORE HandleBatchForBucket — the old path classified POST as a
+// read and executed the manifest's deletes. The GET ?batch 405 above must
+// survive the new gate (it answers before the grant check, so the mount's
+// method contract is unchanged for every identity).
+func TestWebdavBatch_ReadOnlyIdentityIs403(t *testing.T) {
+	dataDir := t.TempDir()
+	s3.SetupVersioningTestEnv(t, dataDir)
+	bucket := "ro-batch-bkt"
+	if err := os.MkdirAll(filepath.Join(dataDir, bucket, ".metadata"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The ak-ro/sk-ro read-only-on-photos shape from auth_test.go, bound
+	// to THIS bucket.
+	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
+		{Name: "ro", AccessKey: "ak-ro", SecretKey: "sk-ro",
+			Grants: rawGrants(map[string]string{bucket: "readonly"})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	be := s3.TestBackend()
+	ctx := context.Background()
+	if _, err := be.Put(ctx, bucket, "victim.txt", strings.NewReader("stay"), int64(len("stay")), objectmodel.PutOptions{}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	f, err := New(be, Config{Bucket: bucket}, WithAuthenticator(auth.NewBasicAuthenticator(reg)),
+		WithBucketPathResolver(func(b string) string { return filepath.Join(dataDir, b) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/?batch", strings.NewReader(`{"operations":[{"op":"delete","from":"victim.txt"}]}`))
+	req.SetBasicAuth("ak-ro", "sk-ro")
+	w := httptest.NewRecorder()
+	f.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("read-only POST ?batch status = %d, want 403 (body %s)", w.Code, w.Body.String())
+	}
+	// 403 must execute NOTHING: the batch executor never ran.
+	if _, err := be.Stat(ctx, bucket, "victim.txt"); err != nil {
+		t.Errorf("403 must execute nothing — victim.txt gone: %v", err)
+	}
+
+	// A read-write identity on the same bucket still gets through the
+	// gate (the fix must not refuse every identity): the same manifest
+	// executes and deletes the victim.
+	if _, err := be.Put(ctx, bucket, "victim.txt", strings.NewReader("stay"), int64(len("stay")), objectmodel.PutOptions{}); err != nil {
+		t.Fatalf("reseed: %v", err)
+	}
+	regRW, err := auth.NewMultiRegistry([]auth.IdentityConfig{
+		{Name: "rw", AccessKey: "ak-rw", SecretKey: "sk-rw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fRW, err := New(be, Config{Bucket: bucket}, WithAuthenticator(auth.NewBasicAuthenticator(regRW)),
+		WithBucketPathResolver(func(b string) string { return filepath.Join(dataDir, b) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqRW := httptest.NewRequest("POST", "/?batch", strings.NewReader(`{"operations":[{"op":"delete","from":"victim.txt"}]}`))
+	reqRW.SetBasicAuth("ak-rw", "sk-rw")
+	wRW := httptest.NewRecorder()
+	fRW.Handler().ServeHTTP(wRW, reqRW)
+	if wRW.Code != http.StatusOK {
+		t.Fatalf("read-write POST ?batch status = %d, want 200 (body %s)", wRW.Code, wRW.Body.String())
+	}
+	if _, err := be.Stat(ctx, bucket, "victim.txt"); err == nil {
+		t.Errorf("read-write batch delete must execute — victim.txt still present")
+	}
+
+	// GET ?batch stays 405 for the read-only identity (the gate sits
+	// after the method check, and a GET needs only read).
+	reqGET := httptest.NewRequest("GET", "/?batch", nil)
+	reqGET.SetBasicAuth("ak-ro", "sk-ro")
+	wGET := httptest.NewRecorder()
+	f.Handler().ServeHTTP(wGET, reqGET)
+	if wGET.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("read-only GET ?batch status = %d, want 405", wGET.Code)
+	}
+}

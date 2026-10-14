@@ -318,7 +318,7 @@ func TestOCProps_FileidStableAndDistinct(t *testing.T) {
 	}
 	// Cross-bucket stability: the SAME bucket+key derives the same id.
 	// (Identical args are intentional here: this pins determinism.)
-	//nolint:staticcheck // SA4000: identical args are intentional - this pins determinism.
+	//lint:ignore SA4000 identical args are intentional - this pins determinism.
 	if OCFileID("photos", "2024/a.txt") != OCFileID("photos", "2024/a.txt") {
 		t.Fatal("OCFileID not deterministic")
 	}
