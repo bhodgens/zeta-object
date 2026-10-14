@@ -394,6 +394,8 @@ make build    # builds both ./zeta-object-server and ./zeta-object-admin
 
 The console reads its **own** config file, separate from the gateway's `config.json`. The default is `admin-config.json`; override the path with `ZETAOBJECT_ADMIN_CONFIG`. See `config.admin-server.example.json` for every key.
 
+Optional key `trustProxyTLS` (default `false`) declares that the console sits behind a TLS-terminating proxy: the console's own listener is plain HTTP, and without the knob its session cookies would ship without the `Secure` attribute (the attribute is derived from the request transport, and behind such a proxy no request ever looks like TLS). Set it only when a proxy in front of the console actually terminates TLS for browsers; on a direct loopback console leave it `false`.
+
 ### Sign-in
 
 The console serves a sign-in page at `/login`. The operator token (`operatorToken` in the console config) is exchanged for an in-memory session cookie plus a CSRF token; every `/api/...` call carries that cookie and, for a mutating request, the CSRF header. Only the sign-in page and the static assets need no session.
@@ -415,7 +417,7 @@ The console's theme tokens are derived from the project logo palette. Dark is th
 - **No state on disk.** The console writes nothing persistent: the session lives in memory and the theme choice lives in the browser.
 - **Sessions die on restart.** The session-signing key is generated per process start, so restarting the console invalidates every session.
 - **The purge is the only irreversible action.** The Danger zone requires typing the dataset name to confirm a purge; every other action in the UI is recoverable or reports why it is refused.
-- **TLS mode.** With `certFile` and `keyFile` set, the console serves HTTPS and its cookies are `Secure`. With neither set it serves plain HTTP, which is allowed only on a loopback listener and makes `allowNonLoopback` a startup abort. Set the certificate pair unless the console is only ever reached on loopback.
+- **TLS mode.** With `certFile` and `keyFile` set, the console serves HTTPS and its cookies are `Secure`. With neither set it serves plain HTTP, which is allowed only on a loopback listener and makes `allowNonLoopback` a startup abort. Set the certificate pair unless the console is only ever reached on loopback — or set `trustProxyTLS` when a TLS-terminating proxy fronts the console, which forces the `Secure` attribute on every session cookie despite the plain-HTTP listener.
 
 ## Configuration
 

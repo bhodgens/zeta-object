@@ -2,8 +2,10 @@ package adminserver
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -190,6 +192,145 @@ func TestLoginWrongTokenRefused(t *testing.T) {
 	}
 	if sess.Name == SessionCookieName {
 		t.Fatal("wrong token minted a session cookie")
+	}
+}
+
+// newTestServerWithConfig builds a Server from an explicit config so tests
+// can pin config-driven behavior (the cookie Secure policy).
+func newTestServerWithConfig(t *testing.T, cfg *Config) *Server {
+	t.Helper()
+	srv, err := NewServer(cfg, newStubGateway())
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	return srv
+}
+
+// plainRequest is a request that did NOT arrive over TLS (r.TLS == nil): the
+// shape every response has behind a TLS-terminating proxy.
+func plainRequest(method, target string) *http.Request {
+	return httptest.NewRequest(method, target, nil)
+}
+
+// tlsRequest is a request that DID arrive over TLS: the shape of a response
+// when the console's own listener terminates TLS.
+func tlsRequest(method, target string) *http.Request {
+	req := httptest.NewRequest(method, target, nil)
+	req.TLS = &tls.ConnectionState{}
+	return req
+}
+
+// cookiesByName collects the Set-Cookie headers of a response by name.
+func cookiesByName(resp *http.Response) map[string]*http.Cookie {
+	out := map[string]*http.Cookie{}
+	for _, c := range resp.Cookies() {
+		out[c.Name] = c
+	}
+	return out
+}
+
+// TestCookieSecureFollowsTransportAndConfig pins the M16 fix (bughunt
+// 2026-10-13): Secure is derived from the request transport OR the
+// trustProxyTLS knob — never from r.TLS alone, which is nil behind a
+// TLS-terminating proxy and left the session cookie shipping without Secure.
+func TestCookieSecureFollowsTransportAndConfig(t *testing.T) {
+	base := func() *Config {
+		return &Config{
+			ListenAddr:    "127.0.0.1:0",
+			GatewayURL:    "https://127.0.0.1:9708",
+			CAFile:        "ca.pem",
+			ClientCert:    "client.pem",
+			ClientKey:     "client-key.pem",
+			OperatorToken: testOperatorToken,
+		}
+	}
+
+	t.Run("plain request without the knob stays non-Secure", func(t *testing.T) {
+		srv := newTestServerWithConfig(t, base())
+		rec := httptest.NewRecorder()
+		req := plainRequest(http.MethodPost, "/login")
+		req.Header.Set("Content-Type", "application/json")
+		req.Body = io.NopCloser(strings.NewReader(`{"token":"` + testOperatorToken + `"}`))
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("login status = %d, want 200", rec.Code)
+		}
+		cookies := cookiesByName(rec.Result())
+		for _, name := range []string{SessionCookieName, CSRFCookieName} {
+			if c := cookies[name]; c == nil {
+				t.Fatalf("%s cookie not set", name)
+			} else if c.Secure {
+				t.Errorf("%s cookie is Secure on a plain response with trustProxyTLS unset", name)
+			}
+		}
+	})
+
+	t.Run("TLS request is Secure without the knob", func(t *testing.T) {
+		srv := newTestServerWithConfig(t, base())
+		rec := httptest.NewRecorder()
+		req := tlsRequest(http.MethodPost, "/login")
+		req.Header.Set("Content-Type", "application/json")
+		req.Body = io.NopCloser(strings.NewReader(`{"token":"` + testOperatorToken + `"}`))
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("login status = %d, want 200", rec.Code)
+		}
+		cookies := cookiesByName(rec.Result())
+		for _, name := range []string{SessionCookieName, CSRFCookieName} {
+			if c := cookies[name]; c == nil || !c.Secure {
+				t.Errorf("%s cookie missing Secure on a TLS response", name)
+			}
+		}
+	})
+
+	t.Run("trustProxyTLS forces Secure on a plain request", func(t *testing.T) {
+		cfg := base()
+		cfg.TrustProxyTLS = true
+		srv := newTestServerWithConfig(t, cfg)
+		rec := httptest.NewRecorder()
+		req := plainRequest(http.MethodPost, "/login")
+		req.Header.Set("Content-Type", "application/json")
+		req.Body = io.NopCloser(strings.NewReader(`{"token":"` + testOperatorToken + `"}`))
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("login status = %d, want 200", rec.Code)
+		}
+		cookies := cookiesByName(rec.Result())
+		for _, name := range []string{SessionCookieName, CSRFCookieName} {
+			if c := cookies[name]; c == nil || !c.Secure {
+				t.Errorf("%s cookie missing Secure with trustProxyTLS set on a plain request", name)
+			}
+		}
+		// And the logout path's cookie expiry carries Secure too (it reads
+		// the same derivation).
+		sess := cookies[SessionCookieName]
+		logout := plainRequest(http.MethodPost, "/logout")
+		logout.AddCookie(&http.Cookie{Name: SessionCookieName, Value: sess.Value})
+		logout.Header.Set(CSRFHeaderName, cookies[CSRFCookieName].Value)
+		rec2 := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec2, logout)
+		if rec2.Code != http.StatusNoContent {
+			t.Fatalf("logout status = %d, want 204", rec2.Code)
+		}
+		for _, c := range rec2.Result().Cookies() {
+			if c.Name == SessionCookieName && !c.Secure {
+				t.Error("logout cookie expiry is not Secure with trustProxyTLS set")
+			}
+		}
+	})
+}
+
+// TestSecureCookiesNilConfigKeepsTransportOnly guards the nil-config fallback:
+// a store built without a config derives Secure from the transport only.
+func TestSecureCookiesNilConfigKeepsTransportOnly(t *testing.T) {
+	cfg := (*Config)(nil)
+	req := plainRequest(http.MethodGet, "/")
+	if cfg.SecureCookies(req) {
+		t.Error("nil config + plain request must not be Secure")
+	}
+	req.TLS = &tls.ConnectionState{}
+	if !cfg.SecureCookies(req) {
+		t.Error("TLS request must be Secure even with a nil config")
 	}
 }
 

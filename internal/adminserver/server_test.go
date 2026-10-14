@@ -102,13 +102,14 @@ func TestEveryAPIPathIsGated(t *testing.T) {
 
 func TestLogoutClearsSession(t *testing.T) {
 	srv := newTestServer(t)
-	_, sess, _ := doLogin(t, srv, testOperatorToken)
+	_, sess, csrf := doLogin(t, srv, testOperatorToken)
 	if sess.Value == "" {
 		t.Fatal("no session to log out")
 	}
 
 	logout := httptest.NewRequest(http.MethodPost, "/logout", nil)
 	logout.AddCookie(&http.Cookie{Name: SessionCookieName, Value: sess.Value})
+	logout.Header.Set(CSRFHeaderName, csrf)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, logout)
 	if rec.Code != http.StatusNoContent {
@@ -122,6 +123,63 @@ func TestLogoutClearsSession(t *testing.T) {
 	srv.Handler().ServeHTTP(rec2, req)
 	if rec2.Code != http.StatusUnauthorized {
 		t.Fatalf("post-logout /api status = %d, want 401", rec2.Code)
+	}
+}
+
+// TestLogoutRequiresSessionAndCSRF pins the M15 fix (bughunt 2026-10-13):
+// /logout is a state-changing POST, so a cross-site form POST with no session
+// (or with a session but no CSRF header) must NOT log the operator out. Both
+// rejections leave the session alive — the operator stays signed in.
+func TestLogoutRequiresSessionAndCSRF(t *testing.T) {
+	srv := newTestServer(t)
+	_, sess, csrf := doLogin(t, srv, testOperatorToken)
+	if sess.Value == "" || csrf == "" {
+		t.Fatal("login did not yield session material")
+	}
+
+	post := func(withSession bool, header string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/logout", nil)
+		if withSession {
+			req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: sess.Value})
+		}
+		if header != "" {
+			req.Header.Set(CSRFHeaderName, header)
+		}
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	sessionAlive := func() bool {
+		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+		req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: sess.Value})
+		req.Header.Set(CSRFHeaderName, csrf)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec.Code == http.StatusOK
+	}
+
+	// No session at all: the gate's 401, never a 204.
+	if rec := post(false, ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("logout without a session status = %d, want 401", rec.Code)
+	}
+	// Session but no CSRF header: the cross-site form POST shape -> 403.
+	if rec := post(true, ""); rec.Code != http.StatusForbidden {
+		t.Errorf("logout without CSRF status = %d, want 403", rec.Code)
+	}
+	// Session but a WRONG CSRF header -> 403.
+	if rec := post(true, "deadbeef"); rec.Code != http.StatusForbidden {
+		t.Errorf("logout with a wrong CSRF token status = %d, want 403", rec.Code)
+	}
+	// Every rejected logout left the session exactly as it was.
+	if !sessionAlive() {
+		t.Error("a rejected /logout killed the session anyway")
+	}
+
+	// With both, logout succeeds (covered end-to-end by
+	// TestLogoutClearsSession; asserted here so this table is the whole
+	// contract in one place).
+	if rec := post(true, csrf); rec.Code != http.StatusNoContent {
+		t.Errorf("logout with session+CSRF status = %d, want 204", rec.Code)
 	}
 }
 

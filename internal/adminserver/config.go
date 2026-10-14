@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 )
@@ -52,6 +53,13 @@ type Config struct {
 	// requires the listener certificate pair: the console never serves plain
 	// HTTP off-host.
 	AllowNonLoopback bool `json:"allowNonLoopback"`
+	// TrustProxyTLS declares that the console sits behind a TLS-terminating
+	// proxy, so session cookies must carry Secure even though the console's
+	// own listener is plain HTTP (r.TLS is nil behind such a proxy). Default
+	// false: Secure follows the response transport (Secure only on TLS),
+	// which keeps the loopback plain-HTTP console working — Safari rejects a
+	// Secure cookie on plain http, even on loopback.
+	TrustProxyTLS bool `json:"trustProxyTLS"`
 }
 
 // ConfigPath resolves the console config path: the ZETAOBJECT_ADMIN_CONFIG
@@ -127,6 +135,20 @@ func (c *Config) TLSConfig() *tls.Config {
 		return nil
 	}
 	return &tls.Config{MinVersion: tls.VersionTLS12}
+}
+
+// SecureCookies reports whether session cookies must carry the Secure
+// attribute for a response that arrived on r's transport (bughunt
+// 2026-10-13 M16): true when the request itself came over TLS, or when the
+// config declares a TLS-terminating proxy in front of the console
+// (TrustProxyTLS — r.TLS is nil behind one, so transport detection alone
+// ships the session cookie WITHOUT Secure). Tests construct Config values
+// directly; a nil cfg falls back to transport detection only.
+func (c *Config) SecureCookies(r *http.Request) bool {
+	if r != nil && r.TLS != nil {
+		return true
+	}
+	return c != nil && c.TrustProxyTLS
 }
 
 // validateLoopbackAddr rejects a listenAddr that does not resolve to a

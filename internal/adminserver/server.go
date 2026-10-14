@@ -93,7 +93,7 @@ func NewServer(cfg *Config, gw Gateway) (*Server, error) {
 	if gw == nil {
 		return nil, errors.New("adminserver: nil gateway client")
 	}
-	store, err := newSessionStore()
+	store, err := newSessionStore(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -290,10 +290,26 @@ func extractLoginToken(raw []byte) (string, bool) {
 }
 
 // handleLogout clears the session and its cookies.
+//
+// Logout is a state-changing POST, so it runs the SAME session/CSRF checks
+// the /api gate applies (bughunt 2026-10-13 M15): without them a cross-site
+// form POST could log the operator out. A request with no valid session is a
+// 401, a request with a session but a missing or wrong CSRF header is a 403
+// — both leave the session map untouched. The UI's signOut() already sends
+// the X-CSRF-Token header on every logout.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	csrf, ok := s.sessions.validate(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthenticated", "a valid session is required")
+		return
+	}
+	if !tokenEqual(r.Header.Get(CSRFHeaderName), csrf) {
+		writeError(w, http.StatusForbidden, "csrf_failed", "missing or invalid CSRF token")
 		return
 	}
 	s.sessions.clear(w, r)

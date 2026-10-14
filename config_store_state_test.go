@@ -151,10 +151,131 @@ func TestConfigStoreRejectedPatchRollsBackHotSeams(t *testing.T) {
 	}
 }
 
+// ---- M23: hot-reload validation must never uninstall the LIVE provisioner ----
+
+// TestValidateHotSeamsLeavesLiveProvisionerUntouched pins the M23 fix
+// (bughunt 2026-10-13): validateHotSeams used to INSTALL the candidate
+// provisioner as a probe and then uninstall it, so between the two steps
+// s3.NewDatasetProvisioner() returned nil and a concurrent bucket request
+// took the plain-directory branch (whose deletePlain is os.RemoveAll).
+// Validation must be dry-run: the live seams are bit-identical before and
+// after, whether the candidate is accepted or rejected.
+func TestValidateHotSeamsLeavesLiveProvisionerUntouched(t *testing.T) {
+	origParent := zfsBucketsParentDataset
+	t.Cleanup(func() { zfsBucketsParentDataset = origParent })
+	zfsBucketsParentDataset = "pool/live"
+
+	restore := func() {
+		s3.UninstallZfsDatasetProvisioner()
+		s3.ClearZfsBucketDatasetParent()
+	}
+	t.Cleanup(restore)
+
+	// Install the LIVE provisioner exactly as startup does.
+	liveBinary := "/usr/sbin/zfs"
+	if err := s3.InstallZfsDatasetProvisioner(zfsBucketsParentDataset, liveBinary); err != nil {
+		t.Fatalf("installing the live provisioner: %v", err)
+	}
+	s3.SetZfsBucketDatasetParent(zfsBucketsParentDataset)
+	if !s3.ZfsDatasetProvisionerInstalled() {
+		t.Fatal("probe premise: the live provisioner is not installed")
+	}
+
+	// A REJECTED candidate (empty zfs binary — what InstallZfsDataset-
+	// Provisioner rejects) must fail validation and must NOT disturb the
+	// live install, not even transiently.
+	rejected := &ServerConfig{ZfsBucketDatasets: true, ZfsBinary: ""}
+	if err := validateHotSeams(rejected); err == nil {
+		t.Fatal("validateHotSeams accepted an empty zfs binary")
+	}
+	if !s3.ZfsDatasetProvisionerInstalled() {
+		t.Fatal("M23 REGRESSION: a rejected validation uninstalled the live provisioner")
+	}
+	if got := s3.ZfsBucketDatasetParentProbe(); got != zfsBucketsParentDataset {
+		t.Fatalf("after a rejected validation the dataset parent = %q, want %q", got, zfsBucketsParentDataset)
+	}
+
+	// Same for an unsafe parent: the live seams still stand.
+	zfsBucketsParentDataset = "pool/data@bad"
+	if err := validateHotSeams(&ServerConfig{ZfsBucketDatasets: true, ZfsBinary: liveBinary}); err == nil {
+		t.Fatal("validateHotSeams accepted an unsafe parent dataset")
+	}
+	zfsBucketsParentDataset = "pool/live"
+	if !s3.ZfsDatasetProvisionerInstalled() {
+		t.Fatal("M23 REGRESSION: validating an unsafe parent uninstalled the live provisioner")
+	}
+
+	// And an ACCEPTED validation leaves the live seams exactly as they were
+	// (it used to uninstall-then-rely-on-apply to put them back — the
+	// no-touch fix leaves them alone entirely).
+	if err := validateHotSeams(&ServerConfig{ZfsBucketDatasets: true, ZfsBinary: liveBinary}); err != nil {
+		t.Fatalf("validateHotSeams rejected a valid candidate: %v", err)
+	}
+	if !s3.ZfsDatasetProvisionerInstalled() {
+		t.Fatal("an accepted validation uninstalled the live provisioner")
+	}
+	if got := s3.ZfsBucketDatasetParentProbe(); got != zfsBucketsParentDataset {
+		t.Fatalf("after an accepted validation the dataset parent = %q, want %q", got, zfsBucketsParentDataset)
+	}
+}
+
+// TestRejectedPatchLeavesInstalledProvisionerLive pins the end-to-end M23
+// invariant through the store: with the provisioner LIVE (feature on), a hot
+// patch that validation must reject leaves the provisioner AND the parent
+// dataset installed, so a concurrent bucket request never takes the
+// plain-directory branch.
+func TestRejectedPatchLeavesInstalledProvisionerLive(t *testing.T) {
+	origParent := zfsBucketsParentDataset
+	t.Cleanup(func() { zfsBucketsParentDataset = origParent })
+	zfsBucketsParentDataset = "pool/live"
+
+	restore := func() {
+		s3.UninstallZfsDatasetProvisioner()
+		s3.ClearZfsBucketDatasetParent()
+		SetRegionForTest("")
+	}
+	t.Cleanup(restore)
+
+	cfg := defaultServerConfig()
+	cfg.DataDir = t.TempDir() + "/"
+	cfg.Region = "us-east-1"
+	cfg.ZfsBucketDatasets = true
+	cfg.ZfsBinary = "zfs"
+	setServerConfig(cfg)
+	if err := applyHotSeams(&cfg); err != nil {
+		t.Fatalf("applyHotSeams (startup shape): %v", err)
+	}
+	if initConfigStore() == nil {
+		t.Fatal("initConfigStore returned nil")
+	}
+	if !s3.ZfsDatasetProvisionerInstalled() {
+		t.Fatal("probe premise: the provisioner is not installed")
+	}
+
+	// The patch is rejected at VALIDATION: an unsafe parent dataset name.
+	// (With the old probe, validation itself uninstalled the live
+	// provisioner before returning this error.)
+	zfsBucketsParentDataset = "pool/data@bad"
+	_, _, err := configStore.Apply(ConfigPatch{JSON: []byte(`{"region":"eu-west-1"}`)})
+	zfsBucketsParentDataset = "pool/live"
+	if err == nil {
+		t.Fatal("the patch was accepted")
+	}
+	if !s3.ZfsDatasetProvisionerInstalled() {
+		t.Fatal("M23 REGRESSION: a rejected patch left the provisioner uninstalled")
+	}
+	if got := s3.ZfsBucketDatasetParentProbe(); got != "pool/live" {
+		t.Fatalf("after a rejected patch the dataset parent = %q, want pool/live", got)
+	}
+	// The region seam is untouched too (the M7 invariant still holds).
+	if got := configStore.Snapshot().Region; got != "us-east-1" {
+		t.Errorf("GET /config reports region %q after the rejected patch, want us-east-1", got)
+	}
+}
+
 // ---- M8: validation must not publish the process-global grant table ----
 
 // TestConfigStoreRejectedPatchLeavesGrantTableUnchanged is the auditor's EXACT
-// M8 execution, in the order that makes it reachable: validateCandidate builds
 // a real identity registry, and building one WRITES the process-global rich
 // table internal/auth's AuthorizeOp reads. A patch that is widened AND
 // invalid therefore granted a privilege the API reported as rejected.

@@ -63,11 +63,14 @@ type sessionStore struct {
 	key      []byte
 	sessions map[string]sessionState
 	now      func() time.Time // injectable clock for tests
+	cfg      *Config          // cookie policy (Secure derivation); may be nil
 }
 
 // newSessionStore builds a store with a fresh 32-byte HMAC key. A failure to
 // read randomness is fatal to construction (never a weaker fallback key).
-func newSessionStore() (*sessionStore, error) {
+// cfg carries the cookie policy and may be nil (transport-only Secure
+// derivation), which keeps direct constructions in tests working.
+func newSessionStore(cfg *Config) (*sessionStore, error) {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return nil, fmt.Errorf("generating session key: %w", err)
@@ -76,6 +79,7 @@ func newSessionStore() (*sessionStore, error) {
 		key:      key,
 		sessions: make(map[string]sessionState),
 		now:      time.Now,
+		cfg:      cfg,
 	}, nil
 }
 
@@ -129,11 +133,12 @@ func (s *sessionStore) parse(value string) (sessionPayload, error) {
 }
 
 // mint creates a new session, sets both cookies, and returns the CSRF token.
-// The Secure attribute follows the response transport: a cookie is Secure only
-// when this response arrived over TLS, so a plain-loopback console (which
-// Safari would otherwise reject a Secure cookie on) still works.
+// The Secure attribute follows SecureCookies: Secure when this response
+// arrived over TLS or when the config declares a TLS-terminating proxy
+// (bughunt 2026-10-13 M16) — never blind-true, so a plain-loopback console
+// (which Safari would otherwise reject a Secure cookie on) still works.
 func (s *sessionStore) mint(w http.ResponseWriter, r *http.Request) (string, error) {
-	secure := r.TLS != nil
+	secure := s.cfg.SecureCookies(r)
 	id, err := randomToken(16)
 	if err != nil {
 		return "", err
@@ -208,9 +213,9 @@ func (s *sessionStore) validate(r *http.Request) (csrf string, ok bool) {
 }
 
 // clear removes a session and expires both cookies. Like mint, the Secure
-// attribute follows the response transport.
+// attribute follows SecureCookies (transport TLS or the TrustProxyTLS knob).
 func (s *sessionStore) clear(w http.ResponseWriter, r *http.Request) {
-	secure := r.TLS != nil
+	secure := s.cfg.SecureCookies(r)
 	if c, err := r.Cookie(SessionCookieName); err == nil {
 		if p, err := s.parse(c.Value); err == nil {
 			s.mu.Lock()

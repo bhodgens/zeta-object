@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -737,24 +738,44 @@ func restoreGrantTable(keys []string, before grantTableSnapshot) {
 // a provisioner install that fails therefore left the live region at a value
 // the API reported as rejected.
 //
-// The check here mirrors the provisioner installer's own argument validation
-// (s3.InstallZfsDatasetProvisioner rejects an empty or unsafe parent dataset
-// name and an empty zfs binary) so the common rejection happens before any
-// seam moves. It is an OPTIMIZATION, not the guarantee: hotSeamsRollback is
-// what makes the invariant hold for any install failure this pre-check cannot
+// The dataset-provisioner check (bughunt 2026-10-13 M23) is DRY-RUN ONLY: it
+// validates exactly the arguments InstallZfsDatasetProvisioner rejects
+// (unsafe parent dataset name, empty zfs binary) WITHOUT touching the global
+// hooks. The previous probe installed the candidate provisioner and then
+// uninstalled it — between those two steps newDatasetProvisioner() returned
+// nil, so a concurrent bucket request took the plain-directory branch, and a
+// deletePlain on a dataset-backed bucket runs os.RemoveAll. hotSeamsRollback
+// remains the backstop for any install failure this pre-check cannot
 // predict, including a step added to the installer later.
 func validateHotSeams(cfg *ServerConfig) error {
 	if !cfg.ZfsBucketDatasets {
 		return nil
 	}
-	if err := s3.InstallZfsDatasetProvisioner(zfsBucketsParentDataset, cfg.ZfsBinary); err != nil {
-		return err
+	// Mirror InstallZfsDatasetProvisioner's argument validation without
+	// installing. An empty parent means startup never resolved one (the
+	// feature cannot provision); keep the wording the rejected-patch tests
+	// pin ("parent dataset").
+	if zfsBucketsParentDataset == "" {
+		return fmt.Errorf("s3: invalid parent dataset %q", zfsBucketsParentDataset)
 	}
-	// Undo the probe install immediately: validation must leave the live
-	// seams exactly as it found them, and the real apply follows.
-	s3.UninstallZfsDatasetProvisioner()
-	s3.ClearZfsBucketDatasetParent()
+	if isUnsafeDatasetName(zfsBucketsParentDataset) {
+		return fmt.Errorf("s3: invalid parent dataset %q", zfsBucketsParentDataset)
+	}
+	if cfg.ZfsBinary == "" {
+		return errors.New("s3: empty zfs binary")
+	}
 	return nil
+}
+
+// isUnsafeDatasetName mirrors s3's dataset-name validation (non-empty, no
+// '@' snapshot suffix, no leading '-' argv injection) for the dry-run check
+// above. The s3 package does not export the predicate, and adding an export
+// to the frozen zfsdatasets.go surface for one caller is not worth it: the
+// rules are three literals, pinned here so a divergence surfaces as a
+// rejected patch at validation time rather than at apply time (where
+// hotSeamsRollback still restores the live seams).
+func isUnsafeDatasetName(name string) bool {
+	return name == "" || strings.Contains(name, "@") || strings.HasPrefix(name, "-")
 }
 
 // buildRegistryFor builds the identity registry from the implicit env pair

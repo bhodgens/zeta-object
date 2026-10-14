@@ -44,5 +44,13 @@
   // never serves plain HTTP off-host, so with them unset this is a startup
   // abort. Exposing the console on a public address is a deliberate choice:
   // it holds the gateway's administrative credential.
-  "allowNonLoopback": false
+  "allowNonLoopback": false,
+
+  // Declare that the console sits behind a TLS-terminating proxy (default
+  // false). The console's own listener is then plain HTTP - r.TLS is nil -
+  // and WITHOUT this knob the session cookies would ship without the Secure
+  // attribute. Set it only when a proxy in front of the console actually
+  // terminates TLS for browsers; on a direct loopback console leave it false
+  // (some browsers reject a Secure cookie on plain http, even loopback).
+  "trustProxyTLS": false
 }
