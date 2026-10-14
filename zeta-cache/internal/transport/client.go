@@ -386,7 +386,17 @@ func (c *Client) doAuth(req *http.Request) {
 
 // newRequest builds the wire request for key with method/body.
 func (c *Client) newRequest(ctx context.Context, method, key string, body io.Reader) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.resourceURL(key), body)
+	// Wrap the body in NopCloser BEFORE handing it to net/http: for a body
+	// that already implements io.ReadCloser (e.g. *os.File) the request
+	// adopts it as-is, and any Close on req.Body would close the CALLER's
+	// handle (W2-H1: every real upload died with "file already closed").
+	// With the wrapper, Close only detaches the wrapper; the underlying
+	// ReadSeeker stays caller-owned and GetBody re-seeks it.
+	var rc io.ReadCloser
+	if body != nil {
+		rc = io.NopCloser(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.resourceURL(key), rc)
 	if err != nil {
 		return nil, err
 	}
