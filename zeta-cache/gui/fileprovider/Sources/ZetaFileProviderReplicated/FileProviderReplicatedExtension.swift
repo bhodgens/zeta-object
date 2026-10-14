@@ -87,10 +87,8 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
         let progress = Progress(totalUnitCount: 100)
         Task {
             do {
-                let parent = template.parentItemIdentifier.rawValue
-                let key = parent == NSFileProviderItemIdentifier.rootContainer.rawValue
-                    ? template.filename
-                    : parent + "/" + template.filename
+                let parentKey = parentKeyForChild(template.parentItemIdentifier.rawValue)
+                let key = parentKey.isEmpty ? template.filename : parentKey + "/" + template.filename
                 if let url {
                     // H6: bytes land at <cacheDir>/files/<key> (the daemon's
                     // data plane), parents created on demand.
@@ -99,16 +97,33 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
                         try FileManager.default.removeItem(at: dst)
                     }
                     try FileManager.default.copyItem(at: url, to: dst)
+                    try mount.mark(key)
+                    let entry = try mount.item(key)
+                    progress.completedUnitCount = 100
+                    // The index is authoritative for every field: nothing left
+                    // for the system to fetch back (inducted=false).
+                    completionHandler(FileProviderItem(entry: entry, parentKey: parentKeyOf(entry.key)), [], false, nil)
                 } else {
+                    // F2: directories are NEVER marked. The daemon's wire
+                    // layer normalizes the mark path (normalizePath strips a
+                    // trailing slash before Mark sees it) and its Mark
+                    // handler stats a plain cache file and writes a Dirty
+                    // FILE-shaped row - a marked dir makes the prompt-upload
+                    // loop PUT a directory forever. The daemon's enumerate
+                    // derives dirs from the remote namespace; this local
+                    // mirror dir is just cache. A fresh dir has no index row
+                    // yet, so the item is reported locally (trailing-slash
+                    // key, the daemon's dir convention; clean, unmaterialized,
+                    // empty cachePath - the enumerate dir-entry shape).
                     try FileManager.default.createDirectory(
                         at: mount.cacheURL(ofKey: key), withIntermediateDirectories: true)
+                    let entry = FileProviderItemEntry(
+                        name: template.filename, key: key + "/", isDir: true,
+                        size: 0, mtime: Int64(Date().timeIntervalSince1970),
+                        materialized: false, dirty: false, cachePath: "")
+                    progress.completedUnitCount = 100
+                    completionHandler(FileProviderItem(entry: entry, parentKey: parentKey), [], false, nil)
                 }
-                try mount.mark(key)
-                let entry = try mount.item(key)
-                progress.completedUnitCount = 100
-                // The index is authoritative for every field: nothing left
-                // for the system to fetch back (inducted=false).
-                completionHandler(FileProviderItem(entry: entry, parentKey: parentKeyOf(entry.key)), [], false, nil)
             } catch {
                 progress.completedUnitCount = 100
                 completionHandler(nil, [], false, error)
@@ -124,10 +139,8 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
                 var key = (item as? FileProviderItem)?.publicKey ?? item.itemIdentifier.rawValue
                 // Rename/move first when the name changed, then content.
                 if changedFields.contains(.filename) {
-                    let parent = item.parentItemIdentifier.rawValue
-                    let newKey = parent == NSFileProviderItemIdentifier.rootContainer.rawValue
-                        ? item.filename
-                        : parent + "/" + item.filename
+                    let parentKey = parentKeyForChild(item.parentItemIdentifier.rawValue)
+                    let newKey = parentKey.isEmpty ? item.filename : parentKey + "/" + item.filename
                     try mount.move(key, to: newKey)
                     // H7: after the index re-point the OLD key is a
                     // tombstone - the content write and mark must target
@@ -176,4 +189,20 @@ func parentKeyOf(_ key: String) -> String {
     // The parent path of a key: "" for top-level entries.
     guard let slash = key.lastIndex(of: "/") else { return "" }
     return String(key[key.startIndex..<slash])
+}
+
+/// F1: parent identifiers of nested items are DIR identifiers, which
+/// carry a TRAILING slash (FileProviderItem.identifier(forDirKey:)
+/// appends it when missing) - appending the separator without stripping
+/// it produced double-slash child keys ("fp//doc.txt") that the daemon
+/// stored literally and Enumerate never surfaced. The root container's
+/// rawValue is a SENTINEL string ("NSFileProviderRootContainerItem..."),
+/// not a path component - it maps to "" (top-level). Otherwise strips
+/// ONE trailing '/'.
+func parentKeyForChild(_ parent: String) -> String {
+    if parent == NSFileProviderItemIdentifier.rootContainer.rawValue
+        || parent == NSFileProviderItemIdentifier.workingSet.rawValue {
+        return ""
+    }
+    return parent.hasSuffix("/") ? String(parent.dropLast()) : parent
 }

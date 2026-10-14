@@ -9,6 +9,15 @@ import Foundation
 final class StubIPCServer {
     let path: String
     private var responses: [String: String] = [:] // request type -> raw JSON
+    /// Every request the stub accepted, in order, as (type, path, to).
+    /// Lets a test PIN the exact path the extension sent (e.g. that mark
+    /// never carries a double slash or a directory key, and that a move's
+    /// destination is the clean single-slash form).
+    private var recordedRequests: [(type: String, path: String?, to: String?)] = []
+    /// Guards the mutable state above. NOT the accept queue: the accept
+    /// loop blocks in accept() on that queue, so queue.sync from a test
+    /// would deadlock.
+    private let stateLock = NSLock()
     private let queue = DispatchQueue(label: "stub-ipc")
     private var serverFD: Int32 = -1
     private var stopped = false
@@ -51,7 +60,16 @@ final class StubIPCServer {
 
     /// Registers the raw JSON response the stub answers for a type.
     func respond(to type: String, with json: String) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         responses[type] = json
+    }
+
+    /// The requests accepted so far (type, path, to), oldest first.
+    var requests: [(type: String, path: String?, to: String?)] {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return recordedRequests
     }
 
     func stop() {
@@ -77,6 +95,9 @@ final class StubIPCServer {
                 _ = writeAll(conn, Data("{\"v\":1,\"ok\":false,\"error\":\"stub: no canned response\"}\n".utf8))
                 continue
             }
+            stateLock.lock()
+            recordedRequests.append((type, obj["path"] as? String, obj["to"] as? String))
+            stateLock.unlock()
             _ = writeAll(conn, Data(resp.utf8))
         }
     }

@@ -225,6 +225,20 @@ public struct FileProviderItemEntry: Decodable {
     public let materialized: Bool
     public let dirty: Bool
     public let cachePath: String
+
+    public init(
+        name: String, key: String, isDir: Bool, size: Int64, mtime: Int64,
+        materialized: Bool, dirty: Bool, cachePath: String
+    ) {
+        self.name = name
+        self.key = key
+        self.isDir = isDir
+        self.size = size
+        self.mtime = mtime
+        self.materialized = materialized
+        self.dirty = dirty
+        self.cachePath = cachePath
+    }
 }
 
 struct EnumerateData: Decodable {

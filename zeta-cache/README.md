@@ -256,9 +256,15 @@ Two extension implementations share the adapter:
   iCloud Drive itself uses. Same IPC contract. Shipped as an app
   container: `project.yml` generates `ZetaFileProvider.xcodeproj`
   (`xcodegen generate`) with an app host that registers the domain and
-  the embedded `.appex`. The appex entry (`Appex/main.swift`) calls
-  `NSExtensionMain` via `@_silgen_name` - without it the process boots
-  with no XPC endpoint and fileproviderd's bringup fails.
+  the embedded `.appex`. The appex's entry point is
+  `Sources/ZetaFileProviderAppex/main.swift` (a SwiftPM executable
+  target): it calls `NSExtensionMain` (declared via `@_silgen_name`),
+  which hands the XPC endpoint to the PlugInKit runtime so the principal
+  class named in the appex Info.plist (`NSExtensionPrincipalClass`) gets
+  instantiated - without it the process boots with no XPC endpoint and
+  fileproviderd's bringup fails. (`Appex/AppexSupport.swift` documents
+  this for the Xcode-built target, which links the extension runtime
+  entry automatically and therefore carries no main.swift.)
 
       xcodegen generate
       xcodebuild -project ZetaFileProvider.xcodeproj -scheme ZetaFileProviderApp \

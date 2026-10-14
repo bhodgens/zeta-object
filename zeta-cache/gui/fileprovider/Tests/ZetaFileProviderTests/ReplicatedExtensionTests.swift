@@ -6,6 +6,7 @@
 // the copy-through-cache write path.
 
 import FileProvider
+import UniformTypeIdentifiers
 import XCTest
 @testable import ZetaFileProvider
 @testable import ZetaFileProviderReplicated
@@ -117,9 +118,12 @@ final class ReplicatedExtensionTests: XCTestCase {
         wait(for: [exp], timeout: 5)
     }
 
-    /// H6 for nested keys: the "files/" segment must be PREPENDED, not
-    /// treated as an in-key prefix collision - files/fp/doc.txt under the
-    /// cache root, parents created on demand.
+    /// F1: a nested create's parent identifier is a DIR identifier, which
+    /// carries a TRAILING slash (FileProviderItem.identifier(forDirKey:)
+    /// emits "fp/"). Appending "/<name>" to it verbatim produced the
+    /// double-slash key "fp//doc.txt" - stored literally by the daemon and
+    /// never surfaced by Enumerate. The parent must be normalized so the
+    /// key (and the mark, and the cache path) is "fp/doc.txt".
     func testCreateItemNestedKeyWritesUnderFilesSegmentAndMarks() throws {
         let localFile = cacheDir.appendingPathComponent("upload-src.txt")
         try Data("nested bytes".utf8).write(to: localFile)
@@ -127,26 +131,47 @@ final class ReplicatedExtensionTests: XCTestCase {
         server.respond(to: "item", with:
             ##"{"v":1,"ok":true,"extra":{"item":{"name":"doc.txt","key":"fp/doc.txt","isDir":false,"size":12,"mtime":1728211200,"materialized":true,"dirty":true,"cachePath":"files/fp/doc.txt"}}}"##)
 
-        let template = ReplicatedTemplate(filename: "doc.txt", parent: NSFileProviderItemIdentifier("fp"))
+        // The REAL parent-identifier shape production emits: a dir
+        // identifier with the trailing slash (NOT a bare "fp").
+        let template = ReplicatedTemplate(
+            filename: "doc.txt",
+            parent: FileProviderItem.identifier(forDirKey: "fp"))
+        XCTAssertEqual(template.parentItemIdentifier.rawValue, "fp/")
         let exp = expectation(description: "create-nested")
         _ = ext.createItem(basedOn: template, fields: [.contents], contents: localFile, options: [], request: NSFileProviderRequest()) { item, _, _, error in
             XCTAssertNil(error)
+            // Key pins: no double slash anywhere.
+            XCTAssertEqual(item?.itemIdentifier.rawValue, "fp/doc.txt")
+            XCTAssertEqual(item?.parentItemIdentifier.rawValue, "fp/")
             let cached = try? Data(contentsOf: self.cacheDir.appendingPathComponent("files/fp/doc.txt"))
             XCTAssertEqual(cached, Data("nested bytes".utf8))
             exp.fulfill()
         }
         wait(for: [exp], timeout: 5)
+        // The mark key must be the clean single-slash form too.
+        let marks = server.requests.filter { $0.type == "mark" }
+        XCTAssertEqual(marks.map { $0.path }, ["fp/doc.txt"])
     }
 
+    /// F2: creating a directory (createItem with no contents) must NOT
+    /// call mark. The daemon's wire layer normalizes the mark path
+    /// (normalizePath strips a trailing slash before Mark sees it) and its
+    /// Mark handler stats a plain cache file and writes a Dirty FILE-shaped
+    /// row - so a marked dir makes the prompt-upload loop PUT a directory
+    /// forever. Dirs are derived from the remote namespace by the daemon's
+    /// enumerate; the local mirror dir is just cache. The returned item is
+    /// the daemon's dir-entry shape: trailing-slash key, clean,
+    /// unmaterialized, empty cachePath.
     func testCreateItemWithoutContentsCreatesDirectory() throws {
-        server.respond(to: "mark", with: #"{"v":1,"ok":true,"extra":{"path":"docs/","dirty":false}}"#)
-        server.respond(to: "item", with:
-            ##"{"v":1,"ok":true,"extra":{"item":{"name":"docs","key":"docs","isDir":true,"size":0,"mtime":1728211200,"materialized":true,"dirty":false,"cachePath":"files/docs"}}}"##)
-
         let template = ReplicatedTemplate(filename: "docs", parent: .rootContainer)
         let exp = expectation(description: "mkdir")
         _ = ext.createItem(basedOn: template, fields: [], contents: nil, options: [], request: NSFileProviderRequest()) { item, _, _, error in
             XCTAssertNil(error)
+            // The returned item uses the daemon's trailing-slash dir-key
+            // convention (the enumerate.json golden's dir-entry shape).
+            XCTAssertEqual(item?.itemIdentifier.rawValue, "docs/")
+            XCTAssertEqual(item?.contentType, UTType.folder)
+            XCTAssertEqual(item?.isUploaded, true) // never dirty
             var isDir: ObjCBool = false
             // H6: the dir key maps under files/ too (the daemon's data
             // plane is flat about this: EVERY key lives under files/).
@@ -155,6 +180,8 @@ final class ReplicatedExtensionTests: XCTestCase {
             exp.fulfill()
         }
         wait(for: [exp], timeout: 5)
+        // The pinned convention: NO mark IPC at all for a directory.
+        XCTAssertTrue(server.requests.filter { $0.type == "mark" }.isEmpty)
     }
 
     // MARK: - modifyItem
@@ -217,6 +244,47 @@ final class ReplicatedExtensionTests: XCTestCase {
             exp.fulfill()
         }
         wait(for: [exp], timeout: 5)
+    }
+
+    /// F1, rename half: the same trailing-slash dir-identifier shape as
+    /// the nested-create pin, on modifyItem - a rename INSIDE a nested
+    /// folder must produce "fp/renamed.txt" (single slash), not
+    /// "fp//renamed.txt".
+    func testModifyItemNestedRenameBuildsSingleSlashKey() throws {
+        // Pre-state: the item's bytes live under the old nested key.
+        try FileManager.default.createDirectory(
+            at: cacheDir.appendingPathComponent("files/fp"), withIntermediateDirectories: true)
+        try Data("nested body".utf8).write(to: cacheDir.appendingPathComponent("files/fp/doc.txt"))
+
+        server.respond(to: "move", with: #"{"v":1,"ok":true,"extra":{"from":"fp/doc.txt","to":"fp/renamed.txt"}}"#)
+        server.respond(to: "item", with:
+            ##"{"v":1,"ok":true,"extra":{"item":{"name":"renamed.txt","key":"fp/renamed.txt","isDir":false,"size":12,"mtime":1728211200,"materialized":true,"dirty":false,"cachePath":"files/fp/renamed.txt"}}}"##)
+
+        let item = FileProviderItem(
+            entry: entry(name: "renamed.txt", key: "fp/doc.txt"),
+            parentKey: "fp/")
+        XCTAssertEqual(item.parentItemIdentifier.rawValue, "fp/") // the dir-identifier shape
+        let exp = expectation(description: "nested-rename")
+        _ = ext.modifyItem(
+            item,
+            baseVersion: NSFileProviderItemVersion(contentVersion: Data("v1".utf8), metadataVersion: Data("v1".utf8)),
+            changedFields: [.filename],
+            contents: nil, options: [], request: NSFileProviderRequest()) { modified, _, _, error in
+            XCTAssertNil(error)
+            XCTAssertEqual(modified?.itemIdentifier.rawValue, "fp/renamed.txt")
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 5)
+        // F1 pins (the stub does not emulate the daemon's cache-file
+        // rename, so the contract lives in the IPC keys): the move must
+        // carry the clean single-slash pair, and the post-move item
+        // lookup must target the NEW key.
+        let moves = server.requests.filter { $0.type == "move" }
+        XCTAssertEqual(moves.count, 1)
+        XCTAssertEqual(moves.first?.path, "fp/doc.txt")
+        XCTAssertEqual(moves.first?.to, "fp/renamed.txt")
+        let lookups = server.requests.filter { $0.type == "item" }
+        XCTAssertEqual(lookups.map { $0.path }, ["fp/renamed.txt"])
     }
 
     // MARK: - deleteItem
