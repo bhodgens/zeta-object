@@ -274,6 +274,15 @@ func getObjectTaggingHandler(w http.ResponseWriter, r *http.Request, bucketName,
 	log.Printf("Successfully served GetObjectTagging for %s/%s", strconv.Quote(bucketName), strconv.Quote(objectName))
 }
 
+// taggingBodyMaxBytes caps the PutObjectTagging request body read, the
+// same 1 MiB ceiling every other bucket/object sub-resource body read
+// uses (putBucketVersioningHandler, versioning_handlers.go). S3's own
+// tagging limits (50 tags x 256-char values) fit in a few KiB, so this
+// bounds only abuse, and a LimitReader one byte past the cap + oversize
+// check (the batch_bridge/batch_endpoint/deleteobjects shape) keeps an
+// unbounded body from being buffered.
+const taggingBodyMaxBytes = 1 << 20
+
 // putObjectTaggingHandler implements PutObjectTagging (PUT
 // /bucket/key?tagging): parse the Tagging XML body, validate against the
 // S3 limits (InvalidTag on violation), and replace the object's tags.
@@ -287,13 +296,18 @@ func putObjectTaggingHandler(w http.ResponseWriter, r *http.Request, bucketName,
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, taggingBodyMaxBytes+1))
 	if err != nil {
 		log.Printf("Error reading PutObjectTagging body for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), err)
 		writeS3Error(w, "InternalError", "Error reading request body.", http.StatusInternalServerError)
 		return
 	}
 	defer r.Body.Close()
+	if len(body) > taggingBodyMaxBytes {
+		log.Printf("PutObjectTagging body for %s/%s exceeds the maximum request size %d", strconv.Quote(bucketName), strconv.Quote(objectName), taggingBodyMaxBytes)
+		writeS3Error(w, "InvalidArgument", "Tagging body exceeds the maximum request size.", http.StatusBadRequest)
+		return
+	}
 
 	tags, err := objectmodel.TagsFromXML(body)
 	if err != nil {

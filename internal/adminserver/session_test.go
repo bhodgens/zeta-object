@@ -1,11 +1,13 @@
 package adminserver
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -289,6 +291,12 @@ func TestCookieSecureFollowsTransportAndConfig(t *testing.T) {
 		srv := newTestServerWithConfig(t, cfg)
 		rec := httptest.NewRecorder()
 		req := plainRequest(http.MethodPost, "/login")
+		// M16 residual: trustProxyTLS alone no longer forces Secure — the
+		// proxy must also SAY the client-facing scheme was https via
+		// X-Forwarded-Proto (a proxy may pass some vhosts plain). The
+		// header-conditional matrix is pinned by
+		// TestCookieSecureHonorsForwardedProtoOnlyUnderTrustProxy.
+		req.Header.Set("X-Forwarded-Proto", "https")
 		req.Header.Set("Content-Type", "application/json")
 		req.Body = io.NopCloser(strings.NewReader(`{"token":"` + testOperatorToken + `"}`))
 		srv.Handler().ServeHTTP(rec, req)
@@ -305,6 +313,7 @@ func TestCookieSecureFollowsTransportAndConfig(t *testing.T) {
 		// the same derivation).
 		sess := cookies[SessionCookieName]
 		logout := plainRequest(http.MethodPost, "/logout")
+		logout.Header.Set("X-Forwarded-Proto", "https")
 		logout.AddCookie(&http.Cookie{Name: SessionCookieName, Value: sess.Value})
 		logout.Header.Set(CSRFHeaderName, cookies[CSRFCookieName].Value)
 		rec2 := httptest.NewRecorder()
@@ -331,6 +340,124 @@ func TestSecureCookiesNilConfigKeepsTransportOnly(t *testing.T) {
 	req.TLS = &tls.ConnectionState{}
 	if !cfg.SecureCookies(req) {
 		t.Error("TLS request must be Secure even with a nil config")
+	}
+}
+
+// TestCookieSecureHonorsForwardedProtoOnlyUnderTrustProxy pins the M16
+// residual: X-Forwarded-Proto: https flips the Secure bit ONLY when the
+// config declares a TLS-terminating proxy (trustProxyTLS). By default the
+// header is client-controlled and must never influence cookie policy —
+// pre-fix, a plain-HTTP request forged with the header could not flip it
+// (the header was ignored entirely), and a proxied vhost could not gain
+// Secure either; post-fix both behaviors are pinned per-side.
+func TestCookieSecureHonorsForwardedProtoOnlyUnderTrustProxy(t *testing.T) {
+	login := func(t *testing.T, srv *Server, proto string) map[string]*http.Cookie {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := plainRequest(http.MethodPost, "/login")
+		req.Header.Set("Content-Type", "application/json")
+		if proto != "" {
+			req.Header.Set("X-Forwarded-Proto", proto)
+		}
+		req.Body = io.NopCloser(strings.NewReader(`{"token":"` + testOperatorToken + `"}`))
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("login status = %d, want 200", rec.Code)
+		}
+		return cookiesByName(rec.Result())
+	}
+	base := func() *Config {
+		return &Config{
+			ListenAddr:    "127.0.0.1:0",
+			GatewayURL:    "https://127.0.0.1:9708",
+			CAFile:        "ca.pem",
+			ClientCert:    "client.pem",
+			ClientKey:     "client-key.pem",
+			OperatorToken: testOperatorToken,
+		}
+	}
+
+	t.Run("forged header without trustProxyTLS is ignored", func(t *testing.T) {
+		srv := newTestServerWithConfig(t, base())
+		cookies := login(t, srv, "https")
+		for _, name := range []string{SessionCookieName, CSRFCookieName} {
+			if c := cookies[name]; c == nil || c.Secure {
+				t.Errorf("%s cookie is Secure from a client-forged X-Forwarded-Proto without trustProxyTLS", name)
+			}
+		}
+	})
+
+	t.Run("http proto value with trustProxyTLS stays non-Secure", func(t *testing.T) {
+		cfg := base()
+		cfg.TrustProxyTLS = true
+		srv := newTestServerWithConfig(t, cfg)
+		cookies := login(t, srv, "http")
+		for _, name := range []string{SessionCookieName, CSRFCookieName} {
+			if c := cookies[name]; c == nil || c.Secure {
+				t.Errorf("%s cookie is Secure with trustProxyTLS but a plain-HTTP forwarded proto", name)
+			}
+		}
+	})
+
+	t.Run("https proto with trustProxyTLS is Secure", func(t *testing.T) {
+		cfg := base()
+		cfg.TrustProxyTLS = true
+		srv := newTestServerWithConfig(t, cfg)
+		cookies := login(t, srv, "https")
+		for _, name := range []string{SessionCookieName, CSRFCookieName} {
+			if c := cookies[name]; c == nil || !c.Secure {
+				t.Errorf("%s cookie missing Secure behind a declared proxy forwarding https", name)
+			}
+		}
+	})
+
+	t.Run("header match is case-insensitive on the scheme", func(t *testing.T) {
+		cfg := base()
+		cfg.TrustProxyTLS = true
+		srv := newTestServerWithConfig(t, cfg)
+		cookies := login(t, srv, "HTTPS")
+		if c := cookies[SessionCookieName]; c == nil || !c.Secure {
+			t.Error("HTTPS (uppercase) forwarded proto did not yield Secure behind a declared proxy")
+		}
+	})
+}
+
+// TestWarnInsecureCookiePolicy pins the M16 residual's startup warning:
+// it fires exactly when the console serves plain HTTP with neither its own
+// TLS pair nor trustProxyTLS, and stays silent in both secure modes.
+func TestWarnInsecureCookiePolicy(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+		want   bool
+	}{
+		{"plain HTTP warns", func(c *Config) {}, true},
+		{"TLS pair silences", func(c *Config) { c.CertFile, c.KeyFile = "cert.pem", "key.pem" }, false},
+		{"trustProxyTLS silences", func(c *Config) { c.TrustProxyTLS = true }, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{
+				ListenAddr:    "127.0.0.1:0",
+				GatewayURL:    "https://127.0.0.1:9708",
+				CAFile:        "ca.pem",
+				ClientCert:    "client.pem",
+				ClientKey:     "client-key.pem",
+				OperatorToken: testOperatorToken,
+			}
+			tc.mutate(cfg)
+			var buf bytes.Buffer
+			log.SetOutput(&buf)
+			defer log.SetOutput(os.Stderr)
+			cfg.WarnInsecureCookiePolicy()
+			got := buf.String()
+			if tc.want && !strings.Contains(got, "Secure") {
+				t.Errorf("plain-HTTP console produced no Secure-cookie warning, log = %q", got)
+			}
+			if !tc.want && got != "" {
+				t.Errorf("secure mode produced a spurious warning, log = %q", got)
+			}
+		})
 	}
 }
 

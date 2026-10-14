@@ -1996,10 +1996,11 @@ func deleteObjectsHandler(w http.ResponseWriter, r *http.Request, bucketName str
 }
 
 // deleteBatchExecutor adapts the batchops op interface onto the S3
-// DeleteObjects semantics: the plain delete via deleteObjectCore (the
-// versioned-marker dispatch the DELETE handler runs is NOT taken here —
-// DeleteObjects on a versioned bucket removes the data outright, the
-// pre-leaf behavior this wire has always had), and a missing key maps to
+// DeleteObjects semantics. Delete takes the versioned-marker dispatch
+// FIRST (deleteObjectVersionedMarker), exactly as the single DELETE
+// handler does: on a versioning-Enabled bucket a recoverable marker is
+// recorded and the plain delete suppressed; only when no marker applies
+// does it fall through to deleteObjectCore. A missing key maps to
 // SUCCESS (S3 DeleteObjects reports Deleted for absent keys).
 type deleteBatchExecutor struct {
 	bucket string

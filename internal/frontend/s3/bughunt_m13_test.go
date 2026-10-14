@@ -164,16 +164,24 @@ func TestBughuntM13_WriteGrantStillAuthorizesBatch(t *testing.T) {
 		t.Fatalf("put object: %d %s", w.Code, w.Body.String())
 	}
 
-	// POST ?delete executes (NOT 403).
+	// POST ?delete executes: exactly 200 with a DeleteResult naming the
+	// deleted key (the old pin here accepted ANY non-403, so a 500 with
+	// an error document would have "passed").
 	req := signPath(t, "POST", "/m13b-bucket?delete", "AKM13B", "sk-m13b", `<Delete><Object><Key>k.txt</Key></Object></Delete>`)
-	if w := m13Serve(t, handler, req); w.Code == http.StatusForbidden {
-		t.Fatalf("POST ?delete with write+delete grant = 403: %s", w.Body.String())
+	if w := m13Serve(t, handler, req); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<Key>k.txt</Key>") {
+		t.Fatalf("POST ?delete with write+delete grant = %d %s, want 200 DeleteResult with <Key>k.txt</Key>", w.Code, w.Body.String())
 	}
 
-	// POST ?batch executes (NOT 403).
-	req = signPath(t, "POST", "/m13b-bucket?batch", "AKM13B", "sk-m13b", `{"operations":[{"op":"delete","from":"gone.txt"}]}`)
-	if w := m13Serve(t, handler, req); w.Code == http.StatusForbidden {
-		t.Fatalf("POST ?batch with write+delete grant = 403: %s", w.Body.String())
+	// POST ?batch executes: exactly 200 with an all-ok results array
+	// (same tightening: not merely "not 403"). The item deletes a key
+	// that EXISTS — the JSON batch wire reports a missing key as a
+	// per-item error (NoSuchKey), unlike the XML DeleteObjects wire.
+	req = signPath(t, "POST", "/m13b-bucket?batch", "AKM13B", "sk-m13b", `{"operations":[{"op":"delete","from":"batched.txt"}]}`)
+	if w := m13Serve(t, handler, signPath(t, "PUT", "/m13b-bucket/batched.txt", "AKM13B", "sk-m13b", "data")); w.Code >= 400 {
+		t.Fatalf("put object for batch item: %d %s", w.Code, w.Body.String())
+	}
+	if w := m13Serve(t, handler, req); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status":"ok"`) {
+		t.Fatalf(`POST ?batch with write+delete grant = %d %s, want 200 with "status":"ok"`, w.Code, w.Body.String())
 	}
 }
 

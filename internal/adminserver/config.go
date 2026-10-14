@@ -5,10 +5,12 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // config.go — fail-loud console configuration (admin-server Contract 1).
@@ -144,11 +146,41 @@ func (c *Config) TLSConfig() *tls.Config {
 // (TrustProxyTLS — r.TLS is nil behind one, so transport detection alone
 // ships the session cookie WITHOUT Secure). Tests construct Config values
 // directly; a nil cfg falls back to transport detection only.
+//
+// M16 residual: behind a declared proxy the console ALSO honors the
+// proxy's X-Forwarded-Proto: https — a proxy may terminate TLS for one
+// vhost and pass plain HTTP for another, and the cookie must follow the
+// CLIENT-facing scheme, not the proxy's local hop. The header is read
+// ONLY when TrustProxyTLS is true: by default a client-controllable
+// X-Forwarded-Proto must never flip the Secure bit (an attacker on the
+// plain path could otherwise mint "Secure" cookies for sites that never
+// see them sent — or, worse, probe the proxy's trust boundary).
 func (c *Config) SecureCookies(r *http.Request) bool {
 	if r != nil && r.TLS != nil {
 		return true
 	}
-	return c != nil && c.TrustProxyTLS
+	if c == nil || !c.TrustProxyTLS {
+		return false
+	}
+	if r != nil && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		return true
+	}
+	return false
+}
+
+// WarnInsecureCookiePolicy logs the one startup warning M16 asks for: the
+// console is being served (listener up) with NEITHER its own TLS pair NOR
+// TrustProxyTLS, so every session cookie leaves without the Secure
+// attribute. Loopback-only plain HTTP is a supported mode (LoadConfig
+// enforces it), so this is a warning, never an abort. Call it once from
+// the serving path, after the config has been validated.
+func (c *Config) WarnInsecureCookiePolicy() {
+	if c.TLSEnabled() || c.TrustProxyTLS {
+		return
+	}
+	log.Printf("admin-server: WARNING: serving the console over plain HTTP without trustProxyTLS; " +
+		"session cookies are sent WITHOUT the Secure attribute. Set certFile/keyFile (TLS) or " +
+		"trustProxyTLS (TLS-terminating proxy) to enable Secure cookies.")
 }
 
 // validateLoopbackAddr rejects a listenAddr that does not resolve to a

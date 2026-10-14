@@ -66,6 +66,18 @@ func ParseIfHeader(h string) []string {
 // to 423 by the handler layer). A malformed or empty ifHeader counts as
 // "no tokens submitted".
 func CheckWriteLock(store lockStore, key string, ifHeader string) error {
+	return checkWriteLock(store, key, ParseIfHeader(ifHeader))
+}
+
+// CheckWriteLockNoToken is CheckWriteLock with an EMPTY If header: the
+// request submits no lock token, so a live lock always fails. The ?batch
+// sub-resource uses this variant — a manifest item carries no lock token,
+// so a delete targeting a locked key must refuse, never bypass.
+func CheckWriteLockNoToken(store lockStore, key string) error {
+	return checkWriteLock(store, key, nil)
+}
+
+func checkWriteLock(store lockStore, key string, tokens []string) error {
 	info, err := store.Get(key)
 	if err != nil {
 		// ErrNotFound (including wrapped variants from the file store)
@@ -77,7 +89,7 @@ func CheckWriteLock(store lockStore, key string, ifHeader string) error {
 		}
 		return nil
 	}
-	if slices.Contains(ParseIfHeader(ifHeader), info.Token) {
+	if slices.Contains(tokens, info.Token) {
 		return nil
 	}
 	return newLockErr(ErrLocked, "%s is locked", key)

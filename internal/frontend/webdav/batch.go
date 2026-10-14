@@ -30,12 +30,17 @@
 package webdav
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
+	"github.com/bhodgens/zeta-object/internal/batchops"
 	"github.com/bhodgens/zeta-object/internal/frontend"
 	s3 "github.com/bhodgens/zeta-object/internal/frontend/s3"
 )
@@ -101,6 +106,49 @@ func (f *Frontend) batchDispatch(w http.ResponseWriter, r *http.Request, res res
 		writeDavError(w, http.StatusForbidden, "")
 		return true
 	}
+	// BUGHUNT LOW (wave-2, dispatch.go:58 vs :84-98): batchDispatch runs
+	// BEFORE the method switch, so DELETE's enforceWriteLock never runs
+	// for a manifest delete — a live WebDAV lock was bypassed by ?batch.
+	// Refuse the WHOLE manifest when any delete target is locked: the
+	// runner's request-error contract (nothing executes on a manifest
+	// error, batchops.go:11-14) is honored by pre-checking BEFORE any
+	// item runs, so a partial refusal cannot strand earlier items past
+	// their lock. A manifest item carries no lock token, so the check is
+	// the tokenless variant; the holder sees 423 exactly as a single-op
+	// DELETE would answer. Only delete items are gated: the v1 lock
+	// contract gates the delete paths (DELETE via enforceWriteLock).
+	//
+	// The manifest is decoded here independently of the bridge's own
+	// decode so the lock gate can name the delete targets. Only a
+	// well-formed manifest carries delete targets; a malformed one stays
+	// the runner's/bridge's answer (400), which the gate deliberately
+	// does not preempt.
+	if man, ok := decodeBatchManifest(r); ok {
+		for _, item := range man.Operations {
+			if item.Op != "delete" || item.From == "" {
+				continue
+			}
+			store := f.lockStoreFor(res.bucket)
+			if store == nil {
+				// Locking not wired (the nil contract): enforcement is a
+				// no-op, the same rule enforceWriteLock applies.
+				break
+			}
+			if err := CheckWriteLockNoToken(store, f.lockKey(resource{bucket: res.bucket, key: item.From})); err != nil {
+				if errors.Is(err, ErrLocked) {
+					log.Printf("webdav batch: delete of %s is blocked by a live lock (423); nothing executed",
+						strconv.Quote(item.From))
+					writeDavError(w, http.StatusLocked, "")
+					return true
+				}
+				// A lock-store failure must never silently pass (the
+				// same rule enforceWriteLock applies to the single-op
+				// paths).
+				writeDavError(w, http.StatusInternalServerError, "")
+				return true
+			}
+		}
+	}
 	// The key validator is the mounting frontend's own rule set. The
 	// webdav path parser has already proven the bucket scope; the
 	// s3 validateObjectKey (the shared single-op rules, .metadata/.zfs
@@ -108,4 +156,38 @@ func (f *Frontend) batchDispatch(w http.ResponseWriter, r *http.Request, res res
 	// ?batch mount passes, so both surfaces reject identical keys.
 	s3.HandleBatchForBucket(w, r, res.bucket, bucketPath, s3.ValidateObjectKey)
 	return true
+}
+
+// batchManifestMaxBytes bounds the gate's own body peek. It mirrors the
+// bridge's cap (s3 bucketBatchMaxBytes, 4 MiB) with a local copy: the gate
+// reads the body BEFORE the bridge does and must reinstall it verbatim, so
+// it needs the same ceiling — a body beyond it is rejected 400 by the
+// bridge right after the gate, so a pinned local constant cannot widen the
+// bridge's limit. (A getBatchMaxBytes re-export from s3 would be the
+// alternative; the pin test below keeps the two honest.)
+const batchManifestMaxBytes = 4 << 20
+
+// decodeBatchManifest peeks at the ?batch request body WITHOUT consuming
+// it: the body is read once (bounded — a body beyond the cap is rejected
+// 400 by the bridge right after this gate), the manifest decoded, and the
+// body reinstalled verbatim so the bridge's HandleBatchForBucket reads it
+// unchanged. Any read or decode failure is NOT a gate error: the manifest
+// carries no trustworthy delete targets, so the gate skips and the bridge
+// answers exactly as it did pre-fix (its request-error contract: a
+// malformed manifest executes NOTHING).
+func decodeBatchManifest(r *http.Request) (batchops.Manifest, bool) {
+	if r.Body == nil {
+		return batchops.Manifest{}, false
+	}
+	body, rerr := io.ReadAll(io.LimitReader(r.Body, batchManifestMaxBytes+1))
+	cerr := r.Body.Close()
+	if rerr != nil || cerr != nil {
+		return batchops.Manifest{}, false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	var man batchops.Manifest
+	if err := json.Unmarshal(body, &man); err != nil {
+		return batchops.Manifest{}, false
+	}
+	return man, true
 }

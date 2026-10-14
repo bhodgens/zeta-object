@@ -76,6 +76,10 @@ func main() {
 			return
 		}
 		log.Printf("admin-server listening on http://%s", cfg.ListenAddr)
+		// M16 residual: the plain-HTTP listener with neither its own TLS
+		// pair nor a declared TLS proxy ships cookies without Secure —
+		// say so once at startup (loopback plain HTTP stays supported).
+		cfg.WarnInsecureCookiePolicy()
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}

@@ -39,6 +39,33 @@ func tagFixtureURL(bucket, key, query string) string {
 	return fmt.Sprintf("/%s/%s%s", bucket, key, query)
 }
 
+// TestTaggingSubresource_PutBodyOversizeRejected pins the tagging body
+// cap (LOW finding, tagstore.go): PutObjectTagging reads its body under a
+// LimitReader exactly like the sibling sub-resources (PUT ?versioning's
+// 1 MiB read) and rejects a body past the cap with 400 InvalidArgument —
+// an unbounded ReadAll here let one PUT ?tagging buffer arbitrarily many
+// bytes (the DELETE ?tagging body is ignored, so only the PUT arms it).
+// A body AT the cap boundary (max valid form) is not itself tested here;
+// the cap sits far above S3's own tag limits so only abuse trips it.
+func TestTaggingSubresource_PutBodyOversizeRejected(t *testing.T) {
+	_, _ = tagTestEnv(t, "tag-bucket", "obj.txt")
+
+	// A valid single-tag document padded far past the 1 MiB cap via the
+	// (256-byte-limited) tag VALUE — the document parses as Tagging XML,
+	// so the rejection is the SIZE gate, not a parse failure.
+	big := `<Tagging><TagSet><Tag><Key>k</Key><Value>` + strings.Repeat("v", taggingBodyMaxBytes+4096) + `</Value></Tag></TagSet></Tagging>`
+	w := serveTagging(t, "PUT", tagFixtureURL("tag-bucket", "obj.txt", "?tagging"), big, nil)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "InvalidArgument") {
+		t.Fatalf("oversize PUT ?tagging = %d %s, want 400 InvalidArgument", w.Code, w.Body.String())
+	}
+
+	// The rejected PUT must not have tagged the object.
+	w = serveTagging(t, "GET", tagFixtureURL("tag-bucket", "obj.txt", "?tagging"), "", nil)
+	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "NoSuchTagSet") {
+		t.Fatalf("GET ?tagging after rejected PUT = %d %s, want 404 NoSuchTagSet (tags must be untouched)", w.Code, w.Body.String())
+	}
+}
+
 func TestTaggingSubresource_PutThenGetRoundTrip(t *testing.T) {
 	_, _ = tagTestEnv(t, "tag-bucket", "obj.txt")
 

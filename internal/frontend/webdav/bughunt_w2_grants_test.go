@@ -182,3 +182,88 @@ func TestW2M1_WebdavBatchRequiresWriteAndDelete(t *testing.T) {
 		}
 	})
 }
+
+// TestBatchLockBypass_ManifestDeleteOnLockedKeyIs423 pins the wave-2 LOW
+// finding (dispatch.go:58 vs :84-98): batchDispatch resolves BEFORE the
+// method switch, so DELETE's enforceWriteLock never ran for a manifest
+// delete — a live WebDAV lock was bypassed by POST ?batch. Pre-fix this
+// test's 423 assertion FAILS (the batch executes the delete and answers
+// 200); post-fix the whole manifest is refused 423 before any item runs,
+// and the lock survives (the positive-control batch after UNLOCK shows the
+// same manifest was executable).
+func TestBatchLockBypass_ManifestDeleteOnLockedKeyIs423(t *testing.T) {
+	const bucket = "w2lock-bucket"
+	// The harness identity holds write+delete so the W2-M1 grant gate is
+	// not what answers here — only the lock gate is under test.
+	h := newW2Harness(t, bucket, `"read","write","list","delete","create"`)
+	h.seed("locked-victim.txt", "do-not-delete")
+
+	// LOCK the key as the same identity (it holds write; W2-M3 pins that).
+	if code := h.do("LOCK", "/locked-victim.txt", webdavLockBody); code != http.StatusOK {
+		t.Fatalf("LOCK setup = %d, want 200", code)
+	}
+
+	// The bypass: a manifest delete on the locked key. Pre-fix: 200 + the
+	// object gone. Post-fix: 423, nothing executed.
+	code := h.do("POST", "/?batch", `{"operations":[{"op":"delete","from":"locked-victim.txt"}]}`)
+	if code != http.StatusLocked {
+		t.Fatalf("POST ?batch delete on a LOCKED key = %d, want 423 (the ?batch sub-resource must not bypass a live WebDAV lock)", code)
+	}
+
+	// The lock is intact AND the victim survived: the holder's own
+	// single-op DELETE now answers 423 (the lock was not consumed), and a
+	// plain GET still finds the object.
+	if code := h.do("DELETE", "/locked-victim.txt", ""); code != http.StatusLocked {
+		t.Fatalf("single-op DELETE on the locked key = %d, want 423 (lock must survive the batch refusal)", code)
+	}
+	if code := h.do("GET", "/locked-victim.txt", ""); code != http.StatusOK {
+		t.Fatalf("GET after the refused batch = %d, want 200 (nothing executed)", code)
+	}
+
+	// Positive control: after UNLOCK the same manifest deletes — the 423
+	// was the lock gate, not a broken batch surface. UNLOCK takes the
+	// Lock-Token header (RFC 4918 §9.11), the same shape lockhandler_test
+	// pins.
+	lockTok := h.lockToken("locked-victim.txt")
+	if lockTok == "" {
+		t.Fatalf("could not resolve the lock token for the positive control")
+	}
+	if code := h.doWithIf("UNLOCK", "/locked-victim.txt", "Lock-Token", "<"+lockTok+">", ""); code != http.StatusNoContent {
+		t.Fatalf("UNLOCK setup = %d, want 204", code)
+	}
+	if code := h.do("POST", "/?batch", `{"operations":[{"op":"delete","from":"locked-victim.txt"}]}`); code >= 400 {
+		t.Fatalf("POST ?batch delete after UNLOCK = %d, want 2xx (positive control)", code)
+	}
+	if code := h.do("GET", "/locked-victim.txt", ""); code != http.StatusNotFound {
+		t.Fatalf("GET after the unlocked batch = %d, want 404 (the batch really executed)", code)
+	}
+}
+
+// lockToken reads the live lock's token out of the file lockStore. The
+// store is keyed by lockKey's shape ("/<bucket>/<key>"); the caller passes
+// the bare object key.
+func (h *w2Harness) lockToken(key string) string {
+	store := h.f.lockStoreFor(h.bucket)
+	info, err := store.Get("/" + h.bucket + "/" + key)
+	if err != nil {
+		return ""
+	}
+	return info.Token
+}
+
+// doWithIf is do with one extra header (used for the UNLOCK positive
+// control, which must carry the lock token).
+func (h *w2Harness) doWithIf(method, path, name, value, body string) int {
+	h.t.Helper()
+	var rdr io.Reader
+	if body != "" {
+		rdr = strings.NewReader(body)
+	}
+	req := httptest.NewRequest(method, path, rdr)
+	req.Header.Set(name, value)
+	req.SetBasicAuth("AKW2M3", "sk-w2m3")
+	rec := httptest.NewRecorder()
+	h.f.Handler().ServeHTTP(rec, req)
+	_, _ = io.Copy(io.Discard, rec.Body)
+	return rec.Code
+}
