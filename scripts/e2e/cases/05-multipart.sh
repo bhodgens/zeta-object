@@ -66,18 +66,16 @@ UID2=$(aws s3api create-multipart-upload --bucket "$BKT" --key 'aborted.bin' \
 	--endpoint-url "$ENDPOINT" --no-verify-ssl 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["UploadId"])')
 aws_ok 'abort multipart upload' s3api abort-multipart-upload --bucket "$BKT" \
 	--key 'aborted.bin' --upload-id "$UID2"
-LMU2=$(aws s3api list-multipart-uploads --bucket "$BKT" --endpoint-url "$ENDPOINT" --no-verify-ssl 2>/dev/null)
 # Absence is only meaningful if the listing itself SUCCEEDED: a failed call
 # returns an empty body and grep -c 'Upload' prints 0, so the assert below
 # would pass on the failure it exists to catch (bughunt 2026-10-13 M34).
 # The CLI's exit code is the proof (an empty upload list is a SUCCESS; the
 # JSON projection of an empty listing carries no stable substring to grep).
-if aws s3api list-multipart-uploads --bucket "$BKT" \
-		--endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1; then
-	assert_eq 'multipart listing succeeded (abort-absence precondition)' ok ok
-else
-	assert_eq 'multipart listing succeeded (abort-absence precondition)' ok FAIL
-fi
+# W2-M14: the exit code is captured from THIS call — a SECOND listing can
+# succeed after the first failed and leave the assert passing on stale data.
+LMU2=$(aws s3api list-multipart-uploads --bucket "$BKT" --endpoint-url "$ENDPOINT" --no-verify-ssl 2>/dev/null)
+RC_LMU2=$?
+assert_eq 'multipart listing succeeded (abort-absence precondition)' 0 "$RC_LMU2"
 assert_eq 'aborted upload gone from ListMultipartUploads' '0' "$(printf '%s' "$LMU2" | grep -c Upload || true)"
 
 # --- in-flight multipart blocks bucket delete (409 BucketNotEmpty) -----------

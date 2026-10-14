@@ -56,31 +56,25 @@ S3_STATUS=$(curl -sk -o /tmp/e2e03-dotbody -w '%{http_code}' \
 	--user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" \
 	-X PUT "$BASE_URL/$BKT/." --data-binary 'brick' 2>/dev/null)
 assert_eq 'dot-key put never writes an object → bucket-level response' 409 "$S3_STATUS"
-LIST4=$(aws s3api list-objects-v2 --bucket "$BKT" \
-	--endpoint-url "$ENDPOINT" --no-verify-ssl 2>/dev/null)
 # The absence assert below is only honest if the listing itself SUCCEEDED: a
 # failed call yields an empty body, grep -c prints 0, and the assert passes
 # on the very failure it should catch (bughunt 2026-10-13 M34). The CLI's
 # exit code is the proof: 0 means the server answered the listing (an empty
 # result is a success; the CLI's JSON projection of an empty listing carries
 # no stable substring to grep, but a failed call exits non-zero).
-if aws s3api list-objects-v2 --bucket "$BKT" \
-		--endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1; then
-	assert_eq 'listing before absence assert succeeded (dot key)' ok ok
-else
-	assert_eq 'listing before absence assert succeeded (dot key)' ok FAIL
-fi
+# W2-M14: the exit code is captured from THIS call — a SECOND listing can
+# succeed after the first failed and leave the assert passing on stale data.
+LIST4=$(aws s3api list-objects-v2 --bucket "$BKT" \
+	--endpoint-url "$ENDPOINT" --no-verify-ssl 2>/dev/null)
+RC4=$?
+assert_eq 'listing before absence assert succeeded (dot key)' 0 "$RC4"
 assert_eq 'no stray dot object after dot-key put' 0 \
 	"$(printf '%s' "$LIST4" | grep -c 'Key' || true)"
 rm -f /tmp/e2e03-dotbody
 LIST3=$(aws s3api list-objects-v2 --bucket "$BKT" \
 	--endpoint-url "$ENDPOINT" --no-verify-ssl 2>/dev/null)
-if aws s3api list-objects-v2 --bucket "$BKT" \
-		--endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1; then
-	assert_eq 'listing before absence assert succeeded (spaced key)' ok ok
-else
-	assert_eq 'listing before absence assert succeeded (spaced key)' ok FAIL
-fi
+RC3=$?
+assert_eq 'listing before absence assert succeeded (spaced key)' 0 "$RC3"
 assert_eq 'spaced key gone after encoded delete' 0 "$(printf '%s' "$LIST3" | grep -c 'hello' || true)"
 
 rm -f "$TMP"

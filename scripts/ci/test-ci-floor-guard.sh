@@ -283,6 +283,56 @@ else
 	bad "measure-package-floors.sh floor table is stale:$mir_mismatch"
 fi
 
+# --- 7. the zeta-cache module's CI job carries a real coverage floor --------
+# W2-M13: zeta-cache is a SEPARATE Go module, so the root `go list ./...`
+# above can never reach it — its CI job (zeta-cache-test) must carry its own
+# floor line, and this guard must assert it exists. Module-aware: the check
+# parses the job's own step, never the root case block.
+ZC_STEP=$(awk '/zeta-cache-test:/{f=1} f&&/lint:/{exit} f{print}' "$WF")
+if [ -z "$ZC_STEP" ]; then
+	bad "could not extract the zeta-cache-test job from $WF"
+elif ! printf '%s\n' "$ZC_STEP" | grep -qE 'coverprofile'; then
+	bad "the zeta-cache-test job runs no coverage profile - the module is ungated"
+elif ! printf '%s\n' "$ZC_STEP" | grep -qE 'awk.*total:.*exit 1'; then
+	bad "the zeta-cache-test job has no awk floor check on the total line"
+else
+	ZC_FLOOR=$(printf '%s\n' "$ZC_STEP" | grep -oE 'below floor [0-9]+' | grep -oE '[0-9]+' | head -1)
+	if [ -z "$ZC_FLOOR" ]; then
+		bad "the zeta-cache floor check has no numeric floor value"
+	elif [ "$ZC_FLOOR" -le 0 ] || [ "$ZC_FLOOR" -ge 100 ]; then
+		bad "the zeta-cache floor is $ZC_FLOOR - not a plausible percentage"
+	else
+		ok "the zeta-cache-test job enforces an aggregate floor of $ZC_FLOOR"
+	fi
+fi
+
+# The floor the job enforces must not exceed what the module actually
+# measures (the same ratchet-direction rule section 4 applies to the root
+# matrix). The module is only built when its toolchain is present; a broken
+# zeta-cache build is the zeta-cache-test job's problem, not this pin's.
+ZC_MEASURED=""
+if command -v go >/dev/null 2>&1 && [ -d zeta-cache ]; then
+	ZC_COV="$(mktemp "${TMPDIR:-/tmp}/floorguard.zc.XXXXXX")"
+	if ( cd zeta-cache && go test -count=1 -coverprofile="$ZC_COV" ./... >/dev/null 2>&1 ); then
+		# cover -func must run INSIDE the module: from the repo root the
+		# root module's import rules cannot resolve the zeta-cache
+		# package paths (-mod=readonly import lookup disabled).
+		ZC_MEASURED=$( cd zeta-cache && go tool cover -func="$ZC_COV" 2>/dev/null | awk '/^total:/ {gsub(/%/,"",$3); print $3}' | head -1 )
+	fi
+	rm -f "$ZC_COV"
+	if [ -n "$ZC_MEASURED" ]; then
+		if awk -v f="$ZC_FLOOR" -v m="$ZC_MEASURED" 'BEGIN{exit !(f+0 > m+0)}'; then
+			bad "zeta-cache floor $ZC_FLOOR exceeds the locally measured $ZC_MEASURED - will red-line a green run"
+		else
+			ok "zeta-cache floor $ZC_FLOOR holds against the locally measured $ZC_MEASURED"
+		fi
+	else
+		ok "zeta-cache not measurable here (module build failed) - skipping the ratchet-direction check"
+	fi
+else
+	ok "no zeta-cache module or no toolchain - skipping the ratchet-direction check"
+fi
+
 echo
 echo "$pass passed, $fails failed."
 if [ "$fails" -ne 0 ]; then

@@ -67,7 +67,25 @@ jobs:
         with:
           go-version-file: zeta-cache/go.mod
       - name: Test zeta-cache module (count=1 + race, CGO_ENABLED=0)
-        run: cd zeta-cache && CGO_ENABLED=0 go test -count=1 -race ./...
+        run: |
+          # Coverage floor (W2-M13): the aggregate module floor is the
+          # measured value minus 2, following the root matrix's convention
+          # but with the extra point of margin because the two 0%-coverage
+          # main-only cmd/ binaries drag the aggregate (the per-package
+          # matrix floors use measured-minus-1 on a fixed toolchain).
+          # MEASURED 2026-10-14 (darwin/arm64, go1.27.x, -race AND non-race
+          # both — race changed the number by only 0.1): module aggregate
+          # 61.5-61.6% (floor 59). Per-package at the same run: config 88.1,
+          # fusefs 63.2, index 67.4, ipc 74.9, scheduler 75.8, sync 80.2,
+          # transport 43.4, root main 42.3, cmd/* 0 (main-only).
+          # RAISE as tests land (do not lower). A toolchain bump in
+          # zeta-cache/go.mod is a coverage event: re-measure in the SAME
+          # change (see the root matrix's coverage-is-toolchain-dependent
+          # note — the same law applies to this module).
+          cd zeta-cache
+          CGO_ENABLED=0 go test -count=1 -race -coverprofile=cover.out ./...
+          go tool cover -func=cover.out | tee /dev/stderr | awk '/^total:/ {gsub(/%/,"",$3); if ($3+0 < 59) {print "zeta-cache aggregate coverage " $3 "% below floor 59"; exit 1}}'
+          rm -f cover.out
 
   lint:
     runs-on: ubuntu-latest
