@@ -68,14 +68,23 @@ type ConflictResolver interface {
 	Conflicts() ([]ConflictItem, error)
 	// ResolveConflict applies mode ("keep-local" | "keep-remote") to
 	// path. removeCopy additionally deletes the conflicted-copy FILE
-	// (never done implicitly).
-	ResolveConflict(path, mode string, removeCopy bool) error
+	// (never done implicitly). The ResolveResult reports the FACTS:
+	// CopyRemoved is true only when a conflicted-copy file was actually
+	// removed (a record without a copy resolves with CopyRemoved=false
+	// even when the request carried the confirm flag).
+	ResolveConflict(path, mode string, removeCopy bool) (ResolveResult, error)
 	// RestoreDeleted re-downloads a tombstoned path if the server still
 	// serves it; an unrecoverable path is an error, never a silent ok.
 	RestoreDeleted(path string) error
 	// EvictPath evicts ONE clean file now; dirty/pinned/unknown paths
 	// are refused with an error.
 	EvictPath(path string) error
+}
+
+// ResolveResult is what ResolveConflict reports.
+type ResolveResult struct {
+	// CopyRemoved: a conflicted-copy file was actually removed.
+	CopyRemoved bool
 }
 
 // resolveModeValid reports whether mode is one of the two locked modes.

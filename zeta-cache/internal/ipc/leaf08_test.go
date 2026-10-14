@@ -29,9 +29,9 @@ type leaf08Stub struct {
 
 func (h *leaf08Stub) Conflicts() ([]ConflictItem, error) { return h.conflicts, nil }
 func (h *leaf08Stub) DeletedPaths() ([]Tombstone, error) { return h.deleted, nil }
-func (h *leaf08Stub) ResolveConflict(path, mode string, removeCopy bool) error {
+func (h *leaf08Stub) ResolveConflict(path, mode string, removeCopy bool) (ResolveResult, error) {
 	h.lastResolve.path, h.lastResolve.mode, h.lastResolve.rm = path, mode, removeCopy
-	return nil
+	return ResolveResult{CopyRemoved: removeCopy}, nil
 }
 func (h *leaf08Stub) RestoreDeleted(path string) error { h.lastRestore = path; return nil }
 func (h *leaf08Stub) EvictPath(path string) error {

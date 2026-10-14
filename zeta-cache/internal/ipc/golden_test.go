@@ -73,9 +73,9 @@ type fullStubHandler struct {
 }
 
 func (h *fullStubHandler) Conflicts() ([]ConflictItem, error) { return h.conflicts, nil }
-func (h *fullStubHandler) ResolveConflict(path, mode string, removeCopy bool) error {
+func (h *fullStubHandler) ResolveConflict(path, mode string, removeCopy bool) (ResolveResult, error) {
 	h.lastMode, h.lastRm = mode, removeCopy
-	return nil
+	return ResolveResult{CopyRemoved: removeCopy}, nil
 }
 func (h *fullStubHandler) RestoreDeleted(path string) error { h.lastRest = path; return nil }
 func (h *fullStubHandler) EvictPath(path string) error      { h.lastEvict = path; return nil }

@@ -165,8 +165,29 @@ func main() {
 		srv.ReplaceHandler(liveStatus, handler)
 	}
 
+	// The prompt-upload hook (leaf-07 contract): the scheduler's watcher
+	// uploads a dirty file the moment its Flush lands. mountedFS IS the
+	// per-file uploader (UploadFile); the prompt loop calls it through
+	// the adapter below, so ONE implementation serves both loops.
+	if mountedFS != nil {
+		upFS := mountedFS
+		mountedFS.SetUploader(uploaderFunc(func(ctx context.Context, key string) {
+			// Fire-and-forget: Flush must never block on the upload.
+			go func() {
+				if err := upFS.UploadFile(ctx, key); err != nil {
+					// Stay dirty; the watcher's poll fallback retries.
+					log.Printf("zeta-cache: prompt upload %s: %v (stays dirty)", key, err)
+				}
+			}()
+		}))
+	}
+
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	// SIGUSR1 is part of the shutdown contract: after a REFUSED unmount
+	// (bounded flush hit its deadline), SIGUSR1 retries the unmount.
+	// Without it in Notify, the default action would kill the daemon
+	// while it is still mounted - the exact outcome the refusal avoids.
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1)
 	s := <-sig
 	log.Printf("zeta-cache: %v received, shutting down", s)
 	mainCancel()
@@ -183,15 +204,36 @@ func main() {
 		// on a fresh socket) can report the error state. SIGUSR1 retries
 		// the unmount; SIGTERM again force-stops without unmounting.
 		log.Printf("zeta-cache: unmount refused: %v (process stays alive; SIGTERM again to force-stop)", unmountErr)
+		// The refused-shutdown wait loop: SIGUSR1 retries the unmount,
+		// a second SIGTERM force-stops. The loop (not a single if) is
+		// what keeps a SIGUSR1 from being consumed as a no-op while the
+		// mount is still there.
 		ipcReserve, rerr := ipc.Serve(cfg.IPCSocket, cfg.ServerURL, cfg.Bucket, statusSource{db: db})
-		if rerr == nil {
+		if rerr != nil {
+			log.Printf("zeta-cache: WARNING refused-shutdown IPC re-serve failed: %v (SIGTERM still force-stops)", rerr)
 			s2 := <-sig
-			ipcReserve.Stop()
 			log.Printf("zeta-cache: %v during refused-shutdown wait", s2)
 			if s2 == syscall.SIGUSR1 {
 				if retryErr := unmountHook(); retryErr != nil {
 					log.Printf("zeta-cache: unmount still refused: %v", retryErr)
 				}
+			}
+		} else {
+			defer func() { ipcReserve.Stop() }()
+			for {
+				s2 := <-sig
+				log.Printf("zeta-cache: %v during refused-shutdown wait", s2)
+				if s2 != syscall.SIGUSR1 {
+					break // SIGTERM (or other): force-stop, do not unmount
+				}
+				if retryErr := unmountHook(); retryErr != nil {
+					// Still dirty: keep waiting; the NEXT SIGUSR1
+					// retries again (unmountHook kept mountedFS).
+					log.Printf("zeta-cache: unmount still refused: %v (SIGUSR1 retries; SIGTERM force-stops)", retryErr)
+					continue
+				}
+				log.Printf("zeta-cache: unmount completed on retry")
+				break
 			}
 		}
 	}
@@ -224,14 +266,25 @@ func mountBucket(cfg *config.Config, db *index.Store, tr transport.Transport) (b
 // mountedFS holds the live mount for the unmount hook.
 var mountedFS *fusefs.FS
 
+// uploaderFunc adapts a function to fusefs.Uploader (the prompt-upload
+// hook; the same shape scheduler.UploadFunc uses on its side).
+type uploaderFunc func(ctx context.Context, key string)
+
+// UploadNow implements fusefs.Uploader.
+func (f uploaderFunc) UploadNow(ctx context.Context, key string) { f(ctx, key) }
+
 // unmountHook is the leaf 02 unmount: bounded flush, then either a clean
-// detach or a refusal naming the files that stayed dirty.
+// detach or a refusal naming the files that stayed dirty. The global is
+// cleared ONLY on success - a refused unmount keeps the live FS so a
+// SIGUSR1 retry actually retries instead of returning nil immediately.
 func unmountHook() error {
 	if mountedFS == nil {
 		return nil
 	}
 	err := mountedFS.Unmount(context.Background())
-	mountedFS = nil
+	if err == nil {
+		mountedFS = nil
+	}
 	return err
 }
 

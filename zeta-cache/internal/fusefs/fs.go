@@ -257,6 +257,15 @@ func (f *FS) Mounted() bool {
 	return len(f.targets) > 0
 }
 
+// SetUploader wires the prompt-upload hook after Mount (the scheduler is
+// built later in the daemon's startup than the mount). A nil uploader
+// keeps Flush's "stay dirty until the scheduler exists" fallback.
+func (f *FS) SetUploader(up Uploader) {
+	f.mu.Lock()
+	f.up = up
+	f.mu.Unlock()
+}
+
 // ---- stat plumbing -------------------------------------------------
 
 func modeDir(flag bool) uint32 {
@@ -284,8 +293,8 @@ func fillAttr(out *fuse.Attr, key string, isDir bool, size, mtime int64) {
 // local generation wins (it may be dirtier/newer than the server);
 // otherwise the transport listing answers.
 func (f *FS) statKey(ctx context.Context, key string) (isDir bool, size, mtime int64, errno syscall.Errno) {
-	if size, mt, ok, err := f.localStat(key); err == nil && ok {
-		return false, size, mt, 0
+	if size, mt, lIsDir, ok, err := f.localStat(key); err == nil && ok {
+		return lIsDir, size, mt, 0
 	} else if err != nil {
 		return false, 0, 0, syscall.EIO
 	}
@@ -495,9 +504,12 @@ func (d *dirNode) Mkdir(ctx context.Context, name string, _ uint32, out *fuse.En
 	if err := os.MkdirAll(filepath.Join(d.fs.cacheDir, "files", filepath.FromSlash(key)), 0o700); err != nil {
 		d.fs.log.Printf("fusefs: mkdir local mirror %s: %v", key, err)
 	}
-	if err := d.fs.idx.MarkClean(key, "", 0); err != nil { // dir row, clean by definition
-		d.fs.log.Printf("fusefs: index MarkClean(dir %s): %v", key, err)
-	}
+	// NOTE: no index row for directories. The index adapter records
+	// MarkClean rows as Hydrated:true; a dir row would inflate
+	// HydratedCount and hand the directory to eviction as a "hydrated
+	// cache entry" whose os.Remove fails EISDIR. Dirs are tracked by the
+	// local mirror dir + the server namespace; the sync scan records its
+	// own dir rows if it needs them.
 	child := d.newChild(ctx, name, true)
 	fillAttr(&out.Attr, key, true, 0, time.Now().Unix())
 	return child, 0
@@ -604,11 +616,22 @@ func (fn *fileNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint
 		return nil, 0, err
 	}
 	path := fn.fs.cachePath(fn.key)
-	fh, err := os.OpenFile(path, int(flags), 0o600) // #nosec G304 -- constructed cache path
+	// O_TRUNC must NOT reach this OpenFile: it would silently truncate
+	// the local generation and the handle would come up direct, so
+	// Flush's guard would return 0 and MarkDirty would never run - a
+	// clean ETag over empty bytes. Truncation goes through Setattr,
+	// which hydrates-then-truncates and marks dirty. The stripped flag
+	// is remembered so close(Flush) still dirties the row.
+	var truncRequested bool
+	cleanFlags := int(flags) &^ (os.O_TRUNC | os.O_APPEND)
+	if int(flags)&os.O_TRUNC != 0 {
+		truncRequested = true
+	}
+	fh, err := os.OpenFile(path, cleanFlags, 0o600) // #nosec G304 -- constructed cache path
 	if err != nil {
 		return nil, 0, syscall.EIO
 	}
-	return &fileHandle{fs: fn.fs, key: fn.key, stagingPath: path, local: fh, direct: true}, 0, 0
+	return &fileHandle{fs: fn.fs, key: fn.key, stagingPath: path, local: fh, direct: true, dirtyNoCommit: truncRequested}, 0, 0
 }
 
 // Read implements fs.NodeReader.
@@ -702,6 +725,10 @@ type fileHandle struct {
 	local       *os.File // descriptor over stagingPath (staging) or the cache file (direct)
 	direct      bool     // opened read-only over the local generation
 	committed   bool
+	// dirtyNoCommit: a no-write flag set when Open stripped a mutating
+	// flag (O_TRUNC) - close must still dirty the row so state
+	// converges, but there is no staging generation to commit.
+	dirtyNoCommit bool
 }
 
 func (h *fileHandle) Read(dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
@@ -734,9 +761,13 @@ func (h *fileHandle) Write(_ context.Context, data []byte, off int64) (uint32, s
 			}
 			in.Close()
 		}
+		// The direct descriptor over the cache file is superseded:
+		// leave it open and it leaks (one fd per write-after-flush).
+		h.local.Close()
 		h.stagingPath = staging
 		h.local = out
 		h.direct = false
+		h.committed = false
 	}
 	n, err := h.local.WriteAt(data, off)
 	if err != nil {
@@ -750,6 +781,17 @@ func (h *fileHandle) Write(_ context.Context, data []byte, off int64) (uint32, s
 // bytes: the rename is atomic and errors keep the staging file.
 func (h *fileHandle) Flush(ctx context.Context) syscall.Errno {
 	if h.direct || h.committed {
+		if h.direct && h.dirtyNoCommit {
+			// A no-write handle (e.g. open(O_TRUNC) whose truncation
+			// was redirected to Setattr) still converges state: the
+			// row must go dirty so the sync scans reconcile it -
+			// never a clean ETag over bytes that changed under the
+			// mount.
+			if err := h.fs.markDirtyNoCommit(h.key); err != nil {
+				return errnoToErrno(err)
+			}
+			h.dirtyNoCommit = false
+		}
 		return 0
 	}
 	f := h.fs

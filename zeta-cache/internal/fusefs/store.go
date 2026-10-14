@@ -53,15 +53,19 @@ func (f *FS) reserveCacheDirs() error {
 }
 
 // localStat returns the local file size/mtime if the cache file exists.
-func (f *FS) localStat(key string) (size int64, mtime int64, ok bool, err error) {
+// isDir reports whether the cache entry is a directory mirror - a Mkdir
+// creates a REAL dir under files/<key>, and without this flag the 250ms
+// entry TTL makes lookupChild re-stat, see a plain entry, and replace
+// the directory inode with a fileNode.
+func (f *FS) localStat(key string) (size int64, mtime int64, isDir bool, ok bool, err error) {
 	fi, err := os.Stat(f.cachePath(key))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return 0, 0, false, nil
+			return 0, 0, false, false, nil
 		}
-		return 0, 0, false, fmt.Errorf("fusefs: stat %s: %w", key, err)
+		return 0, 0, false, false, fmt.Errorf("fusefs: stat %s: %w", key, err)
 	}
-	return fi.Size(), fi.ModTime().Unix(), true, nil
+	return fi.Size(), fi.ModTime().Unix(), fi.IsDir(), true, nil
 }
 
 // hydrated reports whether the bytes are local (clean or dirty).
@@ -71,7 +75,7 @@ func (f *FS) hydrated(key string) bool {
 }
 
 func (f *FS) localStatOK(key string) (bool, error) {
-	_, _, ok, err := f.localStat(key)
+	_, _, _, ok, err := f.localStat(key)
 	return ok, err
 }
 
@@ -136,6 +140,23 @@ func (f *FS) hydrateLocked(ctx context.Context, key string) error {
 		// Bytes are already local; a bookkeeping failure must not fail
 		// the read. The next scan (leaf 04) repairs the row.
 		f.log.Printf("fusefs: index RecordHydrated(%s): %v", key, err)
+	}
+	return nil
+}
+
+// markDirtyNoCommit dirties the row for a handle whose mutation was
+// redirected (O_TRUNC strip) but which never staged bytes: the local
+// stat is the truth. Errors surface to close(2).
+func (f *FS) markDirtyNoCommit(key string) error {
+	size, mtime, _, ok, err := f.localStat(key)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil // nothing local to converge
+	}
+	if err := f.idx.MarkDirty(key, size, mtime); err != nil {
+		return fmt.Errorf("fusefs: index MarkDirty(%s) [open-trunc]: %w", key, err)
 	}
 	return nil
 }

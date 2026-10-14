@@ -156,12 +156,31 @@ func (h *guiHandler) Conflicts() ([]ipc.ConflictItem, error) {
 // ResolveConflict applies keep-local (upload the local copy) or
 // keep-remote (download the remote over the local). The conflicted-copy
 // file is removed ONLY when the request carries the explicit user flag.
-func (h *guiHandler) ResolveConflict(path, mode string, removeCopy bool) error {
+// The returned result reports the FACT: CopyRemoved is true only when a
+// conflicted-copy file actually got removed (a record without a copy
+// resolves with CopyRemoved=false even on confirm=true).
+func (h *guiHandler) ResolveConflict(path, mode string, removeCopy bool) (ipc.ResolveResult, error) {
 	engine, err := h.requireEngine()
 	if err != nil {
-		return err
+		return ipc.ResolveResult{}, err
 	}
-	return engine.ResolveConflict(h.ctx(), path, mode, removeCopy)
+	// The fact is derived from the record + the outcome: a copy can only
+	// be removed when the record HAD one and the remove step succeeded.
+	recs, err := engine.Conflicts(h.ctx())
+	if err != nil {
+		return ipc.ResolveResult{}, err
+	}
+	hadCopy := false
+	for _, r := range recs {
+		if r.Path == path {
+			hadCopy = r.CopyPath != ""
+			break
+		}
+	}
+	if err := engine.ResolveConflict(h.ctx(), path, mode, removeCopy); err != nil {
+		return ipc.ResolveResult{}, err
+	}
+	return ipc.ResolveResult{CopyRemoved: removeCopy && hadCopy}, nil
 }
 
 // RestoreDeleted re-downloads a tombstoned path via the transport when

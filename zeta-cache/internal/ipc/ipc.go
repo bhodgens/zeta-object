@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // Protocol version carried by every message.
@@ -66,9 +67,20 @@ type Tombstone struct {
 	ExpiresAt int64  `json:"expiresAt"` // unix seconds (DeletedAt + retention)
 }
 
-// PinData is the payload of the pins response.
+// PinData is the payload of the pins response. The constructor below is
+// the ONLY way to build one for the wire: a nil slice would serialize as
+// `"pins":null`, which the macOS Swift decoder cannot represent (arrays
+// must be non-null) - it always emits at least [].
 type PinData struct {
 	Pins []string `json:"pins"`
+}
+
+// newPinData normalizes nil to an empty slice (Swift-safe wire shape).
+func newPinData(pins []string) PinData {
+	if pins == nil {
+		pins = []string{}
+	}
+	return PinData{Pins: pins}
 }
 
 // Response is the wire shape of every IPC response.
@@ -104,14 +116,6 @@ type Handler interface {
 	Tombstones() ([]Tombstone, error)
 }
 
-// DeletedLister is the additive capability behind deleted.list (the
-// tombstones LIST already exists via Handler; the GUI's recently-deleted
-// view uses deleted.list so the request names match the response shape).
-type DeletedLister interface {
-	// DeletedPaths lists the tombstoned rows (path + deletion window).
-	DeletedPaths() ([]Tombstone, error)
-}
-
 // StatusSource supplies the live status values for the status response.
 // Implementations must be safe for concurrent use and must not block on
 // the network.
@@ -119,6 +123,12 @@ type StatusSource interface {
 	// IPCStatus returns the current values.
 	IPCStatus() StatusData
 }
+
+// idleReadDeadline bounds how long ONE connection may sit silent before
+// the server closes it. Generous (a GUI client round-trip is
+// milliseconds) but finite; the deadline is a safety net - Stop
+// force-closes tracked connections itself, so it always returns promptly.
+const idleReadDeadline = 5 * time.Minute
 
 // Server is a running IPC listener. Stop closes it and removes the socket
 // file.
@@ -129,6 +139,8 @@ type Server struct {
 	status     StatusSource
 	handler    Handler
 	wg         *sync.WaitGroup
+	connsMu    sync.Mutex
+	conns      map[net.Conn]struct{} // live connections, closed by Stop
 }
 
 // ReplaceHandler swaps the status source and handler on the LIVE listener:
@@ -180,7 +192,8 @@ func ServeWithHandler(socketPath string, serverURL, bucket string, status Status
 		_ = ln.Close()
 		return nil, fmt.Errorf("ipc: chmod %s: %w", socketPath, err)
 	}
-	srv := &Server{ln: ln, socketPath: socketPath, status: status, handler: handler}
+	srv := &Server{ln: ln, socketPath: socketPath, status: status, handler: handler,
+		conns: map[net.Conn]struct{}{}}
 	var wg sync.WaitGroup
 	srv.wg = &wg
 	wg.Go(func() {
@@ -189,22 +202,43 @@ func ServeWithHandler(socketPath string, serverURL, bucket string, status Status
 			if err != nil {
 				return // listener closed: Stop was called
 			}
-			// Read status/handler under the server mutex: main.go's
-			// two-phase startup swaps in the full GUI handler on this
-			// live listener (ReplaceHandler) without socket teardown.
-			srv.mu.Lock()
-			st, h := srv.status, srv.handler
-			srv.mu.Unlock()
-			handleConn(conn, serverURL, bucket, st, h)
+			// ONE GOROUTINE PER CONNECTION: a client that connects
+			// and never sends must not block Accept, and Stop must
+			// never wedge behind it (main.go stops the IPC server
+			// BEFORE the bounded-flush unmount). Conns are tracked
+			// so Stop can force-close them, and the generous idle
+			// read deadline bounds even a silent client.
+			srv.trackConn(conn)
+			wg.Go(func() {
+				defer srv.untrackConn(conn)
+				srv.mu.Lock()
+				st, h := srv.status, srv.handler
+				srv.mu.Unlock()
+				handleConn(conn, serverURL, bucket, st, h)
+			})
 		}
 	})
 	return srv, nil
 }
 
-// wg tracks the accept loop so Stop waits for in-flight connections to
-// finish their response write instead of cutting them mid-write. (The
-// WaitGroup is populated in Serve; Stop's close happens-before the
-// Accept error return, so a concurrent Stop never misses the loop.)
+// trackConn/untrackConn maintain the live-connection set Stop force-closes.
+func (s *Server) trackConn(conn net.Conn) {
+	s.connsMu.Lock()
+	s.conns[conn] = struct{}{}
+	s.connsMu.Unlock()
+}
+
+func (s *Server) untrackConn(conn net.Conn) {
+	s.connsMu.Lock()
+	delete(s.conns, conn)
+	s.connsMu.Unlock()
+}
+
+// wg tracks the accept loop AND every per-connection goroutine, so Stop
+// waits for in-flight connections to finish their response write instead
+// of cutting them mid-write. (The WaitGroup is populated in Serve; Stop's
+// close happens-before the Accept error return, so a concurrent Stop
+// never misses the loop.)
 
 // Stop closes the listener and removes the socket file. Safe to call more
 // than once. In-flight connections are closed with the listener, which is
@@ -212,6 +246,20 @@ func ServeWithHandler(socketPath string, serverURL, bucket string, status Status
 // their socket instead of getting answers from a half-closed daemon.
 func (s *Server) Stop() {
 	_ = s.ln.Close()
+	// Force-close live connections: a client that connected and never
+	// sent would otherwise hold its goroutine in a blocking read, and
+	// Stop (main.go calls it BEFORE the bounded-flush unmount) must
+	// return within a bounded time.
+	s.connsMu.Lock()
+	for conn := range s.conns {
+		// Best-effort close during teardown: a failure here means the
+		// peer already reset the socket, which is the state Stop wants.
+		if err := conn.Close(); err != nil {
+			log.Printf("ipc: stop closing conn: %v", err)
+		}
+	}
+	s.conns = map[net.Conn]struct{}{}
+	s.connsMu.Unlock()
 	if s.wg != nil {
 		s.wg.Wait()
 	}
@@ -219,6 +267,14 @@ func (s *Server) Stop() {
 }
 
 func handleConn(conn net.Conn, serverURL, bucket string, status StatusSource, handler Handler) {
+	// The idle deadline bounds a connect-and-never-send client; every
+	// read below refreshes it. 5 minutes is far beyond any real client
+	// round-trip, so this only ever fires on wedged/stale connections.
+	// A failure means the deadline could not be armed; the per-read
+	// refresh below surfaces it where it matters.
+	if err := conn.SetReadDeadline(time.Now().Add(idleReadDeadline)); err != nil {
+		log.Printf("ipc: arming idle deadline: %v", err)
+	}
 	defer conn.Close()
 	dec := json.NewDecoder(conn)
 	var req Request
@@ -283,7 +339,7 @@ func handleConn(conn net.Conn, serverURL, bucket string, status StatusSource, ha
 			writeResponse(conn, Response{V: Version, OK: false, Error: err.Error()})
 			return
 		}
-		writeResponse(conn, Response{V: Version, OK: true, Extra: PinData{Pins: pins}})
+		writeResponse(conn, Response{V: Version, OK: true, Extra: newPinData(pins)})
 	case "pins":
 		if handler == nil {
 			writeResponse(conn, Response{V: Version, OK: false, Error: "not supported: no scheduler handler"})
@@ -294,7 +350,7 @@ func handleConn(conn net.Conn, serverURL, bucket string, status StatusSource, ha
 			writeResponse(conn, Response{V: Version, OK: false, Error: err.Error()})
 			return
 		}
-		writeResponse(conn, Response{V: Version, OK: true, Extra: PinData{Pins: pins}})
+		writeResponse(conn, Response{V: Version, OK: true, Extra: newPinData(pins)})
 	case "tombstones":
 		if handler == nil {
 			writeResponse(conn, Response{V: Version, OK: false, Error: "not supported: no scheduler handler"})
@@ -349,11 +405,14 @@ func handleLeaf08(req Request, handler Handler) Response {
 		if req.Path == "" || !resolveModeValid(req.Mode) {
 			return Response{V: Version, OK: false, Error: "conflicts.resolve requires path and mode (keep-local|keep-remote)"}
 		}
-		if err := resolver.ResolveConflict(req.Path, req.Mode, req.Confirm); err != nil {
+		res, err := resolver.ResolveConflict(req.Path, req.Mode, req.Confirm)
+		if err != nil {
 			return Response{V: Version, OK: false, Error: err.Error()}
 		}
+		// copyRemoved is the FACT (did a conflicted-copy file get
+		// removed), never an echo of the request's confirm flag.
 		return Response{V: Version, OK: true, Extra: ResolveData{
-			Path: req.Path, Mode: req.Mode, CopyRemoved: req.Confirm,
+			Path: req.Path, Mode: req.Mode, CopyRemoved: res.CopyRemoved,
 		}}
 	case "deleted.list":
 		tombs, err := resolver.DeletedPaths()
