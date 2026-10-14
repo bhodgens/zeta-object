@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -51,7 +52,23 @@ func main() {
 	}
 	log.Printf("zeta-cache: starting %s (bucket %s at %s)", Version, cfg.Bucket, cfg.ServerURL)
 
-	db, err := index.Open(cfg.IndexDB)
+	// W2-M6: sweep staging/ BEFORE the mount - a crash mid-hydrate
+	// leaves unbounded staging bytes invisible to quota, and at start
+	// no write handles exist yet, so every staging file is orphaned.
+	if n, b, serr := sweepStagingAtStart(cfg.CacheDir); serr != nil {
+		log.Printf("zeta-cache: WARNING staging sweep: %v", serr)
+	} else if n > 0 {
+		log.Printf("zeta-cache: staging sweep reclaimed %d file(s), %d bytes", n, b)
+	}
+
+	// W2-M2: wire the REAL disk probe. Rule R2 ("journalled clean +
+	// hydrated but the file is gone from disk -> demote") is
+	// production-dead with a nil probe: nil means "treat every path as
+	// present" (the H1 sentinel semantics - keep it, tests rely on
+	// it), so a hydrated file deleted behind the daemon stayed
+	// hydrated=1 forever and quota summed phantom bytes. The probe
+	// stats the same path the FUSE layer's cachePath builds.
+	db, err := index.OpenWithDiskCheck(cfg.IndexDB, cacheDiskProbe(cfg.CacheDir))
 	if err != nil {
 		log.Fatalf("zeta-cache: %v", err)
 	}
@@ -242,6 +259,27 @@ func main() {
 	}
 	log.Printf("zeta-cache: shutdown complete")
 	// exit 0
+}
+
+// cacheDiskProbe returns the reconcile disk probe over cacheDir: does
+// files/<path> exist as a FILE right now? Same layout fusefs's cachePath
+// builds (files/<key>, slash keys). Directories (dir mirrors) do not
+// count: only hydrated file rows are reconciled. Never nil at runtime -
+// a nil probe means "skip the disk column" and leaves rule R2 dead.
+func cacheDiskProbe(cacheDir string) func(path string) bool {
+	return func(path string) bool {
+		fi, err := os.Stat(filepath.Join(cacheDir, "files", filepath.FromSlash(path)))
+		return err == nil && !fi.IsDir()
+	}
+}
+
+// sweepStagingAtStart reclaims staging/ bytes a crash mid-hydrate left
+// behind (W2-M6). At daemon start NO write handles exist yet, so every
+// staging file is by definition orphaned - remove all of them, before
+// the mount's first Create can stage anything. Returns the count and
+// bytes reclaimed (logged by the caller).
+func sweepStagingAtStart(cacheDir string) (int, int64, error) {
+	return fusefs.SweepStaging(cacheDir)
 }
 
 // mountBucket wires the FUSE layer to the index + the REAL transport

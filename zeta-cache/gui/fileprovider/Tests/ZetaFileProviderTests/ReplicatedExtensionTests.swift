@@ -300,6 +300,127 @@ final class ReplicatedExtensionTests: XCTestCase {
         wait(for: [exp], timeout: 5)
     }
 
+    /// W2-M11, move-only half: a .parentItemIdentifier-only change (the
+    /// Finder drag shape) must issue ONE move whose destination is the NEW
+    /// parent + the UNCHANGED filename, and the returned item must be the
+    /// item at the FINAL key (the old key is a tombstone after the move -
+    /// an item lookup on it would fail against the real daemon).
+    func testModifyItemParentOnlyChangeMovesToNewFolder() throws {
+        server.respond(to: "move", with: #"{"v":1,"ok":true,"extra":{"from":"docs/a.txt","to":"archive/a.txt"}}"#)
+        server.respond(to: "item", with:
+            ##"{"v":1,"ok":true,"extra":{"item":{"name":"a.txt","key":"archive/a.txt","isDir":false,"size":11,"mtime":1728211200,"materialized":true,"dirty":false,"cachePath":"files/archive/a.txt"}}}"##)
+
+        // The item's identity is the OLD key (publicKey is what the
+        // extension moves FROM); the modify's item already carries the NEW
+        // parent (the dir-identifier shape production emits: "archive/")
+        // - NSFileProviderReplicatedExtension modify semantics, same as
+        // the existing rename pins.
+        let item = FileProviderItem(entry: entry(name: "a.txt", key: "docs/a.txt"), parentKey: "archive/")
+        let exp = expectation(description: "move-only")
+        _ = ext.modifyItem(
+            item,
+            baseVersion: NSFileProviderItemVersion(contentVersion: Data("v1".utf8), metadataVersion: Data("v1".utf8)),
+            changedFields: [.parentItemIdentifier],
+            contents: nil, options: [], request: NSFileProviderRequest()) { modified, _, _, error in
+                XCTAssertNil(error)
+                XCTAssertEqual(modified?.itemIdentifier.rawValue, "archive/a.txt")
+                XCTAssertEqual(modified?.filename, "a.txt")
+                exp.fulfill()
+            }
+        wait(for: [exp], timeout: 5)
+
+        // ONE move, old key -> new-parent/filename. No rename happened, so
+        // the leaf component must be identical on both sides.
+        let moves = server.requests.filter { $0.type == "move" }
+        XCTAssertEqual(moves.count, 1)
+        XCTAssertEqual(moves.first?.path, "docs/a.txt")
+        XCTAssertEqual(moves.first?.to, "archive/a.txt")
+        // The returned item is looked up at the FINAL key only.
+        XCTAssertEqual(server.requests.filter { $0.type == "item" }.map { $0.path }, ["archive/a.txt"])
+    }
+
+    /// W2-M11, rename+move half: a modify that changes BOTH the filename
+    /// and the parent must land at the fully-new key with exactly ONE move
+    /// - two chained moves would strand a second tombstone at the
+    /// intermediate key for the sync to push as a spurious remote DELETE.
+    func testModifyItemRenameAndMoveIsOneMoveToTheFinalKey() throws {
+        server.respond(to: "move", with: #"{"v":1,"ok":true,"extra":{"from":"docs/old.txt","to":"archive/new.txt"}}"#)
+        server.respond(to: "item", with:
+            ##"{"v":1,"ok":true,"extra":{"item":{"name":"new.txt","key":"archive/new.txt","isDir":false,"size":11,"mtime":1728211200,"materialized":true,"dirty":false,"cachePath":"files/archive/new.txt"}}}"##)
+
+        let item = FileProviderItem(entry: entry(name: "new.txt", key: "docs/old.txt"), parentKey: "archive/")
+
+        let exp = expectation(description: "rename+move")
+        _ = ext.modifyItem(
+            item,
+            baseVersion: NSFileProviderItemVersion(contentVersion: Data("v1".utf8), metadataVersion: Data("v1".utf8)),
+            changedFields: [.filename, .parentItemIdentifier],
+            contents: nil, options: [], request: NSFileProviderRequest()) { modified, _, _, error in
+                XCTAssertNil(error)
+                XCTAssertEqual(modified?.itemIdentifier.rawValue, "archive/new.txt")
+                exp.fulfill()
+            }
+        wait(for: [exp], timeout: 5)
+
+        let moves = server.requests.filter { $0.type == "move" }
+        XCTAssertEqual(moves.count, 1, "rename+move in one modify must be ONE IPC move")
+        XCTAssertEqual(moves.first?.path, "docs/old.txt")
+        XCTAssertEqual(moves.first?.to, "archive/new.txt")
+        XCTAssertEqual(server.requests.filter { $0.type == "item" }.map { $0.path }, ["archive/new.txt"])
+    }
+
+    // MARK: - deleteItem (W2-M12: folders)
+
+    /// W2-M12: deleting a NON-EMPTY folder cannot use one FILE-shaped
+    /// delete - the daemon's normalizePath strips the trailing slash and
+    /// its Delete is one os.Remove + one tombstone (ENOTEMPTY on the
+    /// non-empty mirror dir; children's index rows would survive and the
+    /// sync would push them back). The convention: the extension recurses
+    /// itself - enumerate the folder, delete each child first (dirs
+    /// depth-first), then the folder's own trailing-slash key. Pinned via
+    /// the stub recorder: enumerate + a delete per descendant, then the
+    /// dir delete LAST (the trailing-slash key proves the dir-row shape).
+    func testDeleteItemFolderWithContentsDeletesChildrenFirstThenDir() throws {
+        // Enumerate pass 1 (folder's direct children): one file + one subdir.
+        let fileEntry = ##"{"name":"a.txt","key":"docs/a.txt","isDir":false,"size":5,"mtime":1728211200,"materialized":true,"dirty":false,"cachePath":"files/docs/a.txt"}"##
+        let subEntry = ##"{"name":"sub","key":"docs/sub/","isDir":true,"size":0,"mtime":0,"materialized":false,"dirty":false,"cachePath":""}"##
+        server.respond(
+            to: "enumerate",
+            with: #"{"v":1,"ok":true,"extra":{"entries":["# + fileEntry + "," + subEntry + "]}}")
+        // Enumerate pass 2 (the now-empty subdir): nothing left.
+        server.respond(to: "enumerate", with: #"{"v":1,"ok":true,"extra":{"entries":[]}}"#)
+        server.respond(to: "delete", with: #"{"v":1,"ok":true,"extra":{"path":"x"}}"#)
+
+        let exp = expectation(description: "delete-folder")
+        _ = ext.deleteItem(identifier: NSFileProviderItemIdentifier("docs/"), baseVersion: NSFileProviderItemVersion(contentVersion: Data("v1".utf8), metadataVersion: Data("v1".utf8)), options: [], request: NSFileProviderRequest()) { error in
+            XCTAssertNil(error)
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 5)
+
+        let deletes = server.requests.filter { $0.type == "delete" }
+        // Every descendant before the folder itself (depth-first, in
+        // enumerate order), the folder's own key LAST in trailing-slash
+        // dir shape.
+        XCTAssertEqual(deletes.map { $0.path }, ["docs/a.txt", "docs/sub/", "docs/"])
+        XCTAssertEqual(server.requests.filter { $0.type == "enumerate" }.count, 2)
+    }
+
+    /// W2-M12: a FILE delete must stay one-shot - no enumeration for a
+    /// file-shaped key.
+    func testDeleteItemFileKeyDoesNotEnumerate() throws {
+        server.respond(to: "delete", with: #"{"v":1,"ok":true,"extra":{"path":"doc.txt"}}"#)
+
+        let exp = expectation(description: "delete-file")
+        _ = ext.deleteItem(identifier: NSFileProviderItemIdentifier("doc.txt"), baseVersion: NSFileProviderItemVersion(contentVersion: Data("v1".utf8), metadataVersion: Data("v1".utf8)), options: [], request: NSFileProviderRequest()) { error in
+            XCTAssertNil(error)
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 5)
+        XCTAssertTrue(server.requests.filter { $0.type == "enumerate" }.isEmpty)
+        XCTAssertEqual(server.requests.filter { $0.type == "delete" }.map { $0.path }, ["doc.txt"])
+    }
+
     // MARK: - invalidate
 
     func testInvalidateIsANoOpThatDoesNotThrow() {

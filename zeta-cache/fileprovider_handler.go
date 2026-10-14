@@ -18,6 +18,7 @@ import (
 
 	"github.com/bhodgens/zeta-object/zeta-cache/internal/index"
 	"github.com/bhodgens/zeta-object/zeta-cache/internal/ipc"
+	zsync "github.com/bhodgens/zeta-object/zeta-cache/internal/sync"
 )
 
 var _ ipc.FileProviderSource = (*guiHandler)(nil)
@@ -177,6 +178,14 @@ func (h *guiHandler) Download(ctx context.Context, path string) (ipc.ItemEntry, 
 		return ipc.ItemEntry{}, fmt.Errorf("download %s: staging: %w", path, err)
 	}
 	if err := engine.SyncOnce(ctx); err != nil {
+		// W2-M4: a coalesced pass is NOT a server-down event. The
+		// Swift mapper sends connectivity-shaped strings to
+		// .serverUnreachable (domain-wide retry forever); "sync in
+		// progress" describes the real state (one pass already
+		// running covers the same index) and stays a per-item error.
+		if errors.Is(err, zsync.ErrSyncInProgress) {
+			return ipc.ItemEntry{}, fmt.Errorf("download %s: sync in progress", path)
+		}
 		return ipc.ItemEntry{}, fmt.Errorf("download %s: sync: %w", path, err)
 	}
 	row, err = h.db.Get(h.ctx(), path)

@@ -24,6 +24,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	stdlog "log"
 	"sync"
@@ -182,6 +183,13 @@ func (s *Scheduler) runPromptUpload(ctx context.Context) {
 // runSync wraps runSyncLoop with status callbacks.
 func (s *Scheduler) runSync(ctx context.Context) {
 	runSyncLoop(ctx, s.engine, s.clock, s.paused.Load, s.loopWake(1), func(err error) {
+		// W2-M4: a coalesced pass (ErrSyncInProgress) is benign -
+		// the live pass covers the same index. It must not surface
+		// as the status's lastError (GUI noise; the pass that IS
+		// running owns the real state).
+		if err != nil && errors.Is(err, zsync.ErrSyncInProgress) {
+			return
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if err != nil {

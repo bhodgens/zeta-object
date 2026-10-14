@@ -8,7 +8,7 @@ import Foundation
 
 final class StubIPCServer {
     let path: String
-    private var responses: [String: String] = [:] // request type -> raw JSON
+    private var responses: [String: [String]] = [:] // request type -> canned JSON queue
     /// Every request the stub accepted, in order, as (type, path, to).
     /// Lets a test PIN the exact path the extension sent (e.g. that mark
     /// never carries a double slash or a directory key, and that a move's
@@ -58,11 +58,15 @@ final class StubIPCServer {
 
     deinit { stop() }
 
-    /// Registers the raw JSON response the stub answers for a type.
+    /// Registers the raw JSON response the stub answers for a type. A
+    /// second registration for the SAME type QUEUES (the W2-M12 folder
+    /// delete enumerates twice: once for the folder, once per subdir) -
+    /// responses are consumed in registration order, and the last one
+    /// repeats when the queue drains.
     func respond(to type: String, with json: String) {
         stateLock.lock()
         defer { stateLock.unlock() }
-        responses[type] = json
+        responses[type, default: []].append(json)
     }
 
     /// The requests accepted so far (type, path, to), oldest first.
@@ -82,6 +86,19 @@ final class StubIPCServer {
         try? FileManager.default.removeItem(atPath: path)
     }
 
+    /// The response for the next request of this type: the queue's head
+    /// (consumed) while more than one is pending, the last one forever
+    /// after - the classic single-canned-response behavior is unchanged.
+    private func currentResponse(_ type: String) -> String? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard var queue = responses[type], !queue.isEmpty else { return nil }
+        let resp = queue.removeFirst()
+        if queue.isEmpty { queue.append(resp) } // drain-then-stick
+        responses[type] = queue
+        return resp
+    }
+
     private func acceptLoop() {
         while !stopped {
             let conn = accept(serverFD, nil, nil)
@@ -91,7 +108,7 @@ final class StubIPCServer {
             guard let line, let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let type = obj["type"] as? String,
-                  let resp = responses[type] else {
+                  let resp = currentResponse(type) else {
                 _ = writeAll(conn, Data("{\"v\":1,\"ok\":false,\"error\":\"stub: no canned response\"}\n".utf8))
                 continue
             }

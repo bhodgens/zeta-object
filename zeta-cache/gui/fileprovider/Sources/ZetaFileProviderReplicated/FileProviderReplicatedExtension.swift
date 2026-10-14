@@ -137,16 +137,28 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
         Task {
             do {
                 var key = (item as? FileProviderItem)?.publicKey ?? item.itemIdentifier.rawValue
-                // Rename/move first when the name changed, then content.
-                if changedFields.contains(.filename) {
+                // Rename/move first when the name OR the parent changed
+                // (W2-M11: a Finder drag to another folder arrives as a
+                // .parentItemIdentifier-only change - ignoring it left the
+                // file in the old folder forever), then content. A move and
+                // a rename in ONE modify is ONE move to the fully-new key:
+                // the daemon's Move re-points the row in a single step, and
+                // two chained moves would strand a tombstone at the
+                // intermediate key for the sync to push as a remote DELETE.
+                if changedFields.contains(.filename) || changedFields.contains(.parentItemIdentifier) {
                     let parentKey = parentKeyForChild(item.parentItemIdentifier.rawValue)
-                    let newKey = parentKey.isEmpty ? item.filename : parentKey + "/" + item.filename
-                    try mount.move(key, to: newKey)
-                    // H7: after the index re-point the OLD key is a
-                    // tombstone - the content write and mark must target
-                    // the NEW key or they strand bytes / resurrect the
-                    // tombstone.
-                    key = newKey
+                    var newKey = parentKey.isEmpty ? item.filename : parentKey + "/" + item.filename
+                    // Dir keys keep their trailing slash (the daemon's dir
+                    // convention; enumerate/item emit it).
+                    if key.hasSuffix("/") && !newKey.hasSuffix("/") { newKey += "/" }
+                    if newKey != key {
+                        try mount.move(key, to: newKey)
+                        // H7: after the index re-point the OLD key is a
+                        // tombstone - the content write and mark must target
+                        // the NEW key or they strand bytes / resurrect the
+                        // tombstone.
+                        key = newKey
+                    }
                 }
                 if let newContents {
                     let dst = try mount.cacheURLCreatingParents(ofKey: key)
@@ -171,7 +183,21 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
         let progress = Progress(totalUnitCount: 100)
         Task {
             do {
-                try mount.delete(identifier.rawValue)
+                let key = identifier.rawValue
+                if key.hasSuffix("/") {
+                    // W2-M12: a FOLDER delete. The daemon's wire layer
+                    // normalizes every path (normalizePath strips the
+                    // trailing slash) and its Delete handler is FILE-shaped:
+                    // one os.Remove + one tombstone row. os.Remove on the
+                    // non-empty mirror dir fails ENOTEMPTY, and even for an
+                    // empty one a single tombstoned FILE-shaped key never
+                    // removes the children's index rows, so the sync would
+                    // push them straight back. So: recursive delete HERE -
+                    // children first (deepest first via recursion), then the
+                    // dir itself, then the un-indexed local mirror leftovers.
+                    try Self.deleteFolder(key, mount: mount)
+                }
+                try mount.delete(key)
                 progress.completedUnitCount = 100
                 completionHandler(nil)
             } catch {
@@ -180,6 +206,30 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
             }
         }
         return progress
+    }
+
+    // MARK: - W2-M12 recursive folder delete
+
+    /// Deletes the folder at dirKey (trailing slash) via the FILE-shaped
+    /// IPC delete: every descendant first (depth-first, so a daemon whose
+    /// Delete unlinks the mirror dir never sees a non-empty one), then the
+    /// folder's own trailing-slash key - the daemon's normalizePath keeps
+    /// the leaf slash, so the tombstone row is the dir row exactly.
+    /// Finally the LOCAL mirror tree (index rows the enumerate collapse
+    /// rule never surfaced, e.g. an empty local-only subdir) is removed
+    /// best-effort: the index owns the truth, the mirror is just cache.
+    static func deleteFolder(_ dirKey: String, mount: FileProviderMount) throws {
+        for child in try mount.enumerate(dirKey: dirKey) {
+            if child.isDir {
+                try deleteFolder(child.key, mount: mount)
+            }
+            try mount.delete(child.key)
+        }
+        // Best-effort local cleanup of the mirror tree under files/<dir>.
+        // The daemon's own Delete already unlinked the (by now empty) dir
+        // itself; this sweeps anything the index never knew about.
+        let mirror = mount.cacheURL(ofKey: String(dirKey.dropLast()))
+        try? FileManager.default.removeItem(at: mirror)
     }
 }
 

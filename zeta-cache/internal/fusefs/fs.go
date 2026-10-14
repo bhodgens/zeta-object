@@ -756,7 +756,12 @@ func (h *fileHandle) Write(_ context.Context, data []byte, off int64) (uint32, s
 		if err != nil {
 			return 0, errnoToErrno(err)
 		}
-		out, err := os.OpenFile(staging, os.O_WRONLY, 0o600)
+		// W2-M5: the staging generation is opened O_RDWR, not
+		// O_WRONLY - a write on a direct handle re-routes to staging,
+		// and a subsequent Read through the SAME handle must serve
+		// the staged bytes (ReadAt on an O_WRONLY fd fails with EBADF
+		// -> EIO).
+		out, err := os.OpenFile(staging, os.O_RDWR, 0o600)
 		if err != nil {
 			return 0, syscall.EIO
 		}

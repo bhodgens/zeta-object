@@ -8,8 +8,11 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"math/rand/v2"
 	"time"
+
+	zsync "github.com/bhodgens/zeta-object/zeta-cache/internal/sync"
 )
 
 // runSyncLoop drives the sync cadence until ctx is cancelled. paused is
@@ -63,6 +66,13 @@ func runSyncLoop(
 		}
 		if onState != nil {
 			onState(err)
+		}
+		if err != nil && errors.Is(err, zsync.ErrSyncInProgress) {
+			// W2-M4: a coalesced skip is BENIGN - the live pass covers
+			// the same index. No backoff increment, no failure count;
+			// retry after one short interval.
+			nextIn = syncInProgressRetry
+			continue
 		}
 		if err != nil {
 			failures++

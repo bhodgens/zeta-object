@@ -338,6 +338,36 @@ func (f *FS) stagingCount() int {
 	return n
 }
 
+// SweepStaging removes every file under <cacheDir>/staging and reports
+// how many entries and bytes it reclaimed (W2-M6). The ONLY honest
+// caller is daemon start: no write handles exist yet, so every staging
+// file is orphaned by construction (a crash mid-hydrate/mid-write left
+// it; nothing references it). A missing staging dir is not an error -
+// the sweep just reclaimed nothing.
+func SweepStaging(cacheDir string) (removed int, bytes int64, err error) {
+	entries, rerr := os.ReadDir(filepath.Join(cacheDir, "staging"))
+	if rerr != nil {
+		if os.IsNotExist(rerr) {
+			return 0, 0, nil
+		}
+		return 0, 0, fmt.Errorf("fusefs: sweep staging: %w", rerr)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue // staging holds only flat files; leave dirs alone
+		}
+		if fi, serr := e.Info(); serr == nil {
+			bytes += fi.Size()
+		}
+		if rmErr := os.Remove(filepath.Join(cacheDir, "staging", e.Name())); rmErr != nil {
+			err = fmt.Errorf("fusefs: sweep staging %s: %w", e.Name(), rmErr)
+			continue // best-effort: keep sweeping the rest
+		}
+		removed++
+	}
+	return removed, bytes, nil
+}
+
 // listDirEntries serves a directory listing for the mount: the union of
 // remote siblings (transport Propfind) and local-only dirty files,
 // reserved names filtered. Sorted by name; deterministic (go-fuse

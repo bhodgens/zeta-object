@@ -83,6 +83,25 @@ func newPinData(pins []string) PinData {
 	return PinData{Pins: pins}
 }
 
+// normalizeTombs normalizes a nil tombstone slice to an empty one for
+// the wire (W2-M10: the Swift decoder discards a response whose arrays
+// are null - the m27 rule, extended to every response slice).
+func normalizeTombs(tombs []Tombstone) []Tombstone {
+	if tombs == nil {
+		return []Tombstone{}
+	}
+	return tombs
+}
+
+// normalizeConflicts normalizes a nil conflict slice to an empty one
+// for the wire (W2-M10, same rule as normalizeTombs).
+func normalizeConflicts(items []ConflictItem) []ConflictItem {
+	if items == nil {
+		return []ConflictItem{}
+	}
+	return items
+}
+
 // Response is the wire shape of every IPC response.
 type Response struct {
 	V     int         `json:"v"`
@@ -391,7 +410,7 @@ func handleConn(conn net.Conn, serverURL, bucket string, status StatusSource, ha
 			writeResponse(conn, Response{V: Version, OK: false, Error: err.Error()})
 			return
 		}
-		writeResponse(conn, Response{V: Version, OK: true, Extra: TombstoneData{Tombstones: tombs}})
+		writeResponse(conn, Response{V: Version, OK: true, Extra: TombstoneData{Tombstones: normalizeTombs(tombs)}})
 	default:
 		// Leaf-08 types dispatch through the additive ConflictResolver
 		// capability: a handler that does not implement it (and no
@@ -430,7 +449,7 @@ func handleLeaf08(req Request, handler Handler) Response {
 		if err != nil {
 			return Response{V: Version, OK: false, Error: err.Error()}
 		}
-		return Response{V: Version, OK: true, Extra: ConflictData{Conflicts: items}}
+		return Response{V: Version, OK: true, Extra: ConflictData{Conflicts: normalizeConflicts(items)}}
 	case "conflicts.resolve":
 		if req.Path == "" || !resolveModeValid(req.Mode) {
 			return Response{V: Version, OK: false, Error: "conflicts.resolve requires path and mode (keep-local|keep-remote)"}
@@ -449,7 +468,7 @@ func handleLeaf08(req Request, handler Handler) Response {
 		if err != nil {
 			return Response{V: Version, OK: false, Error: err.Error()}
 		}
-		return Response{V: Version, OK: true, Extra: TombstoneData{Tombstones: tombs}}
+		return Response{V: Version, OK: true, Extra: TombstoneData{Tombstones: normalizeTombs(tombs)}}
 	case "deleted.restore":
 		if req.Path == "" {
 			return Response{V: Version, OK: false, Error: "deleted.restore requires path"}

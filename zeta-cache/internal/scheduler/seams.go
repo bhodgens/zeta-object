@@ -35,4 +35,10 @@ const (
 	backoffCap    = time.Hour
 	jitterFrac    = 0.25 // +[0,25%) jitter
 	nightlyPeriod = 24 * time.Hour
+	// syncInProgressRetry is the retry delay after a BENIGN
+	// ErrSyncInProgress skip (W2-M4): another pass is already live and
+	// covers the same index, so this is not a failure - no backoff
+	// increment, no failure count, no error state. The loop re-checks
+	// after one short interval instead of growing toward the 1h cap.
+	syncInProgressRetry = time.Minute
 )
