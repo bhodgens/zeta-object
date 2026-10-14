@@ -273,6 +273,25 @@ func opForMethod(r *http.Request, bucket, key string) auth.Op {
 	}
 }
 
+// conflictingBatchParams rejects the ?delete&batch combination (bughunt F1):
+// no legitimate client sends both, and the pair was an authz/dispatch
+// precedence mismatch (batch authorized OpWrite, delete dispatched first).
+// Returns true when the error response has been written.
+func conflictingBatchParams(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != "POST" {
+		return false
+	}
+	_, hasDelete := r.URL.Query()["delete"]
+	_, hasBatch := r.URL.Query()["batch"]
+	if hasDelete && hasBatch {
+		writeS3Error(w, "InvalidArgument",
+			"Conflicting query parameters: ?delete and ?batch cannot be combined.",
+			http.StatusBadRequest)
+		return true
+	}
+	return false
+}
+
 // serviceLevelDispatch routes service-level (no bucket) requests.
 // ListBuckets filters to the identity's granted buckets when the identity
 // is not wildcard — a scoped identity sees only what it may read.
@@ -361,15 +380,8 @@ func (f *Frontend) bucketLevelDispatch(w http.ResponseWriter, r *http.Request, b
 	// params. Reject the combination 400 InvalidArgument BEFORE either
 	// handler runs; plain ?delete (OpDelete) and plain ?batch (OpWrite)
 	// keep their pinned M13 classifications.
-	if r.Method == "POST" {
-		_, hasDelete := r.URL.Query()["delete"]
-		_, hasBatch := r.URL.Query()["batch"]
-		if hasDelete && hasBatch {
-			writeS3Error(w, "InvalidArgument",
-				"Conflicting query parameters: ?delete and ?batch cannot be combined.",
-				http.StatusBadRequest)
-			return
-		}
+	if conflictingBatchParams(w, r) {
+		return
 	}
 	if _, ok := r.URL.Query()["delete"]; ok && r.Method == "POST" {
 		deleteObjectsHandler(w, r, bucketName)
