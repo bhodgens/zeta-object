@@ -125,7 +125,10 @@ func watchAll(root string) (<-chan fsnotify.Event, func(), error) {
 // a create/delete/recreate cycle of the same dir cannot stack duplicate
 // recursive watchers (each claim would otherwise hold fsnotify fds and a
 // fan-in goroutine until shutdown). claim atomically takes the root
-// (false = already watched); release returns it after a failed watchAll.
+// (false = already watched); release returns it after a failed watchAll
+// AND when the directory is deleted (fsnotify Remove / Rename-away): a
+// recreated dir must be re-watchable, and its watcher is dead anyway
+// (the watched inode is gone). activeCount/rootsOf are test seams.
 type subtreeWatchers struct {
 	mu    sync.Mutex
 	roots map[string]bool
@@ -216,15 +219,32 @@ func runWatcher(
 	// (nil when fsnotify is unavailable) plus any subtrees added at
 	// runtime, funneled through one fan-in goroutine. The loop always
 	// selects on it; the poll timer below is the no-watcher heartbeat.
+	// LOW (undrained mergeCh): when the loop exits (ctx done) nobody
+	// drains mergeCh, so every fan-in goroutine blocks forever on its
+	// forward send. mergeDone is closed on BOTH paths out (loop return
+	// and root-watch close), and the forwarders select on it - they
+	// drop the event once the loop is gone.
 	mergeCh := make(chan fsnotify.Event, 256)
 	mergeDone := make(chan struct{})
+	done := func() {
+		select {
+		case <-mergeDone:
+		default:
+			close(mergeDone)
+		}
+	}
+	defer done()
 	go func() {
-		defer close(mergeDone)
+		defer done()
 		if events == nil {
 			return
 		}
 		for ev := range events {
-			mergeCh <- ev
+			select {
+			case mergeCh <- ev:
+			case <-mergeDone:
+				return
+			}
 		}
 	}()
 	pending := map[string]bool{}
@@ -246,11 +266,16 @@ func runWatcher(
 	// until shutdown). The root watch itself still covers the whole
 	// tree, so skipping an already-covered root loses no events.
 	subs := newSubtreeWatchers()
+	// watchSub is the seam for subtree adds (the same injection point as
+	// the root watch: production passes watchAll for both; tests count
+	// registrations). Guarded against recursion - the seam must not hand
+	// back the root feed channel.
+	watchSub := w.watchDir
 	addSubtree := func(root string) {
 		if !subs.claim(root) {
 			return
 		}
-		sub, stopSub, err := watchAll(root)
+		sub, stopSub, err := watchSub(root)
 		if err != nil {
 			subs.release(root)
 			return
@@ -292,7 +317,26 @@ func runWatcher(
 					// walk: fold its subtree into the watch (poll
 					// alone would miss writes under it for up to a
 					// full poll cycle - the watch keeps it tight).
+					// R6 residual: addSubtree re-claims the root -
+					// if the dir was deleted and recreated, the
+					// delete released the claim, so the recreated
+					// dir gets its (fresh) watcher instead of being
+					// skipped for the life of the mount.
 					addSubtree(ev.Name)
+				}
+			}
+			if ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+				if _, err := os.Stat(ev.Name); err != nil && os.IsNotExist(err) {
+					// Directory deletion (Remove, or the rename-away
+					// half of a move): the subtree watcher over that
+					// inode is dead - its fan-in goroutine sees the
+					// watch close. Release the claim so a recreated
+					// directory is watched again (a stale claim here
+					// is exactly the gap the 30s poll was papering
+					// over). Rename-away only when the name is truly
+					// gone: a rename WITHIN the tree fires Rename on
+					// the old name but the dir still exists.
+					subs.release(ev.Name)
 				}
 			}
 			key := keyOf(w.cacheDir, ev.Name)

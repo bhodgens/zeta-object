@@ -417,18 +417,17 @@ func (c *Client) do(ctx context.Context, method, key string, body io.Reader, con
 	}
 	// L37-adjacent safety: without GetBody an h3 dial-class fallback
 	// would re-drive the request with an already-consumed body reader.
+	// GetBody ONLY: net/http replays it itself (TCP retry on a reused
+	// connection) and never closes the caller's handle. The d8a04d3
+	// Close/re-seek dance that used to live here was the W2-H1
+	// regression: for a *os.File body req.Body IS the caller's file,
+	// so closing it killed every real upload ("file already closed").
 	if rs, ok := body.(io.ReadSeeker); ok && body != nil {
-		getBody := func() (io.ReadCloser, error) {
+		req.GetBody = func() (io.ReadCloser, error) {
 			if _, err := rs.Seek(0, io.SeekStart); err != nil {
 				return nil, err
 			}
 			return io.NopCloser(rs), nil
-		}
-		req.GetBody = getBody
-		if err := req.Body.Close(); err == nil {
-			if b, berr := getBody(); berr == nil {
-				req.Body = b
-			}
 		}
 	}
 	for k, v := range hdr {
@@ -516,10 +515,11 @@ func (c *Client) Put(ctx context.Context, key string, body io.ReadSeeker, etag s
 	return c.PutOpts(ctx, key, body, etag, etag == "")
 }
 
-// PutOpts is Put with explicit control over the create precondition
-// (ifNoneStar forces If-None-Match:* regardless of ifMatch; the sync
-// engine's matrix-8 upload uses Put(ctx, key, body, "") which resolves
-// to the same thing). size < 0 means "seek to measure".
+// PutOpts is Put with explicit control over the create precondition.
+// ifNoneStar WINS: it forces If-None-Match:* even when ifMatch is
+// non-empty (the sync engine's matrix-8 upload uses Put(ctx, key, body,
+// "") which resolves to the same thing).
+// size < 0 means "seek to measure".
 func (c *Client) PutOpts(ctx context.Context, key string, body io.ReadSeeker, ifMatch string, ifNoneStar bool) (string, error) {
 	size, err := body.Seek(0, io.SeekEnd)
 	if err != nil {
@@ -530,16 +530,18 @@ func (c *Client) PutOpts(ctx context.Context, key string, body io.ReadSeeker, if
 	}
 	hdr := map[string]string{"Content-Type": "application/octet-stream"}
 	switch {
+	case ifNoneStar:
+		// Explicit create-only wins over If-Match (documented
+		// contract): If-None-Match:* alone - an existing object
+		// answers 412, mapped to ErrConflict.
+		hdr["If-None-Match"] = "*"
 	case ifMatch != "":
 		hdr["If-Match"] = quoteETag(ifMatch)
 	default:
-		// Empty etag (or explicit ifNoneStar): create-only. The sync
-		// engine's matrix-8 upload EXPECTS the 412 on a lost create
-		// race; an unconditional overwrite is never sent blind.
+		// Empty etag: create-only. The sync engine's matrix-8 upload
+		// EXPECTS the 412 on a lost create race; an unconditional
+		// overwrite is never sent blind.
 		hdr["If-None-Match"] = "*"
-		if ifNoneStar && ifMatch != "" {
-			delete(hdr, "If-Match")
-		}
 	}
 	resp, err := c.do(ctx, http.MethodPut, key, body, size, hdr)
 	if err != nil {

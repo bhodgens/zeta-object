@@ -495,21 +495,43 @@ func TestCursorFeedCursorPersistsAcrossRestart(t *testing.T) {
 }
 
 // TestCursorFeedUnCursoredPageFallsBackToScan: events without ids can
-// never be resumed from — permanent scan-only, no cursor planted.
+// never be resumed from — permanent scan-only, no cursor planted. The
+// guard under test (cursor.go's "un-cursored page" branch) only runs
+// AFTER a cursor exists - on a fresh store the first-contact branch
+// returns earlier, so this test must establish a cursor first.
 func TestCursorFeedUnCursoredPageFallsBackToScan(t *testing.T) {
-	src := &stubEvents{pages: []transport.EventHistory{{
-		Events: []transport.Event{{ID: 0, Op: "create", Key: "a"}},
+	src := &stubEvents{pages: []transport.EventHistory{{ //nolint:dupl // mirror of the first-contact test, different branch
+		Dataset: "tank",
+		Events: []transport.Event{
+			{ID: 1, Op: "create", Key: "seed.txt"},
+		},
 	}}}
 	f, st := newTestCursorFeed(t, src)
-	paths, full, err := f.Delta(context.Background())
+	ctx := context.Background()
+
+	// Establish a cursor (first contact + Ack plants it at id 1).
+	if paths, full, err := deltaThenAck(ctx, f); err != nil || !full {
+		t.Fatalf("establish = (%v, %v, %v), want full scan", paths, full, err)
+	}
+	if got := mustMeta(t, st, cursorMetaKey("bkt")); got != "1" {
+		t.Fatalf("cursor = %q, want 1 before the un-cursored page", got)
+	}
+
+	// NOW serve an un-cursored page: with a live cursor, the
+	// un-cursored-page guard must answer the full scan and plant
+	// NOTHING (the pending id is 0, so Ack must not advance anything).
+	src.pages = []transport.EventHistory{{
+		Events: []transport.Event{{ID: 0, Op: "create", Key: "a"}},
+	}}
+	paths, full, err := deltaThenAck(ctx, f)
 	if err != nil {
 		t.Fatalf("Delta: %v", err)
 	}
 	if !full || paths != nil {
 		t.Fatalf("un-cursored page = (%v, %v), want full scan", paths, full)
 	}
-	if _, err := st.MetaGet(context.Background(), cursorMetaKey("bkt")); !errors.Is(err, index.ErrNotFound) {
-		t.Fatal("un-cursored page must never plant a cursor")
+	if got := mustMeta(t, st, cursorMetaKey("bkt")); got != "1" {
+		t.Fatalf("cursor meta = %q after an un-cursored page, want still 1 (no cursor advanced/planted)", got)
 	}
 }
 

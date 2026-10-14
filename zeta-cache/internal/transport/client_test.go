@@ -304,6 +304,10 @@ func TestPutContentLengthAndConditionals(t *testing.T) {
 		{"plain put (empty etag = create-only)", "", false, "", "*"},
 		{"if-match overwrite", "aabbccdd", false, `"aabbccdd"`, ""},
 		{"create (if-none-match:*)", "", true, "", "*"},
+		// LOW: ifNoneStar WINS over ifMatch - the documented contract
+		// (an explicit create-only ask forces If-None-Match:* alone;
+		// the old unreachable-guard shape never sent this header set).
+		{"if-none-star overrides if-match", "aabbccdd", true, "", "*"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &stubHandler{status: http.StatusCreated, headers: map[string]string{

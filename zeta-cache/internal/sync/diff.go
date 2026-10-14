@@ -54,6 +54,7 @@ type Report struct {
 	LocalDeletes     int // remote DELETEs issued (matrix 6)
 	ConflictCopies   int // matrix 3
 	RemoteDeleteKept int // matrix 5 (kept-dirty conflicts surfaced)
+	SkippedDeletes   int // stale tombstones kept (no recorded server generation)
 	TokenVerified    int // subtrees skipped by matching collection token
 	FullscanVerified int // subtrees actually listed
 }
@@ -122,6 +123,15 @@ func (e *Engine) diffAndApply(ctx context.Context, key string, listed *transport
 			// tombstone and counts a skip - Delete carries no
 			// precondition (M14), so this listing-vs-tombstone check
 			// IS the protection against deleting a regenerated file.
+			if row.ETag == "" {
+				// Stale tombstone: it never recorded a server
+				// generation (created + deleted before the first
+				// upload confirmed). Keep it - there is nothing we
+				// can prove the server holds, and M14's guard is
+				// the etag equality.
+				rep.SkippedDeletes++
+				return nil
+			}
 			return e.deleteRemote(ctx, key, row.ETag, rep)
 		}
 		if row.Dirty {
@@ -317,9 +327,10 @@ func (e *Engine) deleteLocal(ctx context.Context, key, reason string, rep *Repor
 // deleteRemote implements matrix 6's remote half. The etag argument is
 // passed for interface parity only - Delete enforces NO precondition on
 // the wire (M14, doc-honest contract): the caller (diffAndApply) has
-// ALREADY verified via the listing that the server still holds the
-// exact generation this tombstone recorded; that comparison is the
-// real delete precondition. Here: only the tombstone confirmation.
+// ALREADY verified via the listing (or the empty-etag skip) that the
+// server still holds the exact generation this tombstone recorded;
+// that comparison is the real delete precondition. Here: only the
+// tombstone confirmation.
 func (e *Engine) deleteRemote(ctx context.Context, key, etag string, rep *Report) error {
 	if err := e.tr.Delete(ctx, key, etag); err != nil {
 		if errors.Is(err, transport.ErrNotExist) {

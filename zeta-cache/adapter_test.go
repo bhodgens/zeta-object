@@ -87,3 +87,28 @@ func TestAdapterMarkCleanClearsDirty(t *testing.T) {
 		_ = err
 	}
 }
+
+// TestAdapterMarkDirtyPreservesETag is the R1(a) pin at the PRODUCTION
+// adapter (not the memIndex double the fusefs suite tests through): a
+// synced row's ETag must survive the dirty flip - it is the only
+// known-good If-Match a later edit upload can send. Proved RED against
+// the pre-R1 adapter (MarkDirty built a fresh row with no ETag) by
+// replaying 814d7c0^:zeta-cache/adapter.go.
+func TestAdapterMarkDirtyPreservesETag(t *testing.T) {
+	store := newAdapterTestStore(t)
+	a := newIndexAdapter(store).(indexAdapter) //nolint:forcetypeassert // test-only: concrete type carries the ctx/store fields
+
+	if err := a.MarkClean("f", "deadbeef", 9); err != nil {
+		t.Fatalf("MarkClean: %v", err)
+	}
+	if err := a.MarkDirty("f", 11, 1700000002); err != nil {
+		t.Fatalf("MarkDirty: %v", err)
+	}
+	r, err := a.store.Get(a.ctx, "f")
+	if err != nil {
+		t.Fatalf("row missing after MarkDirty: %v", err)
+	}
+	if r.ETag != "deadbeef" {
+		t.Fatalf("MarkDirty cleared the ETag: row etag = %q, want %q (KnownETag, the If-Match seam, reads this row)", r.ETag, "deadbeef")
+	}
+}

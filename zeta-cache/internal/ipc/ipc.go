@@ -161,6 +161,13 @@ type Server struct {
 	connsMu    sync.Mutex
 	conns      map[net.Conn]struct{} // live connections, closed by Stop
 	stopped    bool                  // set under connsMu before Stop's snapshot
+
+	// testTrackDelay, when set (tests only), runs in the accept loop
+	// after Accept returns and before trackConn - a deterministic hook
+	// standing in for the residual Accept->trackConn window the R2 fix
+	// closes. Production leaves it nil (one nil-check per accepted
+	// conn, no cost).
+	testTrackDelay func()
 }
 
 // ReplaceHandler swaps the status source and handler on the LIVE listener:
@@ -237,6 +244,14 @@ func ServeWithHandler(socketPath string, serverURL, bucket string, status Status
 			// the 5-min idleReadDeadline fires. Tracking here means
 			// every conn Stop force-closes is already in the set and
 			// its goroutine's deadline is already armed.
+			// Read the test hook under mu: tests may set it after
+			// Serve started this loop (data-race otherwise).
+			srv.mu.Lock()
+			hook := srv.testTrackDelay
+			srv.mu.Unlock()
+			if hook != nil {
+				hook()
+			}
 			srv.trackConn(conn)
 			if err := conn.SetReadDeadline(time.Now().Add(idleReadDeadline)); err != nil {
 				log.Printf("ipc: arming idle deadline: %v", err)

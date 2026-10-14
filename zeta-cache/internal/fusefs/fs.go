@@ -946,11 +946,15 @@ func (f *FS) renameKey(ctx context.Context, oldKey, newKey string) syscall.Errno
 			}
 		}
 	}
-	// If-Match on the destination: empty (no known clean dest) means no
+	// If-Match on the destination: empty (no known dest) means no
 	// precondition; a known dest ETag makes the server 412 on a lost
 	// race (which maps to EIO here - conflict logic is leaf 04's).
+	// LOW (wave-2): KnownETag, not CleanETag - a DIRTY dest row still
+	// carries its last uploaded generation, and CleanETag (blank for
+	// dirty rows) would send no precondition, letting the MOVE clobber
+	// the dirty row's server generation. Same seam UploadFile uses.
 	destETag := ""
-	if etag, err := f.idx.CleanETag(newKey); err == nil {
+	if etag, err := f.idx.KnownETag(newKey); err == nil {
 		destETag = etag
 	}
 	if err := f.tr.Move(ctx, oldKey, newKey, destETag); err != nil {
