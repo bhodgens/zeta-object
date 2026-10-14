@@ -12,7 +12,11 @@
 #   `make certs` (openssl -subj /CN=localhost) and committed to history —
 #   not real secrets.
 # - scripts/e2e/: e2e cases exercise auth over the wire with literal
-#   placeholder credentials (e.g. e2e18-ak-*), never real secrets.
+#   placeholder credentials (e.g. e2e18-ak-*), never real secrets. The path
+#   allowlist is NARROW (bughunt 2026-10-13 M32): only case 18, the one file
+#   that carries fake identity pairs, plus the e2e18-* token shapes below.
+#   The rest of the tree is scanned like any other code; `zetaadmin` is
+#   covered by the regex allowlist, which is path-independent by design.
 # - scripts/zfs-validate/: the ZFS validation harness uses a throwaway
 #   validation user (valuser:valpass) created and destroyed on the scratch
 #   dataset, and test object keys like S14_KEY/S15_KEY that trip
@@ -38,7 +42,17 @@ paths = [
   '''^certs/''',
   '''(^|/)example''',
   '''\.sample\.json5$''',
-  '''^scripts/e2e/''',
+  # Narrowed from the whole scripts/e2e/ tree (bughunt 2026-10-13 M32):
+  # only case 18 carries fake identity pairs; the rest of scripts/e2e is
+  # scanned like any other code (zetaadmin is covered by the regex
+  # allowlist below, which is path-independent).
+  '''^scripts/e2e/cases/18-auth-identities\.sh$''',
+  # Negative-test wrong-credential curls in the webdav/ftp cases: the
+  # strings are shell variable interpolations ("$W19_USER:WRONG"), not
+  # secrets — gitleaks' curl-auth-user flags the colon shape (surfaced when
+  # the tree-wide ^scripts/e2e/ exemption above was narrowed).
+  '''^scripts/e2e/cases/19-webdav\.sh$''',
+  '''^scripts/e2e/cases/20-ftp\.sh$''',
 ]
 # The project's documented placeholder credentials (CLAUDE.md defaults).
 regexes = [
@@ -46,7 +60,7 @@ regexes = [
   # Auth identities documentation/e2e fixtures (GH #4 placeholder pair):
   '''AKIDZETACIBOT01''',
   '''wJalrXUtnFEMIfake''',
-  '''e2e18-(ak|sk)-''',
+  '''e2e18-(env-)?(ak|sk)-''',
   # ZFS validation harness: throwaway validation user + test object keys.
   '''valuser:valpass''',
   '''S1[0-9]_KEY = ''',

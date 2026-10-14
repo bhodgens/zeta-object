@@ -123,17 +123,21 @@ bash -c "
 	ENDPOINT='$ENDPOINT'
 	BASE_URL='$BASE_URL'
 	source '$CASE_FILE'
-	echo \"\$E2E_PASS \$E2E_FAIL\" > '$WORK/.case-tally'
+	echo "\$E2E_PASS \$E2E_FAIL \${E2E_SKIP:-0}" > '$WORK/.case-tally'
 " || CASE_RC=$?
 
 # Fold the tally back. A missing tally file means the case exited before its
 # first assert (a server-did-not-start bail, say): that is a FAILURE, never a
 # pass - the same rule run-e2e.sh applies per case.
 if [ -f "$WORK/.case-tally" ]; then
-	read -r cp cf < "$WORK/.case-tally"
+	read -r cp cf cs < "$WORK/.case-tally"
+	case "$cs" in
+	'' | *[!0-9]*) cs=0 ;; # tolerate a tally without the skip field
+	esac
 else
 	cp=0
 	cf=1
+	cs=0
 	echo '(case bailed before any assert — counted as failure)'
 fi
 if [ "$CASE_RC" -ne 0 ]; then
@@ -142,11 +146,22 @@ if [ "$CASE_RC" -ne 0 ]; then
 fi
 
 echo
-printf 'case %s: %d passed, %d failed\n' "$CASE" "$cp" "$cf"
+printf 'case %s: %d passed, %d failed, %d skipped\n' "$CASE" "$cp" "$cf" "$cs"
 if [ "$cf" -ne 0 ]; then
 	echo "--- server log (tail 30) ---"
 	tail -30 "$WORK/server.log" 2>/dev/null
 	exit 1
+fi
+# Three-way verdict, mirroring run-e2e.sh (bughunt 2026-10-08, mirrored in
+# scripts/e2e/test-skip-reporting.sh): 0 asserts and 0 failures is a SKIP,
+# never a PASS - "0 asserts" verified nothing.
+if [ "$cs" -ne 0 ]; then
+	echo 'SKIP (preconditions not met on this host)'
+	exit 0
+fi
+if [ "$cp" -eq 0 ]; then
+	echo 'SKIP (0 asserts — preconditions not met on this host)'
+	exit 0
 fi
 echo 'PASS'
 exit 0

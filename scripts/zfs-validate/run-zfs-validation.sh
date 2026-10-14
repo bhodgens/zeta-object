@@ -59,7 +59,34 @@ KEEP_SERVER=0
 [[ "${1:-}" == "--keep-server" ]] && KEEP_SERVER=1
 
 WORK="$(mktemp -d /tmp/zfs-validate.XXXXXX)"
-trap 'rm -rf "$WORK"' EXIT
+
+# Teardown lives in the EXIT trap (bughunt 2026-10-13 M35): the destroy block
+# used to sit inline at the very end of the script, so any early die() (failed
+# build, a phase that would not come up) left testpool/zval AND the deployed
+# server + zmetad running on $HOST. KEEP_SERVER=1 (--keep-server) skips the
+# teardown exactly as the old inline block did — including on a FAILING run,
+# where the operator passed it precisely to inspect the dataset the failure
+# left behind. The trap does not call exit, so bash preserves the real exit
+# code.
+teardown_stack() {
+  if [[ $KEEP_SERVER -ne 0 ]]; then
+    log "Cleanup: KEEP_SERVER=1 - leaving server + $DATASET in place"
+    return 0
+  fi
+  log "Cleanup (EXIT trap): stopping server + zmetad, destroying $DATASET"
+  # A ROOT-owned phase-2 server cannot die by unprivileged pkill (its
+  # config lives in an env var, invisible to -f matching) — and a live
+  # bucket-dataset server would recreate datasets under the parent. Kill
+  # it with sudo FIRST, then stop everything else and destroy.
+  ssh -o BatchMode=yes "$HOST" "
+    sudo -n pkill -f '[.]/zeta-serve[r]' 2>/dev/null || true
+    pkill -f '[.]/zeta-serve[r]' 2>/dev/null || true
+    pkill -f 'zmeta[d].*zeta-validate' 2>/dev/null || true
+    sudo zfs destroy -r '$DATASET' 2>/dev/null || true
+    true
+  " || true
+}
+trap 'teardown_stack; rm -rf "$WORK"' EXIT
 
 log()  { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 die()  { printf 'FATAL: %s\n' "$*" >&2; exit 2; }
@@ -2892,20 +2919,11 @@ if [[ $FIX_RC -ne 0 ]]; then RC=$FIX_RC; fi
 # Previously `$RC -ne 0 ||` short-circuited and wiped the scratch dataset on
 # every failed run (bughunt 2026-10-06 Y1), contradicting the --keep-server
 # help text.
-if [[ $KEEP_SERVER -eq 0 ]]; then
-  log "Cleanup: stopping server + zmetad, destroying $DATASET"
-  # A ROOT-owned phase-2 server cannot die by unprivileged pkill (its
-  # config lives in an env var, invisible to -f matching) — and a live
-  # bucket-dataset server would recreate datasets under the parent. Kill
-  # it with sudo FIRST, then stop everything else and destroy.
-  ssh -o BatchMode=yes "$HOST" "
-    sudo -n pkill -f '[.]/zeta-serve[r]' 2>/dev/null || true
-    pkill -f '[.]/zeta-serve[r]' 2>/dev/null || true
-    pkill -f 'zmeta[d].*zeta-validate' 2>/dev/null || true
-    sudo zfs destroy -r '$DATASET' 2>/dev/null || true
-    true
-  " || true
-fi
+#
+# bughunt 2026-10-13 (M35): the stop-server + destroy block moved into the
+# EXIT trap near the top of the script, so an early die() can no longer leave
+# testpool/zval and the deployed server behind. The trap honors the same
+# KEEP_SERVER=0 gate.
 
 if [[ $RC -ne 0 ]]; then
   echo; echo "VALIDATION FAILED ($RC check(s) failed). Server log follows:"

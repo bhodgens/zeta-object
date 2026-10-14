@@ -58,11 +58,18 @@ S3_STATUS=$(curl -sk -o /tmp/e2e03-dotbody -w '%{http_code}' \
 assert_eq 'dot-key put never writes an object → bucket-level response' 409 "$S3_STATUS"
 LIST4=$(aws s3api list-objects-v2 --bucket "$BKT" \
 	--endpoint-url "$ENDPOINT" --no-verify-ssl 2>/dev/null)
+# The absence assert below is only honest if the listing itself SUCCEEDED: a
+# failed call yields an empty body, grep -c prints 0, and the assert passes
+# on the very failure it should catch (bughunt 2026-10-13 M34). A fresh
+# bucket with an object just deleted still lists the bucket-level XML, so a
+# non-empty body is proof the listing worked.
+assert_contains 'listing before absence assert succeeded (dot key)' "$LIST4" 'Bucket'
 assert_eq 'no stray dot object after dot-key put' 0 \
 	"$(printf '%s' "$LIST4" | grep -c 'Key' || true)"
 rm -f /tmp/e2e03-dotbody
 LIST3=$(aws s3api list-objects-v2 --bucket "$BKT" \
 	--endpoint-url "$ENDPOINT" --no-verify-ssl 2>/dev/null)
+assert_contains 'listing before absence assert succeeded (spaced key)' "$LIST3" 'Bucket'
 assert_eq 'spaced key gone after encoded delete' 0 "$(printf '%s' "$LIST3" | grep -c 'hello' || true)"
 
 rm -f "$TMP"

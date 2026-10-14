@@ -57,15 +57,30 @@ trap 'rm -f "$probe" "$harness"' EXIT
 } > "$harness"
 
 missing=""
+list_checked=0
 for pkg in $(go list ./...); do
+	list_checked=$((list_checked + 1))
 	out=$(PKG="$pkg" bash "$harness" 2>/dev/null | head -1)
 	case "$out" in
 		FLOOR=) missing="$missing $pkg" ;;
 		FLOOR=unset) missing="$missing $pkg" ;;
 	esac
 done
+# A vacuous `go list ./...` (broken toolchain, wrong cwd, sandbox) must not
+# let check 1 pass by comparing nothing - the same honesty rule section 6
+# applies to the mirror count (mir_checked >= 20). Derive the floor from the
+# workflow's own case count, not a hardcoded package number: the two sides
+# must at least be compared against each other.
+wf_floors=$(printf '%s\n' "$CASE_BLOCK" | grep -cE '\) +FLOOR=[0-9]+')
+if [ "$list_checked" -eq 0 ]; then
+	bad "go list ./... returned NO packages - the comparison ran on nothing (broken toolchain?)"
+elif [ "$list_checked" -lt "$wf_floors" ]; then
+	bad "go list ./... returned only $list_checked package(s) but the workflow has $wf_floors floor cases - the comparison ran on a fragment"
+else
+	:
+fi
 if [ -z "$missing" ]; then
-	ok "every package in go list ./... has a FLOOR case"
+	ok "every package in go list ./... has a FLOOR case ($list_checked packages checked)"
 else
 	bad "packages with NO floor case (gated at 0):$missing"
 fi

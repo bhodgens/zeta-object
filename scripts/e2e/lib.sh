@@ -58,7 +58,12 @@ s3req() {
 	local method=$1 path=$2
 	shift 2
 	local body_file
-	body_file=$(mktemp /tmp/e2e-s3req.XXXXXX)
+	# Namespaced under /tmp/zetaobject-e2e.* so e2e-cleanup.sh's sweeper can
+	# backstop it if a crash (SIGKILL, CI timeout) fires before the rm below
+	# (bughunt 2026-10-13 M33). /tmp/e2e-s3req.* was OUTSIDE the sweeper's
+	# globs and leaked on every interrupted run. rm -f here is still the
+	# primary cleanup; the sweeper is the backstop only.
+	body_file=$(mktemp /tmp/zetaobject-e2e.s3req.XXXXXX)
 	S3_STATUS=$(curl -sk -o "$body_file" -w '%{http_code}' \
 		--aws-sigv4 "aws:amz:us-east-1:s3" \
 		--user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" \

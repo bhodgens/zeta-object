@@ -67,6 +67,12 @@ UID2=$(aws s3api create-multipart-upload --bucket "$BKT" --key 'aborted.bin' \
 aws_ok 'abort multipart upload' s3api abort-multipart-upload --bucket "$BKT" \
 	--key 'aborted.bin' --upload-id "$UID2"
 LMU2=$(aws s3api list-multipart-uploads --bucket "$BKT" --endpoint-url "$ENDPOINT" --no-verify-ssl 2>/dev/null)
+# Absence is only meaningful if the listing itself SUCCEEDED: a failed call
+# returns an empty body and grep -c 'Upload' prints 0, so the assert below
+# would pass on the failure it exists to catch (bughunt 2026-10-13 M34).
+# ListMultipartUploads always emits an <ListMultipartUploadsResult> element,
+# even with zero uploads - its presence proves the call worked.
+assert_contains 'multipart listing succeeded (abort-absence precondition)' "$LMU2" 'ListMultipartUploadsResult'
 assert_eq 'aborted upload gone from ListMultipartUploads' '0' "$(printf '%s' "$LMU2" | grep -c Upload || true)"
 
 # --- in-flight multipart blocks bucket delete (409 BucketNotEmpty) -----------

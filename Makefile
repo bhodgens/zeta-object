@@ -33,7 +33,7 @@ GO_TOOLS_MISSING :=
 .PHONY: help build run admin-server certs data_dir clean \
         test test-verbose test-race test-shuffle test-shuffle-quick test-cover test-cover-enforce fuzz bench \
         lint vet fmt fmt-check mod-tidy mod-tidy-check mod-verify \
-        precommit check vuln secrets e2e hooks zeta-cache
+        precommit check vuln secrets e2e hooks zeta-cache zeta-cache-test
 
 help:
 	@echo "Usage: make [target]"
@@ -121,6 +121,18 @@ zeta-cache:
 	@echo "Building $(ZETA_CACHE_BIN) (CGO_ENABLED=0)..."
 	@cd zeta-cache && CGO_ENABLED=0 go build -o ../$(ZETA_CACHE_BIN) .
 	@echo "$(ZETA_CACHE_BIN) built successfully."
+
+# zeta-cache tests (bughunt 2026-10-13 H12): the module had build + lint
+# gates in CI but NO test gate anywhere - a red test in zeta-cache could
+# never turn a green run red. CGO banned repo-wide (modernc.org/sqlite), so
+# the suite must also prove it builds without cgo. `check` runs the race
+# gate; `precommit` runs the plain suite (race roughly doubles the runtime
+# and precommit is the fast per-commit gate).
+zeta-cache-test:
+	@cd zeta-cache && CGO_ENABLED=0 go test -count=1 ./...
+
+zeta-cache-test-race:
+	@cd zeta-cache && CGO_ENABLED=0 go test -count=1 -race ./...
 
 clean:
 	@echo "Cleaning up..."
@@ -227,21 +239,41 @@ mod-verify:
 	@go mod verify
 
 # Fast gate: what every commit should pass.
-precommit: build vet fmt-check lint test test-cover-enforce parity-test mod-tidy-check e2e-report-test ci-floor-test
+# zeta-cache-test is here (not the race variant): precommit is the fast
+# per-commit gate and -race roughly doubles the module's suite runtime; the
+# race gate for the module runs in `check` and in CI (bughunt 2026-10-13 H12).
+precommit: build vet fmt-check lint test test-cover-enforce parity-test mod-tidy-check e2e-report-test ci-floor-test zeta-cache-test
 	@echo ""
 	@echo "precommit gate passed."
 
 # S3 parity gate: the canonical S3 metadata surface must be identical for
 # plain-FS and provider-attached buckets (metadata TestParity* suite), and
 # objectmodel snapshot/header parity must hold (objectmodel parity suite).
+#
+# bughunt 2026-10-13 (M30): `go test -run PATTERN` that matches NO test exits
+# 0, so a rename that orphaned every parity test would turn this gate green
+# forever. Each invocation first counts matched tests via `go test -list` and
+# fails when zero matched.
 parity-test: ## Run the S3 parity gates: metadata (FS vs provider-enabled) and objectmodel header parity
+	@n=$$(go test ./internal/metadata/ -list 'TestParity' | grep -c '^Test'); \
+	if [ "$$n" -eq 0 ]; then \
+		echo "FAIL: no test matches 'TestParity' in internal/metadata - the parity gate is gating nothing"; \
+		exit 1; \
+	fi; \
+	echo "parity: $$n TestParity test(s) matched in internal/metadata"; \
 	go test ./internal/metadata/ -run 'TestParity' -count=1 -v
+	@n=$$(go test ./internal/objectmodel/ -list 'TestSnapshotHeaders|TestAssertHeaderParity' | grep -c '^Test'); \
+	if [ "$$n" -eq 0 ]; then \
+		echo "FAIL: no test matches 'TestSnapshotHeaders|TestAssertHeaderParity' in internal/objectmodel - the parity gate is gating nothing"; \
+		exit 1; \
+	fi; \
+	echo "parity: $$n parity test(s) matched in internal/objectmodel"; \
 	go test ./internal/objectmodel/ -run 'TestSnapshotHeaders|TestAssertHeaderParity' -count=1 -v
 
 # Full local gate: what a push should pass.
-check: precommit test-race test-shuffle vuln secrets
+check: precommit test-race test-shuffle vuln secrets zeta-cache-test-race
 	@echo ""
-	@echo "check gate passed (build, vet, fmt, lint, test, tidy, race, vuln, secrets)."
+	@echo "check gate passed (build, vet, fmt, lint, test, tidy, race, vuln, secrets, zeta-cache)."
 
 # Fail CLOSED when the scanner is missing (bughunt 2026-10-06 G1): a green
 # `make check` with zero vulnerability scanning is worse than a red one. Set

@@ -48,7 +48,13 @@ INTEROP_SHIM_ERR=$(mktemp /tmp/e2e13-shimerr.XXXXXX)
 INTEROP_MC_SHIM="$E2E_ROOT/mc-runner.sh"
 INTEROP_EXPECT_DATA=''
 
-TMPD=$(mktemp -d)
+# TMPD holds the mc alias-set debug output. Named under the suite's swept
+# namespace (/tmp/zetaobject-e2e.*) and removed in the case's EXIT trap -
+# every mktemp FILE or DIR this case creates must be named in a trap's rm
+# (AGENTS.md cleanup rule 1; bughunt 2026-10-13 M33).
+TMPD=$(mktemp -d /tmp/zetaobject-e2e.13-mc.XXXXXX)
+cleanup_mc_tmp() { rm -rf "$TMPD"; }
+trap cleanup_mc_tmp EXIT
 MC_DEBUG=1 "$MC_BIN" alias set "$ALIAS" "$ENDPOINT" zetaadmin zetaadmin --insecure \
 	>"$TMPD/mcout.txt" 2>"$TMPD/mcerr.txt"
 ALIAS_RC=$?

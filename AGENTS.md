@@ -112,9 +112,11 @@ A case MUST leave the machine as it found it. Concretely:
    `make e2e-clean` source that file - do not re-implement the logic.
 4. Run `make e2e-clean` after a run that was interrupted, or whenever you are
    unsure. `E2E_SWEEP_MIN_AGE` (seconds, default 30) is the safety cutoff: the
-   sweeper never touches younger state and never kills a server that is still
-   LISTENING, so a concurrent `make e2e` is safe. Pass `E2E_SWEEP_MIN_AGE=0`
-   only when you know nothing else is running.
+   sweeper never touches younger state, and it only reaps a server that is
+   ORPHANED (PPID 1 — the shell that launched it is gone), so a server
+   belonging to a still-running suite has a live parent and is never killed;
+   a concurrent `make e2e` is safe. Pass `E2E_SWEEP_MIN_AGE=0` only when you
+   know nothing else is running.
 5. `run-e2e.sh` traps INT and TERM as well as EXIT, so Ctrl-C still reaps the
    server and sweeps.
 

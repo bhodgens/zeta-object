@@ -52,6 +52,23 @@ jobs:
           go vet ./...
           CGO_ENABLED=0 go build -o ../zeta-cache-bin .
 
+  # zeta-cache had build + lint gates but NO test gate anywhere (bughunt
+  # 2026-10-13 H12): the coverage matrix is generated from the ROOT module's
+  # `go list ./...`, which does not reach the zeta-cache/ module, so its
+  # `go test` never ran in CI. Same triggers as the other test jobs
+  # (push main + PR); race, matching the matrix's gate; CGO_ENABLED=0 proves
+  # the module keeps honoring the repo-wide no-cgo law.
+  zeta-cache-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: zeta-cache/go.mod
+      - name: Test zeta-cache module (count=1 + race, CGO_ENABLED=0)
+        run: cd zeta-cache && CGO_ENABLED=0 go test -count=1 -race ./...
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -210,6 +227,12 @@ jobs:
           # This module has no external dependencies, so go.sum does not
           # exist; tidy must not create one. Check whichever files exist.
           git diff --exit-code go.mod $(ls go.sum 2>/dev/null)
+      # The two honesty pins never ran in CI (bughunt 2026-10-13 L36):
+      # precommit ran them locally, but this workflow's only `make` call was
+      # `make e2e` - so a broken skip-reporting pin or floor-guard pin could
+      # not turn a green run red. Both are pure file/logic checks, no build.
+      - name: Honesty pins (e2e skip reporting + CI floor guard)
+        run: make e2e-report-test ci-floor-test
       - name: Secrets (gitleaks)
         uses: gitleaks/gitleaks-action@v2
         # gitleaks-action@v2 does not accept an 'args' input (it warns
