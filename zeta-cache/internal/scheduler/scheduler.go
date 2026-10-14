@@ -5,7 +5,11 @@ package scheduler
 // parent adds it at merge; leaf 06 owns main.go in the meantime).
 //
 // Pause/resume: Pause/Resume flip one atomic flag shared by all loops.
-// Boundaries (documented):
+// A flip also drops a token into each loop's never-closed buffered-1
+// wake channel, so a pause takes effect (or a resume starts draining)
+// without waiting out the current timer; tokens coalesce, so every loop
+// also re-checks paused() at each timer boundary. Boundaries
+// (documented):
 //   - prompt-upload: the in-flight single-file upload FINISHES (a per-file
 //     PUT is atomic - the file either stays dirty or the index is clean);
 //     further uploads hold and coalesce until Resume.
@@ -61,9 +65,10 @@ type Scheduler struct {
 	clock  Clock
 	log    Logger
 
-	paused  atomic.Bool
-	stateCh chan struct{} // closed-and-replaced on every pause-state flip
-	pauseMu sync.Mutex
+	paused atomic.Bool
+	// wakeChs are the per-loop pause-broadcast channels: created ONCE in
+	// New and NEVER closed (see wake's contract below).
+	wakeChs []chan struct{}
 
 	started atomic.Bool
 
@@ -98,7 +103,10 @@ func New(o Options) (*Scheduler, error) {
 		up:      o.Uploader,
 		clock:   clock,
 		log:     logger,
-		stateCh: make(chan struct{}),
+		wakeChs: make([]chan struct{}, numLoops),
+	}
+	for i := range s.wakeChs {
+		s.wakeChs[i] = make(chan struct{}, 1)
 	}
 	s.quota = NewQuotaEngine(o.Store, o.Config, clock, toStdLogger(logger))
 	return s, nil
@@ -119,6 +127,9 @@ func (f writerFunc) Write(p []byte) (int, error) {
 	f("%s", p)
 	return len(p), nil
 }
+
+// numLoops is the number of daemon loops (each owns a wake channel).
+const numLoops = 3
 
 // Start launches the three loops in goroutines. It is self-contained:
 // the ONLY thing main.go needs is
@@ -165,12 +176,12 @@ func (s *Scheduler) runPromptUpload(ctx context.Context) {
 			return s.engine.SyncOnce(ctx)
 		})
 	}
-	runWatcher(ctx, w, s.paused.Load, s.wakeCh())
+	runWatcher(ctx, w, s.paused.Load, s.loopWake(0))
 }
 
 // runSync wraps runSyncLoop with status callbacks.
 func (s *Scheduler) runSync(ctx context.Context) {
-	runSyncLoop(ctx, s.engine, s.clock, s.paused.Load, s.wakeCh(), func(err error) {
+	runSyncLoop(ctx, s.engine, s.clock, s.paused.Load, s.loopWake(1), func(err error) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if err != nil {
@@ -249,7 +260,7 @@ func (s *Scheduler) runEvictionLoop(ctx context.Context) {
 		quota:  s.quota,
 		log:    s.log,
 		paused: s.paused.Load,
-		wake:   s.wakeCh(),
+		wake:   s.loopWake(2),
 	})
 }
 
@@ -264,23 +275,35 @@ func (s *Scheduler) Resume() (bool, error) {
 }
 
 func (s *Scheduler) setPaused(v bool) bool {
-	s.pauseMu.Lock()
-	defer s.pauseMu.Unlock()
 	was := s.paused.Swap(v)
 	if was != v {
-		close(s.stateCh)
-		s.stateCh = make(chan struct{})
+		s.wake()
 	}
 	return v
 }
 
-// stateCh returns the CURRENT state-change channel (callers re-fetch it
-// after every wake; each channel fires exactly once per flip).
-func (s *Scheduler) wakeCh() <-chan struct{} {
-	s.pauseMu.Lock()
-	defer s.pauseMu.Unlock()
-	return s.stateCh
+// wake broadcasts a pause-state flip to every loop: each loop owns a
+// buffered-1 channel and receives a NON-BLOCKING token in it (one
+// channel per loop - a single shared channel would let the first loop
+// to wake drain the token and leave the others parked). The channels
+// are never closed (a closed channel would be permanently ready and
+// spin every select that waits on it), so loops keep theirs for their
+// whole life. A flip while a loop is not waiting leaves one pending
+// token; a loop that misses a token still recovers because it re-checks
+// paused() at each timer boundary, so a coalesced broadcast only delays
+// a transition to the next tick - never correctness.
+func (s *Scheduler) wake() {
+	for _, ch := range s.wakeChs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
+
+// loopWake returns the wake channel for loop i (Start's wiring order is
+// the contract: 0 prompt-upload, 1 sync, 2 eviction).
+func (s *Scheduler) loopWake(i int) <-chan struct{} { return s.wakeChs[i] }
 
 // Quota exposes the quota engine (IPC status wiring + pins).
 func (s *Scheduler) Quota() *QuotaEngine { return s.quota }

@@ -165,16 +165,29 @@ func runWatcher(
 	ctx context.Context,
 	w watcher,
 	paused func() bool,
-	pauseCh <-chan struct{}, // fires on every pause-state CHANGE
+	pauseCh <-chan struct{}, // receives a token on every pause-state CHANGE
 ) {
 	events, stopWatch, err := w.watchDir(filepath.Join(w.cacheDir, "files"))
 	if err != nil {
 		w.log.Printf("watch: fsnotify unavailable (%v); dirty polling every %s only", err, pollFallback)
-		events = nil
 	} else {
 		defer stopWatch()
 	}
-
+	// mergeCh is the loop's single event source: the root watch's events
+	// (nil when fsnotify is unavailable) plus any subtrees added at
+	// runtime, funneled through one fan-in goroutine. The loop always
+	// selects on it; the poll timer below is the no-watcher heartbeat.
+	mergeCh := make(chan fsnotify.Event, 256)
+	mergeDone := make(chan struct{})
+	go func() {
+		defer close(mergeDone)
+		if events == nil {
+			return
+		}
+		for ev := range events {
+			mergeCh <- ev
+		}
+	}()
 	pending := map[string]bool{}
 	var debounce <-chan time.Time
 	poll := w.clock.NewTimer(pollFallback)
@@ -185,14 +198,27 @@ func runWatcher(
 		}
 	}
 
+	// addSubtree watches a newly-created directory (the recursive watch
+	// from watchAll only covers subtrees that existed at build time) and
+	// folds its events into the same merged stream.
+	addSubtree := func(root string) {
+		sub, stopSub, err := watchAll(root)
+		if err != nil {
+			return
+		}
+		go func() {
+			defer stopSub()
+			for ev := range sub {
+				select {
+				case mergeCh <- ev:
+				case <-mergeDone:
+					return
+				}
+			}
+		}()
+	}
+
 	for {
-		var wake <-chan time.Time
-		if debounce != nil {
-			wake = debounce
-		}
-		if events == nil {
-			wake = poll // no watcher: the poll tick IS the heartbeat
-		}
 		select {
 		case <-ctx.Done():
 			// Safe boundary: drains are synchronous in this goroutine,
@@ -206,10 +232,19 @@ func runWatcher(
 				armDebounce() // resume: drain what accumulated
 			}
 
-		case ev, ok := <-events:
+		case ev, ok := <-mergeCh:
 			if !ok {
-				events = nil
+				mergeCh = nil // root watch closed; the poll timer carries on
 				continue
+			}
+			if ev.Op&fsnotify.Create != 0 {
+				if info, err := os.Stat(ev.Name); err == nil && info.IsDir() {
+					// A directory created after watchAll's initial
+					// walk: fold its subtree into the watch (poll
+					// alone would miss writes under it for up to a
+					// full poll cycle - the watch keeps it tight).
+					addSubtree(ev.Name)
+				}
 			}
 			key := keyOf(w.cacheDir, ev.Name)
 			if key == "" {
@@ -218,26 +253,33 @@ func runWatcher(
 			pending[key] = true
 			armDebounce()
 
-		case <-wake:
-			if wake == debounce {
-				debounce = nil
-			} else {
-				// Poll tick: refresh the whole dirty set (retry path
-				// for failed uploads and missed events).
-				poll = w.clock.NewTimer(pollFallback)
-				if keys, err := w.store.DirtyPaths(ctx); err == nil {
-					for _, k := range keys {
-						pending[k] = true
-					}
-				}
-				if paused() {
-					continue
+		case <-poll:
+			// Poll tick: ALWAYS armed (watcher healthy or not). It
+			// refreshes the whole dirty set - the retry path for
+			// failed uploads and the safety net for missed events
+			// and subtrees the watch never saw.
+			poll = w.clock.NewTimer(pollFallback)
+			if keys, err := w.store.DirtyPaths(ctx); err == nil {
+				for _, k := range keys {
+					pending[k] = true
 				}
 			}
 			if paused() || len(pending) == 0 {
 				continue
 			}
-			if w.drain(ctx, pending) && len(pending) > 0 {
+			if !w.drain(ctx, pending) {
+				// Cancelled mid-drain: leave re-arming to shutdown.
+				continue
+			}
+			// Events that arrived during the drain re-arm the debounce.
+			armDebounce()
+
+		case <-debounce:
+			debounce = nil
+			if paused() || len(pending) == 0 {
+				continue
+			}
+			if !w.drain(ctx, pending) {
 				// Cancelled mid-drain: leave re-arming to shutdown.
 				continue
 			}
