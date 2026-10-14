@@ -90,6 +90,17 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
                 let parentKey = parentKeyForChild(template.parentItemIdentifier.rawValue)
                 let key = parentKey.isEmpty ? template.filename : parentKey + "/" + template.filename
                 if let url {
+                    // Fix 4 (collision): an existing destination is a name
+                    // collision unless the system explicitly vouches that the
+                    // item may already exist (.mayAlreadyExist) - the old
+                    // remove+overwrite silently destroyed the previous object.
+                    let probe = mount.cacheURL(ofKey: key)
+                    if FileManager.default.fileExists(atPath: probe.path),
+                       !options.contains(.mayAlreadyExist) {
+                        progress.completedUnitCount = 100
+                        completionHandler(nil, [], false, NSFileProviderError(.filenameCollision))
+                        return
+                    }
                     // H6: bytes land at <cacheDir>/files/<key> (the daemon's
                     // data plane), parents created on demand.
                     let dst = try mount.cacheURLCreatingParents(ofKey: key)
@@ -185,17 +196,30 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
             do {
                 let key = identifier.rawValue
                 if key.hasSuffix("/") {
-                    // W2-M12: a FOLDER delete. The daemon's wire layer
-                    // normalizes every path (normalizePath strips the
-                    // trailing slash) and its Delete handler is FILE-shaped:
-                    // one os.Remove + one tombstone row. os.Remove on the
-                    // non-empty mirror dir fails ENOTEMPTY, and even for an
-                    // empty one a single tombstoned FILE-shaped key never
-                    // removes the children's index rows, so the sync would
-                    // push them straight back. So: recursive delete HERE -
-                    // children first (deepest first via recursion), then the
-                    // dir itself, then the un-indexed local mirror leftovers.
-                    try Self.deleteFolder(key, mount: mount)
+                    // W2-M12 (dir delete): the daemon's IPC surface has NO
+                    // dir-delete capability - its only "delete" op is
+                    // FILE-shaped (internal/ipc/fileprovider.go: "delete" ->
+                    // Handler.Delete -> normalizePath STRIPS the trailing
+                    // slash, then one os.Remove + one FILE tombstone row in
+                    // fileprovider_handler.go). Sending a trailing-slash dir
+                    // identifier through it drops the slash, ENOTEMPTYs on a
+                    // non-empty mirror dir, or tombstones the FILE-shaped key
+                    // and strands every child row (the sync pushes them
+                    // straight back). The missing capability is a dedicated
+                    // dir-delete IPC op (enumerate+delete-each-children from
+                    // here would race the sync and is out of scope). Until
+                    // the daemon grows it, refuse the folder delete as a
+                    // per-item, non-transient error (.cannotSynchronize) so
+                    // the OS surfaces "cannot delete" instead of corrupting
+                    // the namespace.
+                    progress.completedUnitCount = 100
+                    completionHandler(
+                        NSError(
+                            domain: NSFileProviderErrorDomain,
+                            code: Int(NSFileProviderError.cannotSynchronize.rawValue),
+                            userInfo: [NSLocalizedDescriptionKey:
+                                "folder delete is not supported: the daemon has no dir-delete IPC op"]))
+                    return
                 }
                 try mount.delete(key)
                 progress.completedUnitCount = 100
@@ -208,29 +232,14 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
         return progress
     }
 
-    // MARK: - W2-M12 recursive folder delete
+    // MARK: - W2-M12 (dir delete)
 
-    /// Deletes the folder at dirKey (trailing slash) via the FILE-shaped
-    /// IPC delete: every descendant first (depth-first, so a daemon whose
-    /// Delete unlinks the mirror dir never sees a non-empty one), then the
-    /// folder's own trailing-slash key - the daemon's normalizePath keeps
-    /// the leaf slash, so the tombstone row is the dir row exactly.
-    /// Finally the LOCAL mirror tree (index rows the enumerate collapse
-    /// rule never surfaced, e.g. an empty local-only subdir) is removed
-    /// best-effort: the index owns the truth, the mirror is just cache.
-    static func deleteFolder(_ dirKey: String, mount: FileProviderMount) throws {
-        for child in try mount.enumerate(dirKey: dirKey) {
-            if child.isDir {
-                try deleteFolder(child.key, mount: mount)
-            }
-            try mount.delete(child.key)
-        }
-        // Best-effort local cleanup of the mirror tree under files/<dir>.
-        // The daemon's own Delete already unlinked the (by now empty) dir
-        // itself; this sweeps anything the index never knew about.
-        let mirror = mount.cacheURL(ofKey: String(dirKey.dropLast()))
-        try? FileManager.default.removeItem(at: mirror)
-    }
+    /// NOT SHIPPED: a Swift-side recursive folder delete. The daemon's IPC
+    /// surface has no dir-delete op (the only "delete" is FILE-shaped:
+    /// normalizePath strips the trailing slash, then one os.Remove + one
+    /// FILE tombstone row), so deleteItem refuses a trailing-slash dir
+    /// identifier with .cannotSynchronize until the daemon grows the
+    /// dedicated dir-delete IPC capability.
 }
 
 // MARK: - key helpers

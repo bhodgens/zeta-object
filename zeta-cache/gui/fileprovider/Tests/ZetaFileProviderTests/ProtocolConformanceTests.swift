@@ -89,8 +89,17 @@ final class ProtocolConformanceTests: XCTestCase {
     }
 
     func testDehydrateFixture() throws {
+        // Fix 5: assert the payload contract, not just ok. The dehydrate
+        // response has no dedicated case - it reuses the bare-path ack
+        // (shared by restore/evict/delete; IPC.swift's decoder keys it on
+        // the REQUEST just sent), so pin the decoded path against the
+        // fixture.
         let resp = try decode("dehydrate")
         XCTAssertTrue(resp.ok)
+        guard case .delete(let ack) = resp.extra else {
+            return XCTFail("dehydrate: extra is not a bare-path ack")
+        }
+        XCTAssertEqual(ack.path, "cache/big.bin")
     }
 
     func testMarkFixture() throws {
@@ -131,6 +140,37 @@ final class ProtocolConformanceTests: XCTestCase {
         XCTAssertEqual(unknown.error, "unknown request type")
         let badVersion = try decode("bad-version")
         XCTAssertFalse(badVersion.ok)
+    }
+
+    // Fix 6: a download ack carrying "materialized" but NO "cachePath"
+    // must fail with a clean per-field decode error naming cachePath -
+    // not dataCorrupted ("unrecognized extra payload") from the envelope.
+
+    func testDownloadAckWithoutCachePathFailsCleanly() throws {
+        let json = #"{"v":1,"ok":true,"extra":{"path":"docs/a.txt","materialized":true}}"#.data(using: .utf8)!
+        do {
+            _ = try JSONDecoder().decode(IPCResponse.self, from: json)
+            XCTFail("download ack without cachePath must not decode as a download")
+        } catch let err as DecodingError {
+            switch err {
+            case .valueNotFound, .keyNotFound:
+                break // clean, per-field error naming cachePath - not dataCorrupted
+            default:
+                XCTFail("expected a clean cachePath error, got: \(err)")
+            }
+        }
+    }
+
+    // Fix 7: an old daemon's "pins": null (Go's nil slice) must decode as
+    // .pins([]), not poison the whole response.
+
+    func testNullPinsArrayDecodesAsEmpty() throws {
+        let json = #"{"v":1,"ok":true,"extra":{"pins":null}}"#.data(using: .utf8)!
+        let resp = try JSONDecoder().decode(IPCResponse.self, from: json)
+        guard case .pins(let pins) = resp.extra else {
+            return XCTFail("null pins did not decode as pins: \(String(describing: resp.extra))")
+        }
+        XCTAssertEqual(pins, [])
     }
 
     // MARK: the older shared fixtures (the copied leaf-08 types decode

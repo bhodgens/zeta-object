@@ -165,6 +165,17 @@ final class ProtocolConformanceTests: XCTestCase {
         XCTAssertFalse(raw.contains("pin"), "status must omit pin")
     }
 
+    /// Fix 7: an old daemon's "pins": null (Go's nil slice) must decode as
+    /// .pins([]), not poison the whole response.
+    func testNullPinsArrayDecodesAsEmpty() throws {
+        let json = #"{"v":1,"ok":true,"extra":{"pins":null}}"#.data(using: .utf8)!
+        let resp = try JSONDecoder().decode(IPCResponse.self, from: json)
+        guard case .pins(let pins) = resp.extra else {
+            return XCTFail("null pins did not decode as pins: \(String(describing: resp.extra))")
+        }
+        XCTAssertEqual(pins, [])
+    }
+
     /// Additive-forward-compat property: unknown fields in the envelope
     /// and status payload are ignored (v2 daemons must not break v1 GUIs).
     func testUnknownFieldsTolerated() throws {

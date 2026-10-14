@@ -184,6 +184,66 @@ final class ReplicatedExtensionTests: XCTestCase {
         XCTAssertTrue(server.requests.filter { $0.type == "mark" }.isEmpty)
     }
 
+    /// Fix 4 (collision): creating an item whose destination ALREADY exists
+    /// in the data plane is a name collision - the extension must fail with
+    /// NSFileProviderError(.filenameCollision) and issue NO mark/item IPC,
+    /// instead of silently removing+overwriting the existing object.
+    func testCreateItemOverExistingDestinationFailsWithCollision() throws {
+        // Pre-state: the destination already has bytes on the data plane.
+        try FileManager.default.createDirectory(
+            at: cacheDir.appendingPathComponent("files"), withIntermediateDirectories: true)
+        try Data("existing bytes".utf8).write(to: cacheDir.appendingPathComponent("files/doc.txt"))
+
+        let localFile = cacheDir.appendingPathComponent("upload-src.txt")
+        try Data("new bytes".utf8).write(to: localFile)
+
+        let template = ReplicatedTemplate(filename: "doc.txt", parent: .rootContainer)
+        let exp = expectation(description: "collision")
+        _ = ext.createItem(basedOn: template, fields: [.contents], contents: localFile, options: [], request: NSFileProviderRequest()) { item, _, _, error in
+            let ns = error as NSError?
+            XCTAssertNotNil(ns)
+            XCTAssertEqual(ns?.domain, NSFileProviderErrorDomain)
+            XCTAssertEqual(ns?.code, NSFileProviderError.filenameCollision.rawValue)
+            XCTAssertNil(item)
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 5)
+        // The existing object's bytes must be untouched...
+        let untouched = try Data(contentsOf: cacheDir.appendingPathComponent("files/doc.txt"))
+        XCTAssertEqual(untouched, Data("existing bytes".utf8))
+        // ...and no mark/item may have been issued (the collision short-
+        // circuits before any IPC).
+        XCTAssertTrue(server.requests.filter { $0.type == "mark" }.isEmpty)
+        XCTAssertTrue(server.requests.filter { $0.type == "item" }.isEmpty)
+    }
+
+    /// Fix 4 (collision), the mayAlreadyExist branch: the SAME situation
+    /// with the system's .mayAlreadyExist vouch must proceed through the
+    /// normal write path (copy + mark + item).
+    func testCreateItemWithMayAlreadyExistOverwrites() throws {
+        try FileManager.default.createDirectory(
+            at: cacheDir.appendingPathComponent("files"), withIntermediateDirectories: true)
+        try Data("existing bytes".utf8).write(to: cacheDir.appendingPathComponent("files/doc.txt"))
+
+        let localFile = cacheDir.appendingPathComponent("upload-src.txt")
+        try Data("new bytes".utf8).write(to: localFile)
+        server.respond(to: "mark", with: #"{"v":1,"ok":true,"extra":{"path":"doc.txt","dirty":true}}"#)
+        server.respond(to: "item", with:
+            ##"{"v":1,"ok":true,"extra":{"item":{"name":"doc.txt","key":"doc.txt","isDir":false,"size":9,"mtime":1728211200,"materialized":true,"dirty":true,"cachePath":"files/doc.txt"}}}"##)
+
+        let template = ReplicatedTemplate(filename: "doc.txt", parent: .rootContainer)
+        let exp = expectation(description: "may-already-exist")
+        _ = ext.createItem(basedOn: template, fields: [.contents], contents: localFile, options: [.mayAlreadyExist], request: NSFileProviderRequest()) { item, _, _, error in
+            XCTAssertNil(error)
+            XCTAssertEqual(item?.filename, "doc.txt")
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 5)
+        let overwritten = try Data(contentsOf: cacheDir.appendingPathComponent("files/doc.txt"))
+        XCTAssertEqual(overwritten, Data("new bytes".utf8))
+        XCTAssertEqual(server.requests.filter { $0.type == "mark" }.map { $0.path }, ["doc.txt"])
+    }
+
     // MARK: - modifyItem
 
     func testModifyItemFilenameMoveRenamesThroughIPC() throws {
@@ -371,39 +431,26 @@ final class ReplicatedExtensionTests: XCTestCase {
 
     // MARK: - deleteItem (W2-M12: folders)
 
-    /// W2-M12: deleting a NON-EMPTY folder cannot use one FILE-shaped
-    /// delete - the daemon's normalizePath strips the trailing slash and
-    /// its Delete is one os.Remove + one tombstone (ENOTEMPTY on the
-    /// non-empty mirror dir; children's index rows would survive and the
-    /// sync would push them back). The convention: the extension recurses
-    /// itself - enumerate the folder, delete each child first (dirs
-    /// depth-first), then the folder's own trailing-slash key. Pinned via
-    /// the stub recorder: enumerate + a delete per descendant, then the
-    /// dir delete LAST (the trailing-slash key proves the dir-row shape).
-    func testDeleteItemFolderWithContentsDeletesChildrenFirstThenDir() throws {
-        // Enumerate pass 1 (folder's direct children): one file + one subdir.
-        let fileEntry = ##"{"name":"a.txt","key":"docs/a.txt","isDir":false,"size":5,"mtime":1728211200,"materialized":true,"dirty":false,"cachePath":"files/docs/a.txt"}"##
-        let subEntry = ##"{"name":"sub","key":"docs/sub/","isDir":true,"size":0,"mtime":0,"materialized":false,"dirty":false,"cachePath":""}"##
-        server.respond(
-            to: "enumerate",
-            with: #"{"v":1,"ok":true,"extra":{"entries":["# + fileEntry + "," + subEntry + "]}}")
-        // Enumerate pass 2 (the now-empty subdir): nothing left.
-        server.respond(to: "enumerate", with: #"{"v":1,"ok":true,"extra":{"entries":[]}}"#)
-        server.respond(to: "delete", with: #"{"v":1,"ok":true,"extra":{"path":"x"}}"#)
-
-        let exp = expectation(description: "delete-folder")
+    /// W2-M12: deleting a FOLDER must NOT go through the file-shaped IPC
+    /// delete. The daemon has NO dir-delete capability (its only "delete"
+    /// op normalizes away the trailing slash, os.Remove's the cache path -
+    /// ENOTEMPTY on a non-empty mirror dir - and tombstones a FILE-shaped
+    /// key that strands the children's rows), so the extension refuses the
+    /// folder delete with .cannotSynchronize. Pinned: the trailing-slash
+    /// identifier produces an NSFileProviderError-domain error and ZERO IPC
+    /// traffic - no delete, no enumerate.
+    func testDeleteItemFolderIsRefusedWithoutIPC() throws {
+        let exp = expectation(description: "delete-folder-refused")
         _ = ext.deleteItem(identifier: NSFileProviderItemIdentifier("docs/"), baseVersion: NSFileProviderItemVersion(contentVersion: Data("v1".utf8), metadataVersion: Data("v1".utf8)), options: [], request: NSFileProviderRequest()) { error in
-            XCTAssertNil(error)
+            let ns = error as NSError?
+            XCTAssertNotNil(ns)
+            XCTAssertEqual(ns?.domain, NSFileProviderErrorDomain)
+            XCTAssertEqual(ns?.code, NSFileProviderError.cannotSynchronize.rawValue)
             exp.fulfill()
         }
         wait(for: [exp], timeout: 5)
-
-        let deletes = server.requests.filter { $0.type == "delete" }
-        // Every descendant before the folder itself (depth-first, in
-        // enumerate order), the folder's own key LAST in trailing-slash
-        // dir shape.
-        XCTAssertEqual(deletes.map { $0.path }, ["docs/a.txt", "docs/sub/", "docs/"])
-        XCTAssertEqual(server.requests.filter { $0.type == "enumerate" }.count, 2)
+        XCTAssertTrue(server.requests.filter { $0.type == "delete" }.isEmpty)
+        XCTAssertTrue(server.requests.filter { $0.type == "enumerate" }.isEmpty)
     }
 
     /// W2-M12: a FILE delete must stay one-shot - no enumeration for a

@@ -227,4 +227,42 @@ final class DownloadTriggerTests: XCTestCase {
         XCTAssertEqual(FileProviderItem.parentDirKey(of: "a/b.txt"), "a/")
         XCTAssertEqual(FileProviderItem.parentDirKey(of: "top.txt"), "")
     }
+
+    /// W2-H3, enumeration-level: a container holding "docs/", "docs/sub/"
+    /// and "docs/sub/f.txt" - the SUB DIR's parent must be the "docs/"
+    /// identifier (never itself, so nested folders surface in Finder) and
+    /// the file's parent must be the subdir's identifier. Uses the REAL
+    /// wire shapes: dir keys carry trailing slashes.
+    func testEnumeratedSubdirParentIsItsContainerNotItself() {
+        let sub = FileProviderItem(
+            entry: dirEntry(name: "sub", key: "docs/sub/"),
+            parentKey: FileProviderItem.parentDirKey(of: "docs/sub/"))
+        XCTAssertEqual(sub.itemIdentifier.rawValue, "docs/sub/")
+        XCTAssertEqual(sub.parentItemIdentifier.rawValue, "docs/")
+
+        let docs = FileProviderItem(
+            entry: dirEntry(name: "docs", key: "docs/"),
+            parentKey: FileProviderItem.parentDirKey(of: "docs/"))
+        XCTAssertEqual(docs.parentItemIdentifier, .rootContainer)
+
+        let f = FileProviderItem(
+            entry: fileEntry(name: "f.txt", key: "docs/sub/f.txt"),
+            parentKey: FileProviderItem.parentDirKey(of: "docs/sub/f.txt"))
+        XCTAssertEqual(f.parentItemIdentifier.rawValue, "docs/sub/")
+    }
+}
+
+/// W2-H3 test helpers: full entries in the daemon's wire shape (dirs:
+/// trailing-slash key, clean, unmaterialized, empty cachePath; files:
+/// "files/<key>" cachePath).
+private func dirEntry(name: String, key: String) -> FileProviderItemEntry {
+    FileProviderItemEntry(
+        name: name, key: key, isDir: true, size: 0, mtime: 0,
+        materialized: false, dirty: false, cachePath: "")
+}
+
+private func fileEntry(name: String, key: String) -> FileProviderItemEntry {
+    FileProviderItemEntry(
+        name: name, key: key, isDir: false, size: 5, mtime: 1_728_211_200,
+        materialized: true, dirty: false, cachePath: "files/" + key)
 }

@@ -195,7 +195,7 @@ Build and run:
 
 The app reads the socket path from `ZETA_CACHE_IPC` (defaults to
 `/tmp/zeta-cache.ipc`, the macOS default `ipcSocket`). Protocol
-conformance runs with `swift test` (11 tests over the golden fixtures).
+conformance runs with `swift test` (12 tests over the golden fixtures).
 
 Packaging note (v1): an unsigned local build is fine for personal use;
 signed/notarized distribution is future work.
@@ -245,7 +245,7 @@ Two extension implementations share the adapter:
 - **Classic** (`Sources/ZetaFileProvider`): subclasses
   `NSFileProviderExtension`. Builds with SwiftPM alone.
 
-      cd zeta-cache/gui/fileprovider && swift build    # build + swift test (31 tests over the golden fixtures)
+      cd zeta-cache/gui/fileprovider && swift build    # build + swift test (50 tests over the golden fixtures)
       pluginkit -a .build/arm64-apple-macosx/debug/ZetaFileProvider.appex   # register with FileProvider (manual)
       # restart Finder (or log out/in), then add the domain in
       # System Settings > General > Login Items (File Providers), or check Finder's sidebar
@@ -282,7 +282,7 @@ provisioning gate. Full findings + reproduce steps:
 The daemon must run at login or Finder sees a dead namespace: install the
 LaunchAgent (`gui/launchagents/com.zeta-object.zeta-cache.plist`, the
 leaf-01 copy; setup steps in the LaunchAgent section above). Conformance:
-`swift test` (31 tests) plus the case-40g IPC asserts in
+`swift test` (50 tests) plus the case-40g IPC asserts in
 `scripts/e2e/cases/40-zeta-cache.sh` (43 asserts).
 
 Distribution gate (REQUIRED for any machine other than the build machine;

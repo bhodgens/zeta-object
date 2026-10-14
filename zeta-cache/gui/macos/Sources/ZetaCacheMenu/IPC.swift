@@ -77,8 +77,16 @@ enum ExtraPayload: Decodable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        // Fix 7: an old daemon may emit "pins": null (Go's nil slice);
+        // decodeIfPresent returns nil for BOTH absent and JSON null, so a
+        // bare null previously fell through to dataCorrupted and discarded
+        // the whole response. Swallow both shapes as [].
         if let p = try c.decodeIfPresent([String].self, forKey: .pins) {
             self = .pins(p)
+            return
+        }
+        if c.contains(.pins) {
+            self = .pins([])
             return
         }
         if let t = try c.decodeIfPresent([Tombstone].self, forKey: .tombstones) {

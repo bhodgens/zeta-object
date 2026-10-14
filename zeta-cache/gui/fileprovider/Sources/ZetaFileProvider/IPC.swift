@@ -89,13 +89,21 @@ enum ExtraPayload: Decodable {
     private enum CodingKeys: String, CodingKey {
         case pins, tombstones, conflicts
         case path, mode, copyRemoved
-        case entries, item, materialized, dirty, from, to
+        case entries, item, materialized, dirty, from, to, cachePath
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        // Fix 7: an old daemon may emit "pins": null (Go's nil slice);
+        // decodeIfPresent returns nil for BOTH absent and JSON null, so a
+        // bare null previously fell through to dataCorrupted and discarded
+        // the whole response. Swallow both shapes as [].
         if let p = try c.decodeIfPresent([String].self, forKey: .pins) {
             self = .pins(p)
+            return
+        }
+        if c.contains(.pins) {
+            self = .pins([])
             return
         }
         if let t = try c.decodeIfPresent([Tombstone].self, forKey: .tombstones) {
@@ -114,7 +122,20 @@ enum ExtraPayload: Decodable {
             self = .item(ItemData(item: item))
             return
         }
-        if let dl = try c.decodeIfPresent(Bool.self, forKey: .materialized) {
+        // Fix 6: the discarded Bool probe is gone - the branch REQUIRES
+        // cachePath in the same breath, so a {"path","materialized"}
+        // payload without cachePath fails here with a clean per-field
+        // error instead of falling through to the bare-path branch (and
+        // being misclassified as a delete/restore/evict ack) or producing
+        // an envelope-level dataCorrupted.
+        if let _ = try c.decodeIfPresent(Bool.self, forKey: .materialized) {
+            guard let _ = try c.decodeIfPresent(String.self, forKey: .cachePath) else {
+                throw DecodingError.valueNotFound(
+                    String.self,
+                    .init(
+                        codingPath: decoder.codingPath + [CodingKeys.cachePath],
+                        debugDescription: "download ack missing cachePath"))
+            }
             // A flat {"path","materialized","cachePath"} download ack:
             // re-decode the whole container as DownloadAck.
             let ack = try DownloadAck(from: decoder)

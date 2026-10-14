@@ -272,9 +272,30 @@ open class FileProviderExtension: ZetaFPShim {
 
     /// DELETE: cache-file removal + tombstone via IPC delete (the sync's
     /// matrix-6 pass issues the remote DELETE).
+    ///
+    /// W2-M12: a FOLDER identifier (trailing-slash dir key) is REFUSED -
+    /// the daemon's IPC surface has no dir-delete op. Its only "delete"
+    /// is FILE-shaped (internal/ipc/fileprovider.go: "delete" ->
+    /// normalizePath STRIPS the trailing slash -> one os.Remove + one
+    /// FILE tombstone row in fileprovider_handler.go), so a dir key sent
+    /// through it deletes the wrong (file-shaped) row or ENOTEMPTYs on a
+    /// non-empty mirror dir while stranding the children's rows. The
+    /// missing capability is a dedicated dir-delete IPC op; until the
+    /// daemon grows it, fail per-item (.cannotSynchronize) instead of
+    /// corrupting the namespace.
     open override func deleteItem(withIdentifier identifier: NSFileProviderItemIdentifier, completionHandler: @escaping ((Error?) -> Void)) {
+        let key = identifier.rawValue
+        if key.hasSuffix("/") {
+            completionHandler(
+                NSError(
+                    domain: NSFileProviderErrorDomain,
+                    code: Int(NSFileProviderError.cannotSynchronize.rawValue),
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "folder delete is not supported: the daemon has no dir-delete IPC op"]))
+            return
+        }
         do {
-            _ = try mount.delete(identifier.rawValue)
+            _ = try mount.delete(key)
             completionHandler(nil)
         } catch {
             completionHandler(error)
