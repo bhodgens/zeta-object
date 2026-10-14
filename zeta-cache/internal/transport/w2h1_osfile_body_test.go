@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -50,5 +51,19 @@ func TestPutOsFileBodySurvivesRequestClose(t *testing.T) {
 	}
 	if string(got) != "hello-os-file-body" {
 		t.Fatalf("server got %q - body lost (W2-H1 confirmed)", got)
+	}
+	// The caller's handle must still be usable after the PUT: do() must
+	// never close the *os.File it was handed (the regression closed the
+	// CALLER's file, so a post-upload re-read failed "file already
+	// closed").
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("post-Put Seek on the caller's file: %v (handle was closed)", err)
+	}
+	after, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatalf("post-Put ReadAll on the caller's file: %v (handle was closed)", err)
+	}
+	if string(after) != "hello-os-file-body" {
+		t.Fatalf("post-Put file content = %q, want the original body", after)
 	}
 }
