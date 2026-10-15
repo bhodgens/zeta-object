@@ -2310,6 +2310,7 @@ DATASET = "testpool/zval"
 BUCKET_ROOT = "/testpool/zval"
 BUCKET = "zval"
 WD_PORT = int(os.environ.get("S15_WD_PORT", "9713"))
+WD_LAST_ERR = ""
 UDP_PORT = int(os.environ.get("S15_UDP_PORT", "9714"))
 PORT_S3 = int(os.environ.get("S15_S3_PORT", "9707"))
 
@@ -2337,29 +2338,45 @@ def force_collect(secs=1.8):
 # same client sections 14c/14f use. Request bodies travel as a base64-
 # decoded host temp file so arbitrary bytes survive the ssh channel.
 def wd(method, path, data=None, hdrs=None):
-    parts = ["curl", "-sS", "-k", "--max-time", "30", "-w", "%{http_code}",
+    # Unique temp files per call: shared /tmp paths cross-fed request
+    # bodies between overlapping ssh sessions (version files captured
+    # the DECOY object's bytes; issue #17). curl stderr is surfaced via
+    # WD_LAST_ERR for check diagnostics instead of being folded into
+    # the http-code parse input.
+    global WD_LAST_ERR
+    reqf = "/tmp/s15-req.%d.bin" % os.getpid()
+    bodyf = "/tmp/s15-body.%d.bin" % os.getpid()
+    WD_LAST_ERR = ""
+    parts = ["curl", "-sS", "-k", "--max-time", "120", "-w", "%{http_code}",
              "-u", "valuser:valpass"]
     if method.upper() == "HEAD":
         parts += ["--head"]
     else:
-        parts += ["-o", "/tmp/s15-body.bin", "-X", method]
+        parts += ["-o", bodyf, "-X", method]
     for h in (hdrs or []):
         parts += ["-H", h]
     if data is not None and method.upper() != "HEAD":
-        sh("echo %s | base64 -d > /tmp/s15-req.bin"
-           % base64.b64encode(data).decode())
-        parts += ["--data-binary", "@/tmp/s15-req.bin"]
+        sh("echo %s | base64 -d > %s"
+           % (base64.b64encode(data).decode(), reqf))
+        parts += ["--data-binary", "@" + reqf]
     parts += ["https://127.0.0.1:%d%s" % (WD_PORT, path)]
     out = sh(" ".join("'" + p.replace("'", "'\\''") + "'" for p in parts))
-    body = sh("cat /tmp/s15-body.bin 2>/dev/null | base64 -w0")
+    sh("rm -f %s" % reqf)
+    body = sh("cat %s 2>/dev/null | base64 -w0" % bodyf)
+    sh("rm -f %s" % bodyf)
     try:
         raw = base64.b64decode(body) if body else b""
     except Exception:
         raw = b""
-    try:
-        code = int(out.strip().splitlines()[-1])
-    except Exception:
-        code = 0
+    code = 0
+    curl_err = ""
+    for line in reversed(out.strip().splitlines()):
+        if line.startswith("HTTP=") or line.isdigit():
+            code = int(line.split("=")[-1]) if "=" in line else int(line)
+            break
+        curl_err = line
+    if code == 0 and curl_err:
+        WD_LAST_ERR = curl_err
     return code, raw
 
 def remote_bytes(path):
