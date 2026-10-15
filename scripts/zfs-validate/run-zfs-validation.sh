@@ -91,6 +91,44 @@ trap 'teardown_stack; rm -rf "$WORK"' EXIT
 log()  { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 die()  { printf 'FATAL: %s\n' "$*" >&2; exit 2; }
 
+# ------------------------------------------------------- host-busy preflight
+# The scratch dataset name and the loopback ports are FIXED, so any two
+# concurrent invocations on this host collide silently: each destroys/
+# recreates the shared testpool/zval under the other and each binds the
+# same ports. Issue #17's ghost writes were exactly this. Refuse to start
+# when a foreign stack is alive; ZVAL_FORCE=1 overrides (then you own the
+# collision). Runs before anything is deployed or destroyed.
+host_busy_output=$(ssh -o BatchMode=yes "$HOST" "
+  pgrep -af 'zeta-serve[r]' 2>/dev/null
+  pgrep -af 'zmeta[d]' 2>/dev/null
+  pgrep -af 'run-zfs-validatio[n]' 2>/dev/null
+  true
+")
+if [[ -n "$host_busy_output" && "${ZVAL_FORCE:-0}" != "1" ]]; then
+  die "host $HOST looks BUSY — another validation stack is alive:
+$host_busy_output
+Destroying $DATASET now would corrupt a concurrent run (issue #17).
+Set ZVAL_FORCE=1 to override once you have confirmed the host is yours."
+fi
+# A fresh dataset (created < 120s ago) with no visible processes means a
+# concurrent run is between phases (each phase restarts the server, so
+# 'no process now' proves nothing). Refuse on recent creation too. The
+# epoch conversion runs ON THE HOST (its GNU date, its timezone): parsing
+# the host's localized date string locally broke on TZ mismatch.
+zval_age=-1
+zval_age=$(ssh -o BatchMode=yes "$HOST" "
+  c=\$(zfs list -H -o creation '$DATASET' 2>/dev/null) || true
+  [ -n \"\$c\" ] || exit 0
+  e=\$(date -d \"\$c\" +%s 2>/dev/null) || exit 0
+  echo \$(( \$(date +%s) - e ))
+") || true
+if [[ "$zval_age" =~ ^[0-9]+$ && "$zval_age" -lt 120 && "${ZVAL_FORCE:-0}" != "1" ]]; then
+  die "dataset $DATASET was created ${zval_age}s ago — a concurrent run
+is likely between phases (its server restarts per section and is briefly
+invisible to pgrep). Set ZVAL_FORCE=1 to override."
+fi
+log "Host preflight: no busy stack, dataset age ${zval_age}s (ok)"
+
 # ---------------------------------------------------------------- build ----
 log "Building linux/amd64 server from repo HEAD ($(git -C "$REPO_ROOT" rev-parse --short HEAD))"
 BIN="$WORK/zeta-server"
