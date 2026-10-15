@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import http.client
 import json
+import os
 import sqlite3
 import ssl
 import subprocess
@@ -251,14 +252,31 @@ check("D8 replaced set visible, old value gone",
 meta = sh(f"cat '/{ZBKT_DS}/.metadata/obj.txt.meta' 2>/dev/null")
 sidecar_clean = (meta == "") or ('"tags"' not in meta)
 check("D9 sidecar carries NO tags field (zmetad owns tags)", sidecar_clean, meta[:200])
-# The tags table actually holds the row (DB ground truth).
-row = db_query(f"SELECT object_id FROM events WHERE dataset='{ZBKT_DS}' AND full_path='obj.txt' ORDER BY id DESC LIMIT 1")
-if row:
-    tags_rows = db_query(f"SELECT key, value FROM tags WHERE dataset='{ZBKT_DS}' AND object_id={row[0]['object_id']}")
-    got = sorted((t["key"], t["value"]) for t in tags_rows)
-    check("D10 tags table ground truth == wire", got == [("team", "replaced")], str(got))
+# The tags table is keyed by ZFS object id. On Linux that id is the live
+# file's st_ino. The write does not wait for zmetad to ingest the CREATE,
+# so an absent event row is poll lag, not a missing tag. If the event row
+# has arrived, its object_id must equal the inode. A mismatch means the
+# store tagged the wrong id.
+data_path = f"/{ZBKT_DS}/obj.txt"
+try:
+    ino = os.stat(data_path).st_ino
+except OSError as stat_err:
+    check("D10 tags table ground truth == wire", False, f"stat {data_path}: {stat_err}")
 else:
-    check("D10 tags table ground truth == wire", False, "no event row for obj.txt")
+    force_collect(1.5)
+    tags_rows = db_query(
+        f"SELECT key, value FROM tags WHERE dataset='{ZBKT_DS}' AND object_id={int(ino)}"
+    )
+    got = sorted((t["key"], t["value"]) for t in tags_rows)
+    ev = db_query(
+        f"SELECT object_id FROM events WHERE dataset='{ZBKT_DS}' AND full_path='obj.txt' ORDER BY id DESC LIMIT 1"
+    )
+    id_ok = (not ev) or int(ev[0]["object_id"]) == int(ino)
+    check(
+        "D10 tags table ground truth == wire",
+        got == [("team", "replaced")] and id_ok,
+        f"ino={ino} tags={got} event={ev!s}",
+    )
 # CLEAR
 s, h, b = sign("DELETE", "/ztags-bucket/obj.txt", query="tagging")
 check("D11 DELETE ?tagging -> 204", s == 204, f"{s} {b[:120]}")
