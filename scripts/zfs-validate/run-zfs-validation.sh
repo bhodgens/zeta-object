@@ -2363,30 +2363,65 @@ def force_collect(secs=1.8):
 # webdav over the loopback TCP listener, driven by curl ON the host — the
 # same client sections 14c/14f use. Request bodies travel as a base64-
 # decoded host temp file so arbitrary bytes survive the ssh channel.
-def wd(method, path, data=None, hdrs=None):
-    parts = ["curl", "-sS", "-k", "--max-time", "30", "-w", "%{http_code}",
-             "-u", "valuser:valpass"]
+#
+# Issue #17: all wd() calls used to share /tmp/s15-body.bin. When a call
+# failed (curl abort, server gone), the file still held the PREVIOUS
+# call's body and the check asserted against stale bytes; curl's stderr
+# (folded into sh()'s stdout+stderr concatenation) was parsed as the
+# status code, failed, and was thrown away — so every failure looked
+# identically opaque ("status=0", stale body). Now: one temp file pair
+# per call, removed after the read; curl's stderr surfaced through
+# wd_diag(); the call duration measured so a --max-time abort is
+# distinguishable from a refused connection.
+_wd_seq = [0]
+_wd_info = {"err": "", "dur": -1.0, "max_time": 0}
+
+def wd_diag():
+    """One-line diagnostic for the MOST RECENT wd() call — empty when the
+    call parsed a real HTTP status (nothing to add to a check message)."""
+    if _wd_info["err"]:
+        return " curl[%ds,%.1fs]: %s" % (_wd_info["max_time"], _wd_info["dur"],
+                                         _wd_info["err"])
+    return ""
+
+def wd(method, path, data=None, hdrs=None, max_time=30):
+    _wd_seq[0] += 1
+    bfile = "/tmp/s15-body-%d.bin" % _wd_seq[0]
+    rfile = "/tmp/s15-req-%d.bin" % _wd_seq[0]
+    _wd_info["max_time"] = max_time
+    parts = ["curl", "-sS", "-k", "--max-time", str(max_time),
+             "-w", "%{http_code}", "-u", "valuser:valpass"]
     if method.upper() == "HEAD":
         parts += ["--head"]
     else:
-        parts += ["-o", "/tmp/s15-body.bin", "-X", method]
+        parts += ["-o", bfile, "-X", method]
     for h in (hdrs or []):
         parts += ["-H", h]
     if data is not None and method.upper() != "HEAD":
-        sh("echo %s | base64 -d > /tmp/s15-req.bin"
-           % base64.b64encode(data).decode())
-        parts += ["--data-binary", "@/tmp/s15-req.bin"]
+        sh("echo %s | base64 -d > %s"
+           % (base64.b64encode(data).decode(), rfile))
+        parts += ["--data-binary", "@" + rfile]
     parts += ["https://127.0.0.1:%d%s" % (WD_PORT, path)]
-    out = sh(" ".join("'" + p.replace("'", "'\\''") + "'" for p in parts))
-    body = sh("cat /tmp/s15-body.bin 2>/dev/null | base64 -w0")
+    # The ssh-side timeout must always outlive curl's own --max-time or
+    # the ssh channel, not curl, becomes the abort point.
+    t0 = time.time()
+    out = sh(" ".join("'" + p.replace("'", "'\\''") + "'" for p in parts),
+             timeout=max_time + 60)
+    _wd_info["dur"] = time.time() - t0
+    try:
+        code = int(out.strip().splitlines()[-1])
+        _wd_info["err"] = ""
+    except Exception:
+        # No trailing integer: curl aborted before writing %{http_code}.
+        # out IS curl's stderr (sh() folds it) — keep it, never drop it.
+        code = 0
+        _wd_info["err"] = out.strip()[:200]
+    body = sh("cat %s 2>/dev/null | base64 -w0; rm -f %s %s"
+              % (bfile, bfile, rfile))
     try:
         raw = base64.b64decode(body) if body else b""
     except Exception:
         raw = b""
-    try:
-        code = int(out.strip().splitlines()[-1])
-    except Exception:
-        code = 0
     return code, raw
 
 def remote_bytes(path):
@@ -2558,10 +2593,10 @@ if s15_ents:
 # helper sections 3/8/14e use) — the provider window is the oldest-N rows,
 # so on a dataset that is only this section's traffic the key is inside it.
 force_collect(2.0)
-vx_code, vx_body = wd("GET", "/?events&versions&max-events=1000")
+vx_code, vx_body = wd("GET", "/?events&versions&max-events=1000", max_time=90)
 check("s15 ?events&versions over WEBDAV -> 200 ext XML",
       vx_code == 200 and b"ListObjectVersionsExt" in vx_body,
-      f"status={vx_code} {vx_body[:200]!r}")
+      f"status={vx_code}{wd_diag()} {vx_body[:200]!r}")
 ext_ents = ext_versions_for(vx_body, S15_KEY) if vx_code == 200 else []
 check("s15 webdav ?events&versions shows the WEBDAV-written key's history",
       len(ext_ents) >= 2,
@@ -2596,7 +2631,7 @@ check("s15 webdav DELETE suppressed the plain delete (data file survives)",
 # THE ce7594a assertion: GET over webdav must be 404 with NO object bytes.
 get_code, get_body = wd("GET", "/" + S15_DEL)
 check("s15 webdav GET after DELETE -> 404 (delete marker hides the bytes)",
-      get_code == 404, f"status={get_code}")
+      get_code == 404, f"status={get_code}{wd_diag()}")
 check("s15 webdav GET after DELETE returns ZERO object bytes "
       "(only the RFC 4918 error document)",
       b"s15-del-v" not in get_body, f"body={get_body[:120]!r}")
@@ -2606,7 +2641,7 @@ check("s15 webdav HEAD after DELETE -> 404 too", head_code == 404,
 rng_code, rng_body = wd("GET", "/" + S15_DEL, hdrs=["Range: bytes=0-99"])
 check("s15 webdav Range GET after DELETE -> 404, no span leaked",
       rng_code == 404 and b"s15-del-v" not in rng_body,
-      f"status={rng_code} body={rng_body[:120]!r}")
+      f"status={rng_code}{wd_diag()} body={rng_body[:120]!r}")
 # The version history is intact and the marker is the latest entry.
 del_st, del_ents = s3_versions_for(S15_DEL)
 check("s15 ?versions shows a DELETE MARKER for the deleted key",
@@ -2871,7 +2906,7 @@ check("s15 setup decoy PUT /report -> 201/204 (webdav create)", _c in (201, 204)
 force_collect(1.5)
 coll_code, coll_body = wd("GET", "/s15-coll/nested/?events")
 check("s15 ?events on a nested webdav collection -> 200", coll_code == 200,
-      f"status={coll_code} {coll_body[:200]!r}")
+      f"status={coll_code}{wd_diag()} {coll_body[:200]!r}")
 try:
     coll_ev = json.loads(coll_body.decode("utf-8", "replace"))
 except Exception as exc:
