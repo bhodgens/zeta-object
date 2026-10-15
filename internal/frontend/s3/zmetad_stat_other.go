@@ -12,7 +12,7 @@ import (
 // Stat error so the caller can answer NoSuchKey. An existing file on
 // this OS is an error: tagging must not use a non-ZFS inode.
 func objectIDFromStat(path string) (uint64, error) {
-	if _, err := os.Stat(path); err != nil {
+	if _, err := os.Stat(path); err != nil { //nolint:gosec // G703: path is objectDataPathFor(bucket, validated key), not a request path.
 		return 0, err
 	}
 	return 0, fmt.Errorf("%w (%s)", errStatIDUnsupported, path)

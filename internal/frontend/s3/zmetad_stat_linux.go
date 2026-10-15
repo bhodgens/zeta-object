@@ -14,7 +14,7 @@ import (
 // when this fails: a just-written file has no event row yet, and a
 // renamed-away path still has a historical row.
 func objectIDFromStat(path string) (uint64, error) {
-	fi, err := os.Stat(path)
+	fi, err := os.Stat(path) //nolint:gosec // G703: path is objectDataPathFor(bucket, validated key), not a request path.
 	if err != nil {
 		return 0, err
 	}
