@@ -54,7 +54,10 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
                 completionHandler(FileProviderItem(entry: entry, parentKey: parentKeyOf(entry.key)), nil)
             } catch {
                 progress.completedUnitCount = 100
-                completionHandler(nil, error)
+                // IPCClient.Failure (socket down) is not in
+                // NSFileProviderErrorDomain, so the system retries forever.
+                // Map it; leave an error already in that domain alone.
+                completionHandler(nil, mapReplicatedIPCError(error))
             }
         }
         return progress
@@ -75,7 +78,7 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
                     nil)
             } catch {
                 progress.completedUnitCount = 100
-                completionHandler(nil, nil, error)
+                completionHandler(nil, nil, mapReplicatedIPCError(error))
             }
         }
         return progress
@@ -196,22 +199,13 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
             do {
                 let key = identifier.rawValue
                 if key.hasSuffix("/") {
-                    // W2-M12 (dir delete): the daemon's IPC surface has NO
-                    // dir-delete capability - its only "delete" op is
-                    // FILE-shaped (internal/ipc/fileprovider.go: "delete" ->
-                    // Handler.Delete -> normalizePath STRIPS the trailing
-                    // slash, then one os.Remove + one FILE tombstone row in
-                    // fileprovider_handler.go). Sending a trailing-slash dir
-                    // identifier through it drops the slash, ENOTEMPTYs on a
-                    // non-empty mirror dir, or tombstones the FILE-shaped key
-                    // and strands every child row (the sync pushes them
-                    // straight back). The missing capability is a dedicated
-                    // dir-delete IPC op (enumerate+delete-each-children from
-                    // here would race the sync and is out of scope). Until
-                    // the daemon grows it, refuse the folder delete as a
-                    // per-item, non-transient error (.cannotSynchronize) so
-                    // the OS surfaces "cannot delete" instead of corrupting
-                    // the namespace.
+                    // Dir identifiers carry a trailing slash. The daemon
+                    // refuses that shape ("folder delete is not supported")
+                    // and does not call Handler.Delete - a slash delete must
+                    // not tombstone the file-shaped key. Refuse here too, as
+                    // a per-item .cannotSynchronize, so Finder shows "cannot
+                    // delete" without a round trip. A real folder delete
+                    // needs a dedicated dir-delete IPC op.
                     progress.completedUnitCount = 100
                     completionHandler(
                         NSError(
@@ -234,12 +228,27 @@ public final class ReplicatedExtension: NSObject, NSFileProviderReplicatedExtens
 
     // MARK: - W2-M12 (dir delete)
 
-    /// NOT SHIPPED: a Swift-side recursive folder delete. The daemon's IPC
-    /// surface has no dir-delete op (the only "delete" is FILE-shaped:
-    /// normalizePath strips the trailing slash, then one os.Remove + one
-    /// FILE tombstone row), so deleteItem refuses a trailing-slash dir
-    /// identifier with .cannotSynchronize until the daemon grows the
-    /// dedicated dir-delete IPC capability.
+    /// NOT SHIPPED: a Swift-side recursive folder delete. The daemon's
+    /// delete op is file-shaped and refuses a trailing-slash identifier
+    /// ("folder delete is not supported") rather than stripping the slash
+    /// and tombstoning the file-shaped key. deleteItem refuses the same
+    /// shape with .cannotSynchronize until a dedicated dir-delete IPC op
+    /// exists.
+}
+
+/// Maps a thrown IPC failure into NSFileProviderErrorDomain. An error
+/// already in that domain is returned unchanged so a daemon "no such item"
+/// (or any other mapped refusal) is not rewritten. IPCClient.Failure is
+/// not an NSError in that domain; left raw, the system retries forever.
+func mapReplicatedIPCError(_ error: Error) -> Error {
+    let ns = error as NSError
+    if ns.domain == NSFileProviderErrorDomain {
+        return error
+    }
+    if let failure = error as? IPCClient.Failure {
+        return FileProviderErrorMapper.error(fromIPC: failure.message)
+    }
+    return error
 }
 
 // MARK: - key helpers

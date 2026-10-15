@@ -93,8 +93,18 @@ enum ExtraPayload: Decodable {
             self = .tombstones(t)
             return
         }
+        // Same null-swallow as pins: a present JSON null is [], not a
+        // discarded response (decodeIfPresent is nil for both absent and null).
+        if c.contains(.tombstones) {
+            self = .tombstones([])
+            return
+        }
         if let cf = try c.decodeIfPresent([ConflictItem].self, forKey: .conflicts) {
             self = .conflicts(cf)
+            return
+        }
+        if c.contains(.conflicts) {
+            self = .conflicts([])
             return
         }
         if let path = try c.decodeIfPresent(String.self, forKey: .path) {

@@ -176,6 +176,25 @@ final class ProtocolConformanceTests: XCTestCase {
         XCTAssertEqual(pins, [])
     }
 
+    /// M9: tombstones and conflicts null must decode as empty lists, same
+    /// as pins. A bare null used to fall through and discard the response.
+    /// (entries is a fileprovider-only payload; this copy has no entries key.)
+    func testNullTombstonesAndConflictsDecodeAsEmpty() throws {
+        let tombs = #"{"v":1,"ok":true,"extra":{"tombstones":null}}"#.data(using: .utf8)!
+        let tombResp = try JSONDecoder().decode(IPCResponse.self, from: tombs)
+        guard case .tombstones(let rows) = tombResp.extra else {
+            return XCTFail("null tombstones did not decode as tombstones: \(String(describing: tombResp.extra))")
+        }
+        XCTAssertTrue(rows.isEmpty)
+
+        let conflicts = #"{"v":1,"ok":true,"extra":{"conflicts":null}}"#.data(using: .utf8)!
+        let cfResp = try JSONDecoder().decode(IPCResponse.self, from: conflicts)
+        guard case .conflicts(let items) = cfResp.extra else {
+            return XCTFail("null conflicts did not decode as conflicts: \(String(describing: cfResp.extra))")
+        }
+        XCTAssertTrue(items.isEmpty)
+    }
+
     /// Additive-forward-compat property: unknown fields in the envelope
     /// and status payload are ignored (v2 daemons must not break v1 GUIs).
     func testUnknownFieldsTolerated() throws {

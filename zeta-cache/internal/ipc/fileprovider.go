@@ -129,6 +129,21 @@ func normalizePath(p string) string {
 	return strings.TrimSuffix(strings.TrimPrefix(p, "/"), "/")
 }
 
+// preserveDirSlash trims one leading slash and, when p ended in "/",
+// keeps exactly one trailing slash. item, move, and download must pass
+// directory identifiers through: index rows are stored as dirKey+"/"
+// (engine.go), and stripping the slash looks up the file-shaped key.
+// Unlike normalizeDirKey it does not ADD a slash to a file path.
+func preserveDirSlash(p string) string {
+	keep := strings.HasSuffix(p, "/")
+	p = strings.TrimPrefix(p, "/")
+	p = strings.TrimRight(p, "/")
+	if keep && p != "" {
+		return p + "/"
+	}
+	return p
+}
+
 // handleFileProvider serves the fileprovider-2026-10 request types against
 // the additive FileProviderSource capability. handler may be nil or lack
 // the capability; both answer the capability error.
@@ -151,7 +166,7 @@ func handleFileProvider(req Request, handler Handler) Response {
 		if req.Path == "" {
 			return Response{V: Version, OK: false, Error: "item requires path"}
 		}
-		entry, err := src.Item(normalizePath(req.Path))
+		entry, err := src.Item(preserveDirSlash(req.Path))
 		if err != nil {
 			return Response{V: Version, OK: false, Error: err.Error()}
 		}
@@ -162,7 +177,7 @@ func handleFileProvider(req Request, handler Handler) Response {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), DownloadTimeout)
 		defer cancel()
-		entry, err := src.Download(ctx, normalizePath(req.Path))
+		entry, err := src.Download(ctx, preserveDirSlash(req.Path))
 		if err != nil {
 			return Response{V: Version, OK: false, Error: err.Error()}
 		}
@@ -190,6 +205,12 @@ func handleFileProvider(req Request, handler Handler) Response {
 		if req.Path == "" {
 			return Response{V: Version, OK: false, Error: "delete requires path"}
 		}
+		// A directory identifier ends in "/". Delete is file-shaped:
+		// normalizePath would strip the slash and tombstone the file
+		// key. Refuse instead of calling Handler.Delete.
+		if strings.HasSuffix(req.Path, "/") {
+			return Response{V: Version, OK: false, Error: "folder delete is not supported"}
+		}
 		data, err := src.Delete(normalizePath(req.Path))
 		if err != nil {
 			return Response{V: Version, OK: false, Error: err.Error()}
@@ -199,7 +220,7 @@ func handleFileProvider(req Request, handler Handler) Response {
 		if req.Path == "" || req.Dest == "" {
 			return Response{V: Version, OK: false, Error: "move requires path and to fields"}
 		}
-		data, err := src.Move(normalizePath(req.Path), normalizePath(req.Dest))
+		data, err := src.Move(preserveDirSlash(req.Path), preserveDirSlash(req.Dest))
 		if err != nil {
 			return Response{V: Version, OK: false, Error: err.Error()}
 		}

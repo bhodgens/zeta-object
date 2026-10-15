@@ -66,6 +66,53 @@ final class ReplicatedExtensionTests: XCTestCase {
         wait(for: [exp], timeout: 5)
     }
 
+    /// M10: a down socket throws IPCClient.Failure, which is not in
+    /// NSFileProviderErrorDomain. item(for:) and fetchContents must map it
+    /// or the system retries forever. No live socket: the path does not exist.
+    func testItemAndFetchMapSocketDownFailureIntoFileProviderDomain() throws {
+        let missing = cacheDir.appendingPathComponent("no-daemon.ipc").path
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missing))
+        let dead = ReplicatedExtension(
+            domain: NSFileProviderDomain(identifier: NSFileProviderDomainIdentifier("dead"), displayName: "dead"),
+            mount: FileProviderMount(socketPath: missing, cacheDir: cacheDir))
+
+        let itemExp = expectation(description: "item-socket-down")
+        _ = dead.item(for: NSFileProviderItemIdentifier("docs/"), request: NSFileProviderRequest()) { item, error in
+            XCTAssertNil(item)
+            let ns = error as NSError?
+            XCTAssertEqual(ns?.domain, NSFileProviderErrorDomain)
+            XCTAssertEqual(ns?.code, NSFileProviderError.serverUnreachable.rawValue)
+            itemExp.fulfill()
+        }
+
+        let fetchExp = expectation(description: "fetch-socket-down")
+        _ = dead.fetchContents(for: NSFileProviderItemIdentifier("docs/a.txt"), version: nil, request: NSFileProviderRequest()) { url, item, error in
+            XCTAssertNil(url)
+            XCTAssertNil(item)
+            let ns = error as NSError?
+            XCTAssertEqual(ns?.domain, NSFileProviderErrorDomain)
+            XCTAssertEqual(ns?.code, NSFileProviderError.serverUnreachable.rawValue)
+            fetchExp.fulfill()
+        }
+        wait(for: [itemExp, fetchExp], timeout: 5)
+    }
+
+    /// IPCClient.Failure is constructible without a socket. A domain error
+    /// must pass through unchanged (identity), not be rewritten.
+    func testIPCFailureMapsWithoutLiveSocketAndDomainErrorsPassThrough() {
+        let failure = IPCClient.Failure("cannot reach the daemon at /missing (errno 2)")
+        let mapped = mapReplicatedIPCError(failure) as NSError
+        XCTAssertEqual(mapped.domain, NSFileProviderErrorDomain)
+        XCTAssertEqual(mapped.code, NSFileProviderError.serverUnreachable.rawValue)
+
+        let already = NSError(
+            domain: NSFileProviderErrorDomain,
+            code: NSFileProviderError.noSuchItem.rawValue,
+            userInfo: [NSLocalizedDescriptionKey: "no such item: docs/"])
+        let passed = mapReplicatedIPCError(already) as NSError
+        XCTAssertTrue(passed === already)
+    }
+
     // MARK: - fetchContents
 
     func testFetchContentsReturnsCacheFileURL() throws {

@@ -110,12 +110,26 @@ enum ExtraPayload: Decodable {
             self = .tombstones(t)
             return
         }
+        // Same null-swallow as pins: a present JSON null is [], not a
+        // discarded response (decodeIfPresent is nil for both absent and null).
+        if c.contains(.tombstones) {
+            self = .tombstones([])
+            return
+        }
         if let cf = try c.decodeIfPresent([ConflictItem].self, forKey: .conflicts) {
             self = .conflicts(cf)
             return
         }
+        if c.contains(.conflicts) {
+            self = .conflicts([])
+            return
+        }
         if let entries = try c.decodeIfPresent([FileProviderItemEntry].self, forKey: .entries) {
             self = .enumerate(EnumerateData(entries: entries))
+            return
+        }
+        if c.contains(.entries) {
+            self = .enumerate(EnumerateData(entries: []))
             return
         }
         if let item = try c.decodeIfPresent(FileProviderItemEntry.self, forKey: .item) {
@@ -306,11 +320,11 @@ public struct MoveAck: Decodable {
 
 /// One-shot IPC client: connect, send ONE JSON request, read ONE JSON
 /// response (the protocol's one-request-per-connection contract).
-enum IPCClient {
-    struct Failure: Error, LocalizedError {
-        let message: String
+public enum IPCClient {
+    public struct Failure: Error, LocalizedError {
+        public let message: String
         init(_ message: String) { self.message = message }
-        var errorDescription: String? { message }
+        public var errorDescription: String? { message }
     }
 
     static func ask(_ socketPath: String, _ request: IPCRequest) throws -> IPCResponse {
