@@ -14,7 +14,9 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/frontend"
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
@@ -170,6 +172,13 @@ func (f *Frontend) handleCopyMove(w http.ResponseWriter, r *http.Request, src re
 			return
 		}
 		if isMove {
+			// M6: read+write is not a delete grant. moveSourceDelete
+			// calls the backend delete; refuse before that call so a
+			// denied MOVE leaves the source in place (403). COPY does
+			// not take this branch. MKCOL is not a MOVE.
+			if !authorizeMoveSourceDelete(w, r, src) {
+				return
+			}
 			// Versioned-marker parity on MOVE's source delete: the
 			// s3 counterpart of a rename is CopyObject + DeleteObject;
 			// its Delete records what the dedicated DELETE handler
@@ -208,6 +217,9 @@ func (f *Frontend) handleCopyMove(w http.ResponseWriter, r *http.Request, src re
 	}
 
 	if isMove {
+		if !authorizeMoveSourceDelete(w, r, src) {
+			return
+		}
 		if err := f.be.Delete(r.Context(), src.bucket, src.key); err != nil {
 			// The destination copy succeeded; the source delete failed.
 			// Report the failure — a duplicate is the acceptable crash
@@ -307,6 +319,19 @@ func conditionForOverwrite(r *http.Request, _ bool) string {
 		return "*"
 	}
 	return ""
+}
+
+// authorizeMoveSourceDelete is the OpDelete gate on MOVE's source-delete
+// half. read+write is not a delete grant: moveSourceDelete (and the
+// unwired be.Delete tail) calls the backend delete, which a write grant
+// must not authorize. Denied is 403 and the caller leaves the source in
+// place. COPY does not call this. MKCOL is not a MOVE.
+func authorizeMoveSourceDelete(w http.ResponseWriter, r *http.Request, src resource) bool {
+	if auth.AuthorizeOp(identityOf(r), auth.OpDelete, src.bucket, src.key, time.Now().UTC()) {
+		return true
+	}
+	writeDavError(w, http.StatusForbidden, "")
+	return false
 }
 
 // writeMoveSourceDeleteError renders a moveSourceDelete failure with

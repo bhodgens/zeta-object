@@ -89,3 +89,81 @@ func TestW2M1_S3BatchRequiresWriteAndDelete(t *testing.T) {
 		t.Fatalf("POST ?batch with write+delete = 403: %s (W2-M1 must not over-tighten)", w.Body.String())
 	}
 }
+
+// TestW2M1_PrefixGrantCannotBatchDeleteOutsidePrefix pins H3: a prefix
+// grant bucket/public/* matches key "" (the listing shortcut), so the
+// coarse empty-key OpDelete check is not a mutate-any-key grant. Delete
+// of secret/victim.txt is 403 and the object survives; delete of
+// public/ok.txt is the normal success. Write on the bucket is only so
+// the coarse write gate is not what answers — delete is scoped to the
+// prefix. A mixed manifest that includes the secret key executes nothing.
+func TestW2M1_PrefixGrantCannotBatchDeleteOutsidePrefix(t *testing.T) {
+	const (
+		bucket = "w2h3-s3-bucket"
+		ak     = "AKW2H3S"
+		sk     = "sk-w2h3s"
+	)
+	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
+		{Name: "prefix", AccessKey: ak, SecretKey: sk, Grants: map[string]json.RawMessage{
+			bucket:               json.RawMessage(`{"ops":["write"]}`),
+			bucket + "/public/*": json.RawMessage(`{"ops":["delete"]}`),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newRegistryTestServer(t, reg)
+	handler := srv.Config.Handler
+	root := filepath.Join(strings.TrimSuffix(s3.InstalledDataDir(), "/"), bucket)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := func(key, body string) {
+		t.Helper()
+		if w := m13Serve(t, handler, signPath(t, "PUT", "/"+bucket+"/"+key, ak, sk, body)); w.Code >= 400 {
+			t.Fatalf("seed %s: %d %s", key, w.Code, w.Body.String())
+		}
+	}
+	exists := func(key string) bool {
+		t.Helper()
+		_, err := os.Stat(filepath.Join(root, key))
+		return err == nil
+	}
+	seed("secret/victim.txt", "secret")
+	seed("public/ok.txt", "ok")
+
+	mixed := `{"operations":[{"op":"delete","from":"public/ok.txt"},{"op":"delete","from":"secret/victim.txt"}]}`
+	if w := m13Serve(t, handler, signPath(t, "POST", "/"+bucket+"?batch", ak, sk, mixed)); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "AccessDenied") {
+		t.Fatalf("mixed batch = %d %s, want 403 AccessDenied (one denied item executes nothing)", w.Code, w.Body.String())
+	}
+	if !exists("secret/victim.txt") || !exists("public/ok.txt") {
+		t.Fatal("mixed batch executed an item (both objects must survive the 403)")
+	}
+
+	secretOnly := `{"operations":[{"op":"delete","from":"secret/victim.txt"}]}`
+	if w := m13Serve(t, handler, signPath(t, "POST", "/"+bucket+"?batch", ak, sk, secretOnly)); w.Code != http.StatusForbidden {
+		t.Fatalf("batch delete of secret/victim.txt = %d %s, want 403", w.Code, w.Body.String())
+	}
+	if !exists("secret/victim.txt") {
+		t.Fatal("secret/victim.txt was deleted by a public/* grant")
+	}
+
+	moveSecret := `{"operations":[{"op":"move","from":"secret/victim.txt","to":"secret/moved.txt"}]}`
+	if w := m13Serve(t, handler, signPath(t, "POST", "/"+bucket+"?batch", ak, sk, moveSecret)); w.Code != http.StatusForbidden {
+		t.Fatalf("batch move of secret/victim.txt = %d %s, want 403", w.Code, w.Body.String())
+	}
+	if !exists("secret/victim.txt") || exists("secret/moved.txt") {
+		t.Fatal("batch move outside the prefix executed")
+	}
+
+	publicOnly := `{"operations":[{"op":"delete","from":"public/ok.txt"}]}`
+	if w := m13Serve(t, handler, signPath(t, "POST", "/"+bucket+"?batch", ak, sk, publicOnly)); w.Code != http.StatusOK {
+		t.Fatalf("batch delete of public/ok.txt = %d %s, want 200", w.Code, w.Body.String())
+	}
+	if exists("public/ok.txt") {
+		t.Fatal("public/ok.txt still present after an authorized batch delete")
+	}
+	if !exists("secret/victim.txt") {
+		t.Fatal("authorized public delete also removed secret/victim.txt")
+	}
+}

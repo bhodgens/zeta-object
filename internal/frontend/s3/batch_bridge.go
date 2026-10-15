@@ -17,12 +17,14 @@
 package s3
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 	"github.com/bhodgens/zeta-object/internal/batchops"
@@ -45,6 +47,79 @@ func BatchExecutorForBucket(bucket string, ctx context.Context) batchops.Executo
 // An empty bucketPath behaves exactly like BatchExecutorForBucket.
 func BatchExecutorForBucketAt(bucket, bucketPath string, ctx context.Context) batchops.Executor {
 	return s3BatchExecutor{bucket: bucket, bucketPath: bucketPath, ctx: ctx}
+}
+
+// batchItemDeletesSource reports whether a manifest item deletes a source
+// key. Delete does; move does too (the source is removed). Copy does not.
+// An empty From is not a source: the runner rejects that manifest and
+// executes nothing, and AuthorizeOp on key "" is the listing shortcut,
+// not a mutate grant.
+func batchItemDeletesSource(item batchops.Operation) bool {
+	return (item.Op == "delete" || item.Op == "move") && item.From != ""
+}
+
+// BatchMutatingSourceDenied returns the first delete or move source the
+// identity may not delete, and true. A prefix grant that matches the
+// empty key is the listing shortcut (GrantExpr.MatchesObject), not a
+// mutate-any-key grant, so each source key is checked on its own. denied
+// is false when every such source is allowed (or there are none).
+func BatchMutatingSourceDenied(id auth.Identity, bucket string, ops []batchops.Operation) (string, bool) {
+	now := time.Now().UTC()
+	for _, item := range ops {
+		if !batchItemDeletesSource(item) {
+			continue
+		}
+		if !auth.AuthorizeOp(id, auth.OpDelete, bucket, item.From, now) {
+			return item.From, true
+		}
+	}
+	return "", false
+}
+
+// authorizeBatchDeleteSources is the s3 mount's per-item gate, run before
+// handleBucketBatch. The coarse AuthorizeOp(OpDelete, bucket, "") check
+// is not sufficient: a prefix grant matches key "". This peeks the
+// manifest, restores the body, and writes 403 when a delete or move
+// source is outside the delete grant — the executor does not run. A
+// missing bucket, a malformed or oversize manifest, or an unreadable
+// body is not denied here: the handler's own contract answers (404 / 400
+// / 500) and executes nothing. Returns false when the response was
+// written and the caller must not run the executor.
+func authorizeBatchDeleteSources(w http.ResponseWriter, r *http.Request, bucket string) bool {
+	if !validBucket(bucket) || !bucketExists(bucket) {
+		return true
+	}
+	if r.Body == nil {
+		return true
+	}
+	body, rerr := io.ReadAll(io.LimitReader(r.Body, bucketBatchMaxBytes+1))
+	cerr := r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if rerr != nil || cerr != nil {
+		err := rerr
+		if err == nil {
+			err = cerr
+		}
+		log.Printf("Error reading batch body for bucket %s: %v", strconv.Quote(bucket), err)
+		writeS3Error(w, "InternalError", "Error reading request body.", http.StatusInternalServerError)
+		return false
+	}
+	if len(body) > bucketBatchMaxBytes {
+		return true
+	}
+	var man batchops.Manifest
+	if err := json.Unmarshal(body, &man); err != nil {
+		return true
+	}
+	id := identityOf(r)
+	key, denied := BatchMutatingSourceDenied(id, bucket, man.Operations)
+	if !denied {
+		return true
+	}
+	log.Printf("Authorization Denied: identity %s, bucket %s, key %s (POST ?batch delete/move source outside delete grant)",
+		strconv.Quote(id.AccessKeyID), strconv.Quote(bucket), strconv.Quote(key))
+	writeAuthFailure(w, authFailureError{"AccessDenied", "Access Denied", httpStatusForbidden})
+	return false
 }
 
 // HandleBatchForBucket is the webdav entry for POST <bucket>?batch: the

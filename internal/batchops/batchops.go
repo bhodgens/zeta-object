@@ -8,8 +8,9 @@
 //   - NO cross-item atomicity: a mid-manifest failure does not roll back
 //     earlier items; later items still execute (partial success). The
 //     per-item results are the contract.
-//   - A malformed manifest (bad JSON, unknown op, invalid key, over the
-//     1000-operation limit) is a request error and NOTHING executes —
+//   - A malformed manifest (bad JSON, trailing data after the JSON value,
+//     unknown op, invalid key, over the 1000-operation limit) is a request
+//     error and NOTHING executes —
 //     validation is a pure pass over the parsed manifest before the
 //     first op call (pinned by tests asserting the double saw zero
 //     calls).
@@ -173,6 +174,13 @@ func (r *Runner) Process(ctx context.Context, body []byte) (Response, error) {
 	dec := json.NewDecoder(strings.NewReader(string(body)))
 	if err := dec.Decode(&m); err != nil {
 		return Response{}, reqErr("malformed manifest: invalid JSON: %v", err)
+	}
+	// Decode accepts trailing bytes. json.Unmarshal does not, so a mount
+	// that pre-checks with Unmarshal skips its gate and would still
+	// execute here. More() is true when a non-space byte follows the
+	// value; trailing whitespace stays legal.
+	if dec.More() {
+		return Response{}, reqErr("malformed manifest: invalid JSON: trailing data")
 	}
 	return r.RunValidated(ctx, m)
 }

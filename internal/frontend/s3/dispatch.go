@@ -231,15 +231,20 @@ func authorizeS3Request(w http.ResponseWriter, id auth.Identity, bucket, key str
 	// could delete through the batch mount while the single-op DELETE path
 	// correctly required OpDelete. Deletes are the destructive subset, so
 	// the batch sub-resource requires the identity to hold BOTH: OpWrite
-	// (the put/copy items) and OpDelete (the delete items). Reading the
-	// body to inspect the manifest before authorizing would trade this
-	// coarse gate for a pre-auth body read — not worth it; requiring both
-	// ops is the conservative direction on every axis. The double-param
+	// (the put/copy items) and OpDelete (the delete items). The double-param
 	// ?delete&batch form is excluded here: it never reaches the batch
 	// handler (conflictingBatchParams rejects it 400 in
 	// bucketLevelDispatch — the F1 pin), so requiring OpDelete for it in
 	// authz would change that answer to 403 and silently re-order the F1
 	// rejection behind the grant gate.
+	//
+	// This empty-key OpDelete check is NOT sufficient (bughunt H3).
+	// GrantExpr.MatchesObject returns true for key "" on any prefix grant
+	// for the bucket — the listing shortcut — so bucket/public/* with
+	// delete passes here and could delete secret/victim.txt. The per-item
+	// check in authorizeBatchDeleteSources (before handleBucketBatch)
+	// is the mutate gate; this coarse check stays so a write-only identity
+	// is still denied before the body is read.
 	if r.Method == "POST" && key == "" && r.URL.Query().Has("batch") && !r.URL.Query().Has("delete") {
 		if !auth.AuthorizeOp(id, auth.OpDelete, bucket, key, time.Now().UTC()) {
 			log.Printf("Authorization Denied: identity %s, bucket %s (POST ?batch requires write AND delete grants)",
@@ -414,6 +419,13 @@ func (f *Frontend) bucketLevelDispatch(w http.ResponseWriter, r *http.Request, b
 	}
 	if _, ok := r.URL.Query()["batch"]; ok {
 		if r.Method == "POST" {
+			// H3: the empty-key OpDelete check in authorizeS3Request is
+			// the listing shortcut. Refuse the whole manifest before
+			// handleBucketBatch when any delete or move source is outside
+			// the delete grant — the executor must not run first.
+			if !authorizeBatchDeleteSources(w, r, bucketName) {
+				return
+			}
 			handleBucketBatch(w, r, bucketName)
 			return
 		}

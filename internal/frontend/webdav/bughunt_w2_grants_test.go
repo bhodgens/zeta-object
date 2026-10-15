@@ -69,6 +69,8 @@ type w2Harness struct {
 	f          *Frontend
 	bucket     string
 	bucketPath string
+	accessKey  string
+	secret     string
 }
 
 func newW2Harness(t *testing.T, bucket, ops string) *w2Harness {
@@ -86,7 +88,7 @@ func newW2Harness(t *testing.T, bucket, ops string) *w2Harness {
 	if err != nil {
 		t.Fatalf("webdav.New: %v", err)
 	}
-	return &w2Harness{t: t, f: f, bucket: bucket, bucketPath: bucketPath}
+	return &w2Harness{t: t, f: f, bucket: bucket, bucketPath: bucketPath, accessKey: "AKW2M3", secret: "sk-w2m3"}
 }
 
 // seed writes an object through the real fs backend.
@@ -109,7 +111,7 @@ func (h *w2Harness) do(method, path, body string) int {
 	if method == "PROPFIND" {
 		req.Header.Set("Depth", "1")
 	}
-	req.SetBasicAuth("AKW2M3", "sk-w2m3")
+	req.SetBasicAuth(h.accessKey, h.secret)
 	rec := httptest.NewRecorder()
 	h.f.Handler().ServeHTTP(rec, req)
 	_, _ = io.Copy(io.Discard, rec.Body)
@@ -239,6 +241,159 @@ func TestBatchLockBypass_ManifestDeleteOnLockedKeyIs423(t *testing.T) {
 	}
 }
 
+// TestBatchLockBypass_ManifestMoveOnLockedKeyIs423 pins the move half of
+// the batch lock gate: a move deletes its source, so a locked From is 423
+// and nothing runs (the destination is not created, the source survives).
+func TestBatchLockBypass_ManifestMoveOnLockedKeyIs423(t *testing.T) {
+	const bucket = "w2lock-move-bucket"
+	h := newW2Harness(t, bucket, `"read","write","list","delete","create"`)
+	h.seed("locked-victim.txt", "do-not-move")
+
+	if code := h.do("LOCK", "/locked-victim.txt", webdavLockBody); code != http.StatusOK {
+		t.Fatalf("LOCK setup = %d, want 200", code)
+	}
+	code := h.do("POST", "/?batch", `{"operations":[{"op":"move","from":"locked-victim.txt","to":"elsewhere.txt"}]}`)
+	if code != http.StatusLocked {
+		t.Fatalf("POST ?batch move of a LOCKED key = %d, want 423", code)
+	}
+	if code := h.do("GET", "/locked-victim.txt", ""); code != http.StatusOK {
+		t.Fatalf("GET source after the refused move = %d, want 200 (nothing executed)", code)
+	}
+	if code := h.do("GET", "/elsewhere.txt", ""); code != http.StatusNotFound {
+		t.Fatalf("GET destination after the refused move = %d, want 404 (nothing executed)", code)
+	}
+}
+
+// TestW2M1_PrefixGrantCannotBatchDeleteOutsidePrefix pins H3 on the webdav
+// mount: delete only on bucket/public/* must not delete secret/victim.txt
+// via POST ?batch (the empty-key check is the listing shortcut). A delete
+// of public/ok.txt is the normal success. Write on the bucket keeps the
+// coarse write gate from being the answer under test.
+func TestW2M1_PrefixGrantCannotBatchDeleteOutsidePrefix(t *testing.T) {
+	const (
+		bucket    = "w2h3-dav-bucket"
+		accessKey = "AKW2H3D"
+		secret    = "sk-w2h3d"
+	)
+	h := newW2HarnessGrants(t, bucket, accessKey, secret, map[string]json.RawMessage{
+		bucket:               json.RawMessage(`{"ops":["write","read"]}`),
+		bucket + "/public/*": json.RawMessage(`{"ops":["delete"]}`),
+	})
+	h.seed("secret/victim.txt", "secret")
+	h.seed("public/ok.txt", "ok")
+
+	mixed := `{"operations":[{"op":"delete","from":"public/ok.txt"},{"op":"delete","from":"secret/victim.txt"}]}`
+	if code := h.do("POST", "/?batch", mixed); code != http.StatusForbidden {
+		t.Fatalf("mixed batch = %d, want 403 (one denied item executes nothing)", code)
+	}
+	if !h.onDisk("secret/victim.txt") || !h.onDisk("public/ok.txt") {
+		t.Fatal("mixed batch executed an item (both objects must survive the 403)")
+	}
+
+	if code := h.do("POST", "/?batch", `{"operations":[{"op":"delete","from":"secret/victim.txt"}]}`); code != http.StatusForbidden {
+		t.Fatalf("batch delete of secret/victim.txt = %d, want 403", code)
+	}
+	if !h.onDisk("secret/victim.txt") {
+		t.Fatal("secret/victim.txt was deleted by a public/* grant")
+	}
+
+	moveSecret := `{"operations":[{"op":"move","from":"secret/victim.txt","to":"secret/moved.txt"}]}`
+	if code := h.do("POST", "/?batch", moveSecret); code != http.StatusForbidden {
+		t.Fatalf("batch move of secret/victim.txt = %d, want 403", code)
+	}
+	if !h.onDisk("secret/victim.txt") || h.onDisk("secret/moved.txt") {
+		t.Fatal("batch move outside the prefix executed")
+	}
+
+	if code := h.do("POST", "/?batch", `{"operations":[{"op":"delete","from":"public/ok.txt"}]}`); code != http.StatusOK {
+		t.Fatalf("batch delete of public/ok.txt = %d, want 200", code)
+	}
+	if h.onDisk("public/ok.txt") {
+		t.Fatal("public/ok.txt still present after an authorized batch delete")
+	}
+	if !h.onDisk("secret/victim.txt") {
+		t.Fatal("authorized public delete also removed secret/victim.txt")
+	}
+}
+
+// TestWebdavMOVE_ReadWriteWithoutDeleteIs403 pins M6: MOVE's source delete
+// requires OpDelete. read+write without delete is 403 and the source
+// survives. DELETE of that key is already 403. A grant that includes
+// delete can still MOVE.
+func TestWebdavMOVE_ReadWriteWithoutDeleteIs403(t *testing.T) {
+	const bucket = "w2m6-move-bucket"
+
+	t.Run("read+write without delete", func(t *testing.T) {
+		h := newW2Harness(t, bucket, `"read","write"`)
+		h.seed("a.txt", "keep")
+		if code := h.do("DELETE", "/a.txt", ""); code != http.StatusForbidden {
+			t.Fatalf("DELETE = %d, want 403", code)
+		}
+		if code := h.move("a.txt", "b.txt"); code != http.StatusForbidden {
+			t.Fatalf("MOVE = %d, want 403", code)
+		}
+		if !h.onDisk("a.txt") {
+			t.Fatal("source was deleted by a MOVE that holds no delete grant")
+		}
+	})
+
+	t.Run("grant including delete can MOVE", func(t *testing.T) {
+		h := newW2Harness(t, bucket, `"read","write","delete"`)
+		h.seed("a.txt", "keep")
+		if code := h.move("a.txt", "b.txt"); code >= 400 {
+			t.Fatalf("MOVE with delete = %d, want 2xx", code)
+		}
+		if !h.onDisk("b.txt") {
+			t.Fatal("destination missing after an authorized MOVE")
+		}
+		if h.onDisk("a.txt") {
+			t.Fatal("source still present after an authorized MOVE")
+		}
+	})
+}
+
+// newW2HarnessGrants is newW2Harness with an explicit grants map (prefix
+// patterns are map keys, not just the bucket name) and its own credentials.
+func newW2HarnessGrants(t *testing.T, bucket, accessKey, secret string, grants map[string]json.RawMessage) *w2Harness {
+	t.Helper()
+	dataDir := t.TempDir()
+	s3.SetupVersioningTestEnv(t, dataDir)
+	bucketPath := filepath.Join(dataDir, bucket)
+	if err := os.MkdirAll(filepath.Join(bucketPath, ".metadata"), 0o755); err != nil {
+		t.Fatalf("creating bucket dir: %v", err)
+	}
+	reg, err := auth.NewMultiRegistry([]auth.IdentityConfig{
+		{Name: "probe", AccessKey: accessKey, SecretKey: secret, Grants: grants},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := New(s3.TestBackend(), Config{Bucket: bucket},
+		WithAuthenticator(auth.NewBasicAuthenticator(reg)),
+		WithBucketPathResolver(func(b string) string { return filepath.Join(dataDir, b) }),
+		WithLockStoreRoot(func(string) string { return bucketPath }))
+	if err != nil {
+		t.Fatalf("webdav.New: %v", err)
+	}
+	return &w2Harness{t: t, f: f, bucket: bucket, bucketPath: bucketPath, accessKey: accessKey, secret: secret}
+}
+
+func (h *w2Harness) onDisk(key string) bool {
+	h.t.Helper()
+	_, err := os.Stat(filepath.Join(h.bucketPath, key))
+	return err == nil
+}
+
+func (h *w2Harness) move(src, dst string) int {
+	h.t.Helper()
+	req := httptest.NewRequest("MOVE", "/"+src, nil)
+	req.Header.Set("Destination", "/"+dst)
+	req.SetBasicAuth(h.accessKey, h.secret)
+	rec := httptest.NewRecorder()
+	h.f.Handler().ServeHTTP(rec, req)
+	return rec.Code
+}
+
 // lockToken reads the live lock's token out of the file lockStore. The
 // store is keyed by lockKey's shape ("/<bucket>/<key>"); the caller passes
 // the bare object key.
@@ -261,7 +416,7 @@ func (h *w2Harness) doWithIf(method, path, name, value, body string) int {
 	}
 	req := httptest.NewRequest(method, path, rdr)
 	req.Header.Set(name, value)
-	req.SetBasicAuth("AKW2M3", "sk-w2m3")
+	req.SetBasicAuth(h.accessKey, h.secret)
 	rec := httptest.NewRecorder()
 	h.f.Handler().ServeHTTP(rec, req)
 	_, _ = io.Copy(io.Discard, rec.Body)

@@ -96,6 +96,16 @@ func (f *Frontend) batchDispatch(w http.ResponseWriter, r *http.Request, res res
 	// delete items, and an identity holding both is exactly what the s3
 	// mount now requires (dispatch.go's W2-M1 gate), so both mounts make
 	// the SAME decision for the SAME identity.
+	//
+	// The empty-key OpDelete check below is NOT sufficient (bughunt H3).
+	// GrantExpr.MatchesObject returns true for key "" on any prefix grant
+	// for the bucket — the listing shortcut — so bucket/public/* with
+	// delete passes it and could delete secret/victim.txt. It stays so a
+	// write-only identity is still denied before the body is read. The
+	// per-item check after the manifest decodes is the mutate gate: each
+	// delete From, and each move From (a move deletes the source), must
+	// pass AuthorizeOp(OpDelete, bucket, item.From). Any denial is 403
+	// and nothing executes.
 	if err := frontend.AuthorizeRequest(identityOf(r), res.bucket, true); err != nil {
 		writeDavError(w, http.StatusForbidden, "")
 		return true
@@ -115,17 +125,25 @@ func (f *Frontend) batchDispatch(w http.ResponseWriter, r *http.Request, res res
 	// item runs, so a partial refusal cannot strand earlier items past
 	// their lock. A manifest item carries no lock token, so the check is
 	// the tokenless variant; the holder sees 423 exactly as a single-op
-	// DELETE would answer. Only delete items are gated: the v1 lock
-	// contract gates the delete paths (DELETE via enforceWriteLock).
+	// DELETE would answer. Delete AND move items are gated: a move
+	// deletes its source, so a locked From must 423 the whole manifest
+	// before anything runs (the same request-error contract).
 	//
 	// The manifest is decoded here independently of the bridge's own
-	// decode so the lock gate can name the delete targets. Only a
-	// well-formed manifest carries delete targets; a malformed one stays
+	// decode so the grant and lock gates can name the source keys. Only a
+	// well-formed manifest carries those keys; a malformed one stays
 	// the runner's/bridge's answer (400), which the gate deliberately
-	// does not preempt.
+	// does not preempt. Trailing bytes fail Unmarshal here and are
+	// rejected by batchops.Process before any item runs.
 	if man, ok := decodeBatchManifest(r); ok {
+		if key, denied := s3.BatchMutatingSourceDenied(identityOf(r), res.bucket, man.Operations); denied {
+			log.Printf("webdav batch: identity %s denied delete of %s (prefix grant on key \"\" is not a mutate grant)",
+				strconv.Quote(identityOf(r).AccessKeyID), strconv.Quote(key))
+			writeDavError(w, http.StatusForbidden, "")
+			return true
+		}
 		for _, item := range man.Operations {
-			if item.Op != "delete" || item.From == "" {
+			if (item.Op != "delete" && item.Op != "move") || item.From == "" {
 				continue
 			}
 			store := f.lockStoreFor(res.bucket)
@@ -136,8 +154,8 @@ func (f *Frontend) batchDispatch(w http.ResponseWriter, r *http.Request, res res
 			}
 			if err := CheckWriteLockNoToken(store, f.lockKey(resource{bucket: res.bucket, key: item.From})); err != nil {
 				if errors.Is(err, ErrLocked) {
-					log.Printf("webdav batch: delete of %s is blocked by a live lock (423); nothing executed",
-						strconv.Quote(item.From))
+					log.Printf("webdav batch: %s of %s is blocked by a live lock (423); nothing executed",
+						strconv.Quote(item.Op), strconv.Quote(item.From))
 					writeDavError(w, http.StatusLocked, "")
 					return true
 				}

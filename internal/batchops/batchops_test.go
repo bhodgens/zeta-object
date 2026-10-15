@@ -264,6 +264,34 @@ func TestMaxOperationsIsNamedAndPinned(t *testing.T) {
 	}
 }
 
+// TestProcess_TrailingByteIsRequestError pins Decoder.Decode's trailing-data
+// acceptance: a valid delete manifest plus one non-space byte is a request
+// error and the executor is not called. Trailing whitespace stays legal
+// (More skips space).
+func TestProcess_TrailingByteIsRequestError(t *testing.T) {
+	f := &fakeExec{}
+	body := []byte(`{"operations":[{"op":"delete","from":"victim.txt"}]}x`)
+	_, err := newRunner(f).Process(context.Background(), body)
+	if err == nil {
+		t.Fatal("Process succeeded, want a request error for trailing data")
+	}
+	if _, ok := errors.AsType[*RequestError](err); !ok {
+		t.Fatalf("err = %T %v, want *RequestError", err, err)
+	}
+	if calls := f.saw(); len(calls) != 0 {
+		t.Fatalf("executor called on trailing-byte manifest: %v", calls)
+	}
+
+	f = &fakeExec{}
+	spaced := []byte("{\"operations\":[{\"op\":\"delete\",\"from\":\"k\"}]}\n")
+	if _, err := newRunner(f).Process(context.Background(), spaced); err != nil {
+		t.Fatalf("trailing whitespace must stay legal: %v", err)
+	}
+	if calls := f.saw(); len(calls) != 1 {
+		t.Fatalf("executor calls = %v, want 1", calls)
+	}
+}
+
 // TestProcess_RunsValidManifest: the happy path — parse, validate, run.
 func TestProcess_RunsValidManifest(t *testing.T) {
 	f := &fakeExec{}
