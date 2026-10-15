@@ -56,11 +56,12 @@ type Config struct {
 	// HTTP off-host.
 	AllowNonLoopback bool `json:"allowNonLoopback"`
 	// TrustProxyTLS declares that the console sits behind a TLS-terminating
-	// proxy, so session cookies must carry Secure even though the console's
-	// own listener is plain HTTP (r.TLS is nil behind such a proxy). Default
-	// false: Secure follows the response transport (Secure only on TLS),
-	// which keeps the loopback plain-HTTP console working — Safari rejects a
-	// Secure cookie on plain http, even on loopback.
+	// proxy. The knob alone marks session cookies Secure when
+	// X-Forwarded-Proto is absent (r.TLS is nil behind such a proxy). When
+	// the header is present, only its first comma-separated value counts.
+	// Default false: a client-supplied header never flips Secure, and the
+	// loopback plain-HTTP console stays non-Secure — Safari rejects a Secure
+	// cookie on plain http, even on loopback.
 	TrustProxyTLS bool `json:"trustProxyTLS"`
 }
 
@@ -141,20 +142,14 @@ func (c *Config) TLSConfig() *tls.Config {
 
 // SecureCookies reports whether session cookies must carry the Secure
 // attribute for a response that arrived on r's transport (bughunt
-// 2026-10-13 M16): true when the request itself came over TLS, or when the
-// config declares a TLS-terminating proxy in front of the console
-// (TrustProxyTLS — r.TLS is nil behind one, so transport detection alone
-// ships the session cookie WITHOUT Secure). Tests construct Config values
+// 2026-10-13 M16, contract restored 2026-10-14 M4). Direct TLS
+// (r.TLS != nil) is Secure. With TrustProxyTLS false and no TLS, the
+// cookie is not Secure — a client-supplied X-Forwarded-Proto must never
+// flip the bit. With TrustProxyTLS true, an absent header is Secure (the
+// knob alone is enough). A present header contributes only its first
+// comma-separated value: https is Secure, http is not, so "https,http"
+// is Secure and "http,https" is not. Tests construct Config values
 // directly; a nil cfg falls back to transport detection only.
-//
-// M16 residual: behind a declared proxy the console ALSO honors the
-// proxy's X-Forwarded-Proto: https — a proxy may terminate TLS for one
-// vhost and pass plain HTTP for another, and the cookie must follow the
-// CLIENT-facing scheme, not the proxy's local hop. The header is read
-// ONLY when TrustProxyTLS is true: by default a client-controllable
-// X-Forwarded-Proto must never flip the Secure bit (an attacker on the
-// plain path could otherwise mint "Secure" cookies for sites that never
-// see them sent — or, worse, probe the proxy's trust boundary).
 func (c *Config) SecureCookies(r *http.Request) bool {
 	if r != nil && r.TLS != nil {
 		return true
@@ -162,10 +157,15 @@ func (c *Config) SecureCookies(r *http.Request) bool {
 	if c == nil || !c.TrustProxyTLS {
 		return false
 	}
-	if r != nil && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+	if r == nil {
 		return true
 	}
-	return false
+	raw := r.Header.Get("X-Forwarded-Proto")
+	if raw == "" {
+		return true
+	}
+	first, _, _ := strings.Cut(raw, ",")
+	return strings.EqualFold(strings.TrimSpace(first), "https")
 }
 
 // WarnInsecureCookiePolicy logs the one startup warning M16 asks for: the

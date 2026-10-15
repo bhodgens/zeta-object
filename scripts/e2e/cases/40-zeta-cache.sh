@@ -255,14 +255,24 @@ assert_contains 'status echoes the server url' "$ZC_RESP" "\"server\":\"$ZC_ENDP
 # number, never null, on a daemon whose probe succeeded.
 # The startup sync stamps lastSync when it completes; on a 2-core CI
 # runner it may still be running when the first status lands - poll.
+# [0-9]+ (not *) so "lastSync":null does not match zero digits and
+# break the loop before the stamp lands.
 ZC_LS=''
 for _ in $(seq 1 10); do
 	ZC_RESP=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"status"}')
-	ZC_LS=$(printf '%s' "$ZC_RESP" | grep -o '"lastSync":[0-9]*' | head -1)
+	ZC_LS=$(printf '%s' "$ZC_RESP" | grep -oE '"lastSync":[0-9]+' | head -1)
 	[ -n "$ZC_LS" ] && break
 	sleep 1
 done
-assert_contains 'status lastSync stamped by initial sync' "$ZC_RESP" '"lastSync":1'
+if [ -n "$ZC_LS" ]; then
+	assert_eq 'status lastSync stamped by initial sync' nonempty nonempty
+else
+	assert_eq 'status lastSync stamped by initial sync' nonempty empty
+fi
+case "$ZC_RESP" in
+*'"lastSync":null'*) assert_eq 'status lastSync is not null' absent present ;;
+*) assert_eq 'status lastSync is not null' absent absent ;;
+esac
 assert_contains 'status carries protocol v1' "$ZC_RESP" '"v":1'
 
 ZC_RESP=$(zc_status "$ZC_ROOT/run/z.ipc" '{"v":1,"type":"frobnicate"}')

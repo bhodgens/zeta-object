@@ -19,6 +19,36 @@ source "$E2E_ROOT/interop-lib.sh"
 # https://github.com/minio/mc/releases/download/<TAG>/mc.<GOOS>-<GOARCH>.<TAG>
 MC_RELEASE_TAG='RELEASE.2025-08-13T08-35-41Z'
 MC_BIN="$REPO_ROOT/vendor/mc"
+# Every mktemp path this case creates is named in the EXIT trap. TMP_MC is
+# created before the later temps, so the trap is installed first. MC_PUT_PF
+# is the mc_put staging file (global, not function-local, so EXIT can see it).
+TMP_MC=''
+INTEROP_SHIM_ERR=''
+TMPD=''
+RANGE_BIN=''
+BIG_BIN=''
+MC_PUT_PF=''
+cleanup_mc_tmp() {
+	if [ -n "$TMPD" ]; then
+		rm -rf "$TMPD"
+	fi
+	if [ -n "$INTEROP_SHIM_ERR" ]; then
+		rm -f "$INTEROP_SHIM_ERR"
+	fi
+	if [ -n "$TMP_MC" ]; then
+		rm -f "$TMP_MC"
+	fi
+	if [ -n "$RANGE_BIN" ]; then
+		rm -f "$RANGE_BIN"
+	fi
+	if [ -n "$BIG_BIN" ]; then
+		rm -f "$BIG_BIN"
+	fi
+	if [ -n "$MC_PUT_PF" ]; then
+		rm -f "$MC_PUT_PF"
+	fi
+}
+trap cleanup_mc_tmp EXIT
 if [ ! -x "$MC_BIN" ]; then
 	case "$(uname -s)/$(uname -m)" in
 	Darwin/arm64)                 MC_ASSET="mc.darwin-arm64.$MC_RELEASE_TAG" ;;
@@ -48,19 +78,12 @@ INTEROP_SHIM_ERR=$(mktemp /tmp/zetaobject-e2e.13-mc.XXXXXX)
 INTEROP_MC_SHIM="$E2E_ROOT/mc-runner.sh"
 INTEROP_EXPECT_DATA=''
 
-# TMPD holds the mc alias-set debug output. Every mktemp FILE or DIR this
-# case creates is named under the suite's swept namespace
-# (/tmp/zetaobject-e2e.*) AND removed in the case's EXIT trap - both layers,
-# because an early exit between a mktemp and its rm (the shim-err file, the
-# mc_put staging file) must be caught by the trap, and a SIGKILL'd case must
-# be caught by the sweeper (AGENTS.md cleanup rule 1; bughunt 2026-10-13 M33,
-# W2 LOW: the five pre-fix /tmp/e2e13-* files leaked on early exit).
+# TMPD holds the mc alias-set debug output. Every mktemp path this case
+# creates (TMPD, INTEROP_SHIM_ERR, TMP_MC, RANGE_BIN, BIG_BIN, MC_PUT_PF)
+# is named in the EXIT trap installed above, and lives under the suite's
+# swept namespace (/tmp/zetaobject-e2e.*) so a SIGKILL is still caught
+# (AGENTS.md cleanup rule 1).
 TMPD=$(mktemp -d /tmp/zetaobject-e2e.13-mc.XXXXXX)
-cleanup_mc_tmp() {
-	rm -rf "$TMPD"
-	rm -f "$INTEROP_SHIM_ERR" 2>/dev/null
-}
-trap cleanup_mc_tmp EXIT
 MC_DEBUG=1 "$MC_BIN" alias set "$ALIAS" "$ENDPOINT" zetaadmin zetaadmin --insecure \
 	>"$TMPD/mcout.txt" 2>"$TMPD/mcerr.txt"
 ALIAS_RC=$?
@@ -74,12 +97,13 @@ assert_eq 'mc alias set' 0 "$ALIAS_RC"
 # mc_put <bucket/key> <payload> — mc cannot read /dev/stdin as a cp source;
 # stage the payload in a temp file (mc accepts regular files only).
 mc_put() {
-	local dst=$1 payload=$2 pf
-	pf=$(mktemp /tmp/zetaobject-e2e.13-mc.XXXXXX)
-	printf %s "$payload" >"$pf"
-	"$MC_BIN" --insecure cp "$pf" "$ALIAS/$dst" >/dev/null 2>&1
-	local rc=$?
-	rm -f "$pf"
+	local dst=$1 payload=$2 rc
+	MC_PUT_PF=$(mktemp /tmp/zetaobject-e2e.13-mc.XXXXXX)
+	printf %s "$payload" >"$MC_PUT_PF"
+	"$MC_BIN" --insecure cp "$MC_PUT_PF" "$ALIAS/$dst" >/dev/null 2>&1
+	rc=$?
+	rm -f "$MC_PUT_PF"
+	MC_PUT_PF=''
 	return $rc
 }
 
