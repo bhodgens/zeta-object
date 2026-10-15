@@ -7,9 +7,12 @@
 //	<zmetad> --tag-clear <dataset> --tag-object <id>               (idempotent)
 //
 // The CLI is object_id-ONLY (non-numeric --tag-object is a usage error),
-// so every operation resolves the S3 key -> ZFS object id FIRST, through
-// the events table (zmetad_objectid.go: newest row whose full_path /
-// old_full_path names the key — rename-stable, REMOVE-exact).
+// so every operation resolves the S3 key -> ZFS object id FIRST. Production
+// stats the live data file (Linux st_ino is the ZFS object id). It does
+// not read the event log: a just-written file has no event row until the
+// next zmetad poll, and a parent-directory rename never rewrites child
+// full_path, so the newest event row is the wrong id. The event-log
+// resolver remains only for tests that inject resolveObjectID.
 //
 // Exec discipline copies zfsdatasets.go with its OWN runner var and its
 // OWN semaphore (an independent bound): argv-only exec.CommandContext
@@ -26,6 +29,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -34,6 +38,11 @@ import (
 	"github.com/bhodgens/zeta-object/internal/metadata"
 	"github.com/bhodgens/zeta-object/internal/objectmodel"
 )
+
+// errStatIDUnsupported means the file exists but this OS cannot turn
+// st_ino into a ZFS object id. objectID may then use the injected event
+// resolver. A missing file is never this error.
+var errStatIDUnsupported = errors.New("s3: ZFS object id from stat is Linux-only")
 
 // zmetadTagCmdTimeout bounds every tag-mode exec. One-shot CLI modes are
 // a single SQLite transaction; 10s is generous (same bound as the purge
@@ -84,17 +93,25 @@ type zmetadTagStore struct {
 	binary          string
 	dbPath          string
 	dataset         string
+	bucketPath      string
+	statObjectID    func(path string) (uint64, error)
 	resolveObjectID func(ctx context.Context, dataset, key string) (uint64, error)
 }
 
 // newZmetadTagStore builds the store for one dataset-backed bucket.
 // dbPath/binary come from the installed tag-config seam (zmetad config
 // values, defaulted the same way the events provider defaults them).
-func newZmetadTagStore(dbPath, binary, dataset string) *zmetadTagStore {
+// bucketPath is the dataset mount. Production resolves the object id by
+// stating the live data file on Linux. A missing file is NoSuchKey and
+// does not consult resolveObjectID. resolveObjectID runs only when stat
+// cannot produce a ZFS id (non-Linux).
+func newZmetadTagStore(dbPath, binary, dataset, bucketPath string) *zmetadTagStore {
 	return &zmetadTagStore{
 		binary:          binary,
 		dbPath:          dbPath,
 		dataset:         dataset,
+		bucketPath:      bucketPath,
+		statObjectID:    objectIDFromStat,
 		resolveObjectID: defaultObjectIDResolver(dbPath),
 	}
 }
@@ -140,11 +157,32 @@ func (e *zmetadTagUnavailableError) Error() string {
 
 func (e *zmetadTagUnavailableError) Unwrap() error { return e.cause }
 
-// objectID resolves the key -> object id, wrapping resolution failures
-// in the unavailable error (resolution IS the store working — a missing
-// row is ObjectIDNotFoundError, which rides through unchanged so the
-// Get-missing path can map it to ErrNoSuchKey).
+// objectID resolves the key -> object id. Production stats the live data
+// file and never consults the event log. A missing file is NoSuchKey
+// (the old path must not tag a historical row). Any other stat error is
+// unavailable (500), not a guessed id. Tests that leave statObjectID nil
+// use the injected resolveObjectID.
 func (s *zmetadTagStore) objectID(ctx context.Context, key string) (uint64, error) {
+	if s.statObjectID != nil {
+		id, err := s.statObjectID(objectDataPathFor(s.bucketPath, key))
+		switch {
+		case err == nil && id != 0:
+			return id, nil
+		case err != nil && os.IsNotExist(err):
+			// The live path is gone. Do not tag a historical event row.
+			return 0, objectmodel.ErrNoSuchKey(key)
+		case err != nil && errors.Is(err, errStatIDUnsupported):
+			// Non-Linux: no ZFS inode. Fall through to the event resolver
+			// so tests on this OS can still drive the CLI seam.
+		case err != nil:
+			return 0, &zmetadTagUnavailableError{cause: err}
+		default:
+			return 0, &zmetadTagUnavailableError{cause: fmt.Errorf("s3: stat object id for %s is 0", key)}
+		}
+	}
+	if s.resolveObjectID == nil {
+		return 0, &zmetadTagUnavailableError{cause: fmt.Errorf("s3: no object-id resolver for %s", key)}
+	}
 	id, err := s.resolveObjectID(ctx, s.dataset, key)
 	if err != nil {
 		if _, notFound := errors.AsType[*metadata.ObjectIDNotFoundError](err); notFound {

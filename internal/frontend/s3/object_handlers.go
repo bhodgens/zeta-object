@@ -173,23 +173,23 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, object
 		writeS3ErrorFrom(w, putErr)
 		return
 	}
-	// Object tagging (tagging tree leaf 03): tags land AFTER the object
-	// exists (the sidecar must be present for the read-modify-write).
-	// putTags is nil for an untagged PUT — no write, byte-compat sidecar.
-	if len(putTags) > 0 {
-		if tagStoreErr := tagStoreFor(getBucketPath(bucketName)).Put(objectName, putTags); tagStoreErr != nil {
-			log.Printf("Error storing tags for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), tagStoreErr)
-			writeS3ErrorFrom(w, tagStoreErr)
-			return
-		}
-	}
-	// s3-versioning leaf 03: record the CAPTURED old bytes as one version
-	// (after the successful write — the backend owns and rewrites the
-	// sidecar on Put). A capture of nil means create/no prior object.
+	// s3-versioning: record the captured old bytes BEFORE tags. A tag-store
+	// error must not skip the record (the Put already rewrote the sidecar
+	// and wiped Versions). CMPU uses this same order.
 	if capturedOld != nil {
 		if recErr := recordCapturedObjectVersion(bucketPathForVersioning, bucketName, objectName, capturedOld); recErr != nil {
 			log.Printf("Error recording prior version for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), recErr)
 			writeS3Error(w, "InternalError", "Error recording object version.", http.StatusInternalServerError)
+			return
+		}
+	}
+	// Object tagging (tagging tree leaf 03): tags land AFTER the object
+	// exists and AFTER the version record. putTags is nil for an untagged
+	// PUT — no write, byte-compat sidecar.
+	if len(putTags) > 0 {
+		if tagStoreErr := tagStoreFor(getBucketPath(bucketName)).Put(objectName, putTags); tagStoreErr != nil {
+			log.Printf("Error storing tags for %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), tagStoreErr)
+			writeS3ErrorFrom(w, tagStoreErr)
 			return
 		}
 	}
@@ -1791,24 +1791,18 @@ func copyObjectHandler(w http.ResponseWriter, r *http.Request, bucketName, objec
 		writeS3ErrorFrom(w, putErr)
 		return
 	}
-	// Tags land AFTER the destination object exists (sidecar
-	// read-modify-write); nil/empty = no tags field written.
+	// Record the captured old bytes BEFORE tags. A tag-store error must
+	// not skip the record: the Put already rewrote the sidecar.
+	if !recordForCopy(w, dstBucketPath, bucketName, objectName, copyCapturedOld) {
+		return
+	}
+	// Tags land AFTER the version record. nil/empty = no tags field written.
 	if len(dstTags) > 0 {
 		if tagStoreErr := tagStoreFor(dstBucketPath).Put(objectName, dstTags); tagStoreErr != nil {
 			log.Printf("Error storing tags for copy destination %s/%s: %v", strconv.Quote(bucketName), strconv.Quote(objectName), tagStoreErr)
 			writeS3ErrorFrom(w, tagStoreErr)
 			return
 		}
-	}
-	// s3-versioning (bughunt W2-H2): record the CAPTURED old bytes as one
-	// version, after the successful write — the same Put → record order
-	// putObjectHandler documents (the backend owns and rewrites the sidecar
-	// on Put). A capture of nil means create/no prior object. Before this
-	// gate existed a CopyObject onto an existing destination wiped its
-	// version history (the sidecar is rewritten wholesale) — the same
-	// class as the CMPU H8 wipe, on the one write path H8 missed.
-	if !recordForCopy(w, dstBucketPath, bucketName, objectName, copyCapturedOld) {
-		return
 	}
 
 	// Action context: resolve the concrete paths the action may reference.

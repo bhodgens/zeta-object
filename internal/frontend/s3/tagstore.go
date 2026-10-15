@@ -56,7 +56,14 @@ type tagStore interface {
 // cancellation, runner error) returns failingTagStore: every operation
 // errors, so the request fails loudly and NEVER silently degrades to the
 // sidecar store (the zfsDatasetExists fail-loud rule).
+// tagStoreForTest, when non-nil, replaces tagStoreFor. Tests set it and
+// clear it with t.Cleanup. Production leaves it nil.
+var tagStoreForTest func(bucketPath string) tagStore
+
 func tagStoreFor(bucketPath string) tagStore {
+	if tagStoreForTest != nil {
+		return tagStoreForTest(bucketPath)
+	}
 	store, managed, probeErr := zmetadTagStoreForBucket(context.Background(), bucketPath)
 	switch {
 	case probeErr != nil:
@@ -106,7 +113,7 @@ func zmetadTagStoreForBucket(ctx context.Context, bucketPath string) (store tagS
 	if dataset == "" {
 		return nil, false, nil // not a dataset-backed bucket: sidecar
 	}
-	return newZmetadTagStore(cfg.dbPath, cfg.binary, dataset), true, nil
+	return newZmetadTagStore(cfg.dbPath, cfg.binary, dataset, bucketPath), true, nil
 }
 
 // sidecarTagStore implements tagStore over the per-object .meta sidecar

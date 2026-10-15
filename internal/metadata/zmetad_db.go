@@ -153,13 +153,13 @@ type ZmetadDB struct {
 
 // OpenZmetadDB opens the zmetad database READ-ONLY (modernc.org/sqlite,
 // mode=ro, busy_timeout 2s; WAL lets readers run against the live
-// daemon). Requires meta.db_schema_version == 5: a NEWER value is
-// *ZmetadDBVersionError{Newer:true}; 1-4 is Newer:false with an upgrade
-// hint in the message (zmetad migrates in place); a missing key is
-// treated as pre-v1. A missing file is *ZmetadDBMissingError. Callers
-// treat every open failure as "provider unavailable", never a hard
-// error. Also verifies meta.events_schema_version == 2 (refuse condition
-// per SCHEMA.md).
+// daemon). Accepts meta.db_schema_version in [5, 9]: above 9 is
+// *ZmetadDBVersionError{Newer:true}; below 5 is Newer:false with an
+// upgrade hint (zmetad migrates in place); a missing key is treated as
+// pre-v1. A missing file is *ZmetadDBMissingError. Callers treat every
+// open failure as "provider unavailable", never a hard error. Also
+// accepts meta.events_schema_version in {"2","3"} (layout 9 pairs with
+// wire 3). The executable gate is checkDBSchema, not this comment.
 func OpenZmetadDB(ctx context.Context, path string) (*ZmetadDB, error) {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {

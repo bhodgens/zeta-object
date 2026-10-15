@@ -364,17 +364,16 @@ func batchCopyMove(ctx context.Context, bucket, bucketPath, from, to, ifMatch st
 	if putErr != nil {
 		return putErr
 	}
-	// Tags land AFTER the destination object exists (sidecar
-	// read-modify-write, exactly like CopyObject and PutObject); an empty
-	// source tag set writes nothing (byte-compat sidecar form).
-	if len(dstTags) > 0 {
-		if storeErr := tagStoreFor(bucketPath).Put(to, dstTags); storeErr != nil {
-			return storeErr
-		}
-	}
 	if capturedOld != nil {
 		if recErr := recordCapturedObjectVersion(bucketPath, bucket, to, capturedOld); recErr != nil {
 			return objectmodel.ErrInternalError("error recording object version.")
+		}
+	}
+	// Tags land AFTER the version record (same order as PutObject and
+	// CopyObject). An empty source tag set writes nothing.
+	if len(dstTags) > 0 {
+		if storeErr := tagStoreFor(bucketPath).Put(to, dstTags); storeErr != nil {
+			return storeErr
 		}
 	}
 	// Bucket-action parity with the single-op CopyObject (whose after_upload
