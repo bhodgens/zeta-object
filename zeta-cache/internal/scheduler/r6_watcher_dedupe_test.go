@@ -33,10 +33,12 @@ import (
 )
 
 // countingWatchDir: the root channel is test-fed; subtree calls hit the
-// real watchAll and are counted per root.
+// real watchAll and are counted per root. closed counts stop invocations
+// (release must call the stored stop; the fan-in defer may call it again).
 type countingWatchDir struct {
 	mu       sync.Mutex
 	count    map[string]int // subtree root -> watchAll calls
+	closed   map[string]int // subtree root -> stop calls
 	rootEv   chan fsnotify.Event
 	rootDone bool // the root watch was already handed out
 }
@@ -44,6 +46,7 @@ type countingWatchDir struct {
 func newCountingWatchDir() *countingWatchDir {
 	return &countingWatchDir{
 		count:  map[string]int{},
+		closed: map[string]int{},
 		rootEv: make(chan fsnotify.Event), // unbuffered: feed() returns when the loop TOOK the event
 	}
 }
@@ -52,6 +55,12 @@ func (c *countingWatchDir) registrations(root string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.count[root]
+}
+
+func (c *countingWatchDir) closes(root string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed[root]
 }
 
 // feed delivers a synthetic root event to the loop.
@@ -76,7 +85,20 @@ func (c *countingWatchDir) watchDir(root string) (<-chan fsnotify.Event, func(),
 	c.mu.Lock()
 	c.count[root]++
 	c.mu.Unlock()
-	return watchAll(root)
+	events, stop, err := watchAll(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Count every stop call. release must invoke this (H6); the fan-in
+	// defer may invoke it again once Close unblocks the event channel.
+	// watchAll's stop is idempotent, so the second call must not
+	// double-close the Watcher.
+	return events, func() {
+		c.mu.Lock()
+		c.closed[root]++
+		c.mu.Unlock()
+		stop()
+	}, nil
 }
 
 // mkdirSynth: create the dir on disk and feed the Create event the loop
@@ -281,5 +303,62 @@ func TestWatcherShutdownDrainsFanIns(t *testing.T) {
 	}
 	if !exits {
 		t.Fatal("root fan-in still alive after shutdown (wedged on an undrained mergeCh send): all feeds kept being accepted")
+	}
+}
+
+// TestR6DeleteRecreateStopsOldWatcher is the H6 pin: release must call
+// the stored stop, not merely delete the claim. A fast recreate (the
+// path exists again by the time Remove/Rename is processed) used to skip
+// release entirely, so the old Watcher leaked and the new inode was never
+// watched. Pre-fix the stop count stays 0 and registrations stay 1.
+func TestR6DeleteRecreateStopsOldWatcher(t *testing.T) {
+	ops := []struct {
+		name string
+		op   fsnotify.Op
+	}{
+		{"remove", fsnotify.Remove},
+		{"rename", fsnotify.Rename},
+	}
+	for _, tc := range ops {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			files := filepath.Join(dir, "files")
+			if err := os.MkdirAll(files, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cwd := newCountingWatchDir()
+			cancel, done := runCountedWatcher(t, dir, cwd)
+			defer func() {
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+					t.Error("runWatcher did not exit after cancel")
+				}
+			}()
+
+			sub := filepath.Join(files, "ephemeral")
+			cwd.mkdirSynth(t, sub, 1)
+
+			// Recreate BEFORE the event, so Stat sees the new inode.
+			// Pre-fix release was gated on IsNotExist and never called
+			// stop, so this left the old watcher running.
+			if err := os.Remove(sub); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(sub, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cwd.feed(fsnotify.Event{Name: sub, Op: tc.op})
+
+			deadline := time.Now().Add(2 * time.Second)
+			for cwd.closes(sub) < 1 || cwd.registrations(sub) < 2 {
+				if time.Now().After(deadline) {
+					t.Fatalf("%s+recreate: closes=%d registrations=%d, want stop called (>=1) and a new watch (regs>=2)",
+						tc.name, cwd.closes(sub), cwd.registrations(sub))
+				}
+				time.Sleep(time.Millisecond)
+			}
+		})
 	}
 }

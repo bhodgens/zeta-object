@@ -43,6 +43,45 @@ func TestCacheDiskProbeSemantics(t *testing.T) {
 	}
 }
 
+// TestProbeEACCESDoesNotReportAbsent - a non-NotExist stat error (EACCES
+// on the files/ directory) must not look like absence. Pre-fix any Stat
+// error returned false, so a permission failure demoted rows whose bytes
+// were still on disk (M2). A missing file is still absent.
+func TestProbeEACCESDoesNotReportAbsent(t *testing.T) {
+	dir := t.TempDir()
+	files := filepath.Join(dir, "files")
+	if err := os.MkdirAll(files, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(files, "secret.txt")
+	if err := os.WriteFile(secret, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(files, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(files, 0o700); err != nil {
+			t.Errorf("restore files mode: %v", err)
+		}
+	})
+	if _, err := os.Stat(secret); err == nil || os.IsNotExist(err) {
+		t.Fatalf("setup: stat = %v, want a non-NotExist error (EACCES)", err)
+	}
+	probe := cacheDiskProbe(dir)
+	if !probe("secret.txt") {
+		t.Fatal("probe reported absent on a non-NotExist stat error; EACCES would demote a file that still exists")
+	}
+	// Restore search permission so a genuine miss is distinguishable
+	// from EACCES on the parent.
+	if err := os.Chmod(files, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if probe("secret-missing.txt") {
+		t.Fatal("probe(secret-missing.txt) = true after perms restored, want false")
+	}
+}
+
 // TestW2M2RealProbeDemotesDeletedFile - the end-to-end R2 behavior main
 // now gets: a journalled clean hydrated row whose disk file is gone is
 // demoted at OpenWithDiskCheck (with the daemon's own probe), while the

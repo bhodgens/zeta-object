@@ -275,7 +275,15 @@ func (e *Engine) upload(ctx context.Context, key, ifMatch string, rep *Report) e
 			Path: key, ETag: etag, Size: size, Hydrated: true, Dirty: false,
 		}, index.OpUploadOK, "sync: content unchanged, marked clean")
 	}
-	serverETag, err := e.tr.Put(ctx, key, mustOpen(local), ifMatch)
+	// Open here and close after Put returns. do() must not Close
+	// req.Body (W2-H1: that closed the caller's *os.File). NopCloser
+	// does not close it either, so the caller owns the fd (M1).
+	body, err := os.Open(local) // #nosec G304 -- constructed cache path
+	if err != nil {
+		return fmt.Errorf("sync: opening %s: %w", key, err)
+	}
+	defer body.Close()
+	serverETag, err := e.tr.Put(ctx, key, body, ifMatch)
 	if err != nil {
 		if errors.Is(err, transport.ErrConflict) {
 			if ifMatch == "" {
@@ -431,21 +439,6 @@ func md5File(path string) (string, int64, error) {
 	}
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
-
-// mustOpen wraps a path in a ReadSeeker for Put (Content-Length comes
-// from seeking; chunked bodies are never sent).
-func mustOpen(path string) io.ReadSeeker {
-	f, err := os.Open(path) // #nosec G304 -- constructed cache path
-	if err != nil {
-		return errReader{err}
-	}
-	return f
-}
-
-type errReader struct{ err error }
-
-func (e errReader) Read([]byte) (int, error)       { return 0, e.err }
-func (e errReader) Seek(int64, int) (int64, error) { return 0, e.err }
 
 // copyFile copies local bytes to the conflict-copy cache path.
 func copyFile(src, dst string) error {

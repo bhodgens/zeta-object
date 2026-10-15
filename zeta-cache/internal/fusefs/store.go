@@ -263,7 +263,15 @@ func (f *FS) UploadFile(ctx context.Context, key string) error {
 		return fmt.Errorf("fusefs: hashing %s: %w", key, err)
 	}
 	ifMatch, _ := f.idx.KnownETag(key)
-	serverETag, err := f.tr.Put(ctx, key, mustSeek(local), ifMatch)
+	// Open here and close after Put returns. do() must not Close
+	// req.Body (W2-H1). NopCloser does not close the *os.File, so
+	// the caller owns the fd (M1).
+	body, oerr := os.Open(local) // #nosec G304 -- constructed cache path
+	if oerr != nil {
+		return fmt.Errorf("fusefs: opening %s: %w", key, oerr)
+	}
+	defer body.Close()
+	serverETag, err := f.tr.Put(ctx, key, body, ifMatch)
 	if err != nil {
 		// Server 412 (transport.ErrConflict) = lost race: upload-failed,
 		// file STAYS dirty - conflict logic is leaf 04's. Any other
@@ -280,21 +288,6 @@ func (f *FS) UploadFile(ctx context.Context, key string) error {
 	}
 	return nil
 }
-
-// mustSeek wraps a path in a ReadSeeker (Put requires Content-Length;
-// the transport seeks to count the bytes).
-func mustSeek(path string) io.ReadSeeker {
-	f, err := os.Open(path) // #nosec G304 -- constructed cache path
-	if err != nil {
-		return errReader{err}
-	}
-	return f
-}
-
-type errReader struct{ err error }
-
-func (e errReader) Read([]byte) (int, error)       { return 0, e.err }
-func (e errReader) Seek(int64, int) (int64, error) { return 0, e.err }
 
 // flushDirty uploads every dirty file, bounded by deadline (the SIGTERM
 // path). Returns the keys still dirty after the deadline - unmount
@@ -343,7 +336,9 @@ func (f *FS) stagingCount() int {
 // caller is daemon start: no write handles exist yet, so every staging
 // file is orphaned by construction (a crash mid-hydrate/mid-write left
 // it; nothing references it). A missing staging dir is not an error -
-// the sweep just reclaimed nothing.
+// the sweep just reclaimed nothing. A Remove failure is returned after
+// the rest of the directory is swept: removed/bytes count only files
+// that were actually unlinked (M8).
 func SweepStaging(cacheDir string) (removed int, bytes int64, err error) {
 	entries, rerr := os.ReadDir(filepath.Join(cacheDir, "staging"))
 	if rerr != nil {
@@ -356,16 +351,18 @@ func SweepStaging(cacheDir string) (removed int, bytes int64, err error) {
 		if e.IsDir() {
 			continue // staging holds only flat files; leave dirs alone
 		}
+		var sz int64
 		if fi, serr := e.Info(); serr == nil {
-			bytes += fi.Size()
+			sz = fi.Size()
 		}
 		if rmErr := os.Remove(filepath.Join(cacheDir, "staging", e.Name())); rmErr != nil {
 			err = fmt.Errorf("fusefs: sweep staging %s: %w", e.Name(), rmErr)
 			continue // best-effort: keep sweeping the rest
 		}
 		removed++
+		bytes += sz
 	}
-	return removed, bytes, nil
+	return removed, bytes, err
 }
 
 // listDirEntries serves a directory listing for the mount: the union of

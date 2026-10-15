@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,40 +119,75 @@ func watchAll(root string) (<-chan fsnotify.Event, func(), error) {
 			}
 		}
 	}()
-	return events, func() { _ = w.Close() }, nil
+	// Idempotent: release calls stop when the directory is deleted, and
+	// the fan-in goroutine's defer calls it again when the event channel
+	// closes. fsnotify's Close is not part of the contract we rely on
+	// twice; Once is. A second Close would be a double-close (H6).
+	var once sync.Once
+	return events, func() {
+		once.Do(func() {
+			if cerr := w.Close(); cerr != nil {
+				log.Printf("scheduler: watcher close: %v", cerr)
+			}
+		})
+	}, nil
 }
 
 // subtreeWatchers is the R6 dedupe set: one claim per directory root, so
 // a create/delete/recreate cycle of the same dir cannot stack duplicate
 // recursive watchers (each claim would otherwise hold fsnotify fds and a
 // fan-in goroutine until shutdown). claim atomically takes the root
-// (false = already watched); release returns it after a failed watchAll
-// AND when the directory is deleted (fsnotify Remove / Rename-away): a
-// recreated dir must be re-watchable, and its watcher is dead anyway
-// (the watched inode is gone). activeCount/rootsOf are test seams.
+// (false = already watched). The value is the watchAll stop func, stored
+// once watchAll returns; nil means claimed but not yet bound.
+//
+// release drops the claim AND calls stop. Deleting the claim alone leaks
+// the Watcher (H6): the fan-in exits only when its channel closes, and
+// that channel closes only when the Watcher is closed. release is also
+// the failed-watchAll path (stop still nil). activeCount is the test seam.
 type subtreeWatchers struct {
 	mu    sync.Mutex
-	roots map[string]bool
+	roots map[string]func()
 }
 
 func newSubtreeWatchers() *subtreeWatchers {
-	return &subtreeWatchers{roots: map[string]bool{}}
+	return &subtreeWatchers{roots: map[string]func(){}}
 }
 
 func (s *subtreeWatchers) claim(root string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.roots[root] {
+	if _, ok := s.roots[root]; ok {
 		return false
 	}
-	s.roots[root] = true
+	s.roots[root] = nil
 	return true
+}
+
+// setStop binds the watchAll stop to a live claim. If the claim was
+// released before the stop was stored, stop runs now so the Watcher
+// cannot outlive the claim. stop is invoked outside the mutex.
+func (s *subtreeWatchers) setStop(root string, stop func()) {
+	s.mu.Lock()
+	if _, ok := s.roots[root]; ok {
+		s.roots[root] = stop
+		stop = nil
+	}
+	s.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
 }
 
 func (s *subtreeWatchers) release(root string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.roots, root)
+	stop, ok := s.roots[root]
+	if ok {
+		delete(s.roots, root)
+	}
+	s.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
 }
 
 // activeCount is the number of currently-claimed roots (test seam; the
@@ -280,6 +316,10 @@ func runWatcher(
 			subs.release(root)
 			return
 		}
+		// Bind stop before the fan-in starts, so a release that races
+		// the goroutine still finds it. The goroutine defer calls the
+		// same func; watchAll's stop is idempotent (sync.Once).
+		subs.setStop(root, stopSub)
 		go func() {
 			defer stopSub()
 			for ev := range sub {
@@ -326,17 +366,17 @@ func runWatcher(
 				}
 			}
 			if ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
-				if _, err := os.Stat(ev.Name); err != nil && os.IsNotExist(err) {
-					// Directory deletion (Remove, or the rename-away
-					// half of a move): the subtree watcher over that
-					// inode is dead - its fan-in goroutine sees the
-					// watch close. Release the claim so a recreated
-					// directory is watched again (a stale claim here
-					// is exactly the gap the 30s poll was papering
-					// over). Rename-away only when the name is truly
-					// gone: a rename WITHIN the tree fires Rename on
-					// the old name but the dir still exists.
-					subs.release(ev.Name)
+				// Always stop the old watcher, even when Stat says the
+				// path exists again. A fast recreate lands a new inode
+				// under the same name before this event is processed;
+				// gating release on IsNotExist kept the claim AND leaked
+				// the Watcher still pinned to the deleted inode (H6).
+				// A rename of a file (not a claimed root) is a no-op
+				// release. If the name is a directory right now, watch
+				// the new inode.
+				subs.release(ev.Name)
+				if info, err := os.Stat(ev.Name); err == nil && info.IsDir() {
+					addSubtree(ev.Name)
 				}
 			}
 			key := keyOf(w.cacheDir, ev.Name)

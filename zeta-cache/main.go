@@ -56,7 +56,9 @@ func main() {
 	// leaves unbounded staging bytes invisible to quota, and at start
 	// no write handles exist yet, so every staging file is orphaned.
 	if n, b, serr := sweepStagingAtStart(cfg.CacheDir); serr != nil {
-		log.Printf("zeta-cache: WARNING staging sweep: %v", serr)
+		// Partial failure still reclaimed some files (M8): report
+		// both the count and the error, do not drop the count.
+		log.Printf("zeta-cache: WARNING staging sweep: reclaimed %d file(s), %d bytes; %v", n, b, serr)
 	} else if n > 0 {
 		log.Printf("zeta-cache: staging sweep reclaimed %d file(s), %d bytes", n, b)
 	}
@@ -269,7 +271,13 @@ func main() {
 func cacheDiskProbe(cacheDir string) func(path string) bool {
 	return func(path string) bool {
 		fi, err := os.Stat(filepath.Join(cacheDir, "files", filepath.FromSlash(path)))
-		return err == nil && !fi.IsDir()
+		if err != nil {
+			// Only a confirmed absence demotes (R2). EACCES and
+			// other stat failures mean the file may still exist;
+			// treating them as absent mass-demotes live rows (M2).
+			return !os.IsNotExist(err)
+		}
+		return !fi.IsDir()
 	}
 }
 

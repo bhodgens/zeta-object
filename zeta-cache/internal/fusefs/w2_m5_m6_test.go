@@ -112,3 +112,50 @@ func TestW2M6SweepStagingRemovesOrphans(t *testing.T) {
 		t.Fatalf("SweepStaging without staging dir = (%d, %d, %v), want (0, 0, nil)", removed, bytes, err)
 	}
 }
+
+// TestSweepStagingReportsRemoveError - a failing Remove must surface.
+// Pre-fix the error was stored and then discarded (return nil). A
+// non-writable staging dir makes every Remove fail; removed/bytes stay
+// zero because nothing was unlinked, and the files remain.
+func TestSweepStagingReportsRemoveError(t *testing.T) {
+	dir := t.TempDir()
+	staging := filepath.Join(dir, "staging")
+	if err := os.MkdirAll(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stuck := filepath.Join(staging, "stuck")
+	if err := os.WriteFile(stuck, []byte("abcd"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	okFile := filepath.Join(staging, "ok")
+	if err := os.WriteFile(okFile, []byte("xy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(staging, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(staging, 0o700); err != nil {
+			t.Errorf("restore staging mode: %v", err)
+		}
+	})
+	// Prove the fixture actually blocks Remove, so a nil error cannot
+	// be a vacuous pass (root ignores mode bits).
+	if err := os.Remove(stuck); err == nil {
+		t.Fatal("setup: Remove succeeded; cannot pin the error return")
+	}
+
+	removed, bytes, err := SweepStaging(dir)
+	if err == nil {
+		t.Fatal("SweepStaging returned nil after Remove failed")
+	}
+	if removed != 0 || bytes != 0 {
+		t.Fatalf("SweepStaging = (%d, %d, %v), want (0, 0, non-nil) when every Remove fails", removed, bytes, err)
+	}
+	if _, statErr := os.Stat(stuck); statErr != nil {
+		t.Fatalf("stuck file gone despite Remove failing: %v", statErr)
+	}
+	if _, statErr := os.Stat(okFile); statErr != nil {
+		t.Fatalf("ok file gone despite Remove failing: %v", statErr)
+	}
+}
