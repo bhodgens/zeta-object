@@ -65,17 +65,22 @@ type Options struct {
 // Services is the injected route surface. Every field may be nil in this
 // leaf; a nil service answers 503 {"error":{"code":"NotImplemented",...}}.
 type Services struct {
-	Status         func(ctx context.Context) (StatusReport, error)
-	GetConfig      func(ctx context.Context) (json.RawMessage, error)
-	PutConfig      func(ctx context.Context, patch json.RawMessage) (ConfigApplyResult, error)
-	SaveConfig     func(ctx context.Context) error
-	ReloadAuth     func(ctx context.Context) error
-	ListBuckets    func(ctx context.Context) (json.RawMessage, error)
-	CreateBucket   func(ctx context.Context, name string) error
-	DeleteBucket   func(ctx context.Context, name string) error
-	BucketDetail   func(ctx context.Context, name string) (json.RawMessage, error)
-	BucketSettings func(ctx context.Context, name string, patch json.RawMessage) error
-	Purge          func(ctx context.Context, dataset string) error
+	Status     func(ctx context.Context) (StatusReport, error)
+	GetConfig  func(ctx context.Context) (json.RawMessage, error)
+	PutConfig  func(ctx context.Context, patch json.RawMessage) (ConfigApplyResult, error)
+	SaveConfig func(ctx context.Context) error
+	ReloadAuth func(ctx context.Context) error
+	// SetAdminPassword rotates the bootstrap admin credential (the env
+	// identity's secret). The implementation persists the new secret and
+	// activates it through the identity reload path; it must never log or
+	// echo the value.
+	SetAdminPassword func(ctx context.Context, newPassword string) error
+	ListBuckets      func(ctx context.Context) (json.RawMessage, error)
+	CreateBucket     func(ctx context.Context, name string) error
+	DeleteBucket     func(ctx context.Context, name string) error
+	BucketDetail     func(ctx context.Context, name string) (json.RawMessage, error)
+	BucketSettings   func(ctx context.Context, name string, patch json.RawMessage) error
+	Purge            func(ctx context.Context, dataset string) error
 }
 
 // AuditFunc is the write-only audit append seam (leaf 04). Package main

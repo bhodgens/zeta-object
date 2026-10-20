@@ -738,16 +738,19 @@ var serverConfigPath string
 // NOT apply at reload, so a bad edit cannot take a running server down —
 // and one loud line carries the validator's named-offender error. On
 // success it logs the rotated-in identity NAMES only, never secrets
-// (buildIdentityRegistry re-reads the env pair from the process
-// environment, which is fixed; rotating the env identity therefore still
-// requires a restart — documented limitation, never hidden).
+// (buildIdentityRegistry re-reads the env pair via loadCredentials,
+// which now prefers the persisted rotated-secret file written by
+// POST /api/admin/password — the env VAR itself is fixed, so the
+// route's rotation reaches the registry through that file).
 func reloadIdentityRegistry() error {
 	if err := loadConfig(serverConfigPath); err != nil {
 		log.Printf("WARNING: auth identity reload failed, keeping previous registry: %v", err)
 		return err
 	}
-	// The process environment is fixed, so this re-read is a no-op in
-	// practice; it keeps the reload sequence byte-identical to startup.
+	// loadCredentials re-resolves the env pair — the env VARS are fixed,
+	// but a rotated secret persisted by POST /api/admin/password changes
+	// what this read resolves, which is exactly how the route activates
+	// a rotation without a restart.
 	loadCredentials()
 	reg, err := buildIdentityRegistry()
 	if err != nil {
@@ -784,10 +787,21 @@ var serverCredentials = struct {
 // that is SET but EMPTY is warned about and falls back to the default
 // (zetaadmin) instead of silently behaving like an unset variable.
 //
+// Rotated-secret precedence (Contract G4): when POST /api/admin/password
+// has persisted a rotated secret beside the config file, that file WINS
+// over ZETAOBJECT_SECRET_KEY for the secret half (the access key stays
+// env-resolved). Startup and every reload run this function, so the
+// rotation survives restarts and takes effect on the reloadIdentityRegistry
+// swap without one.
+//
 // Deprecated prefix: MINIS3_* remains a fallback until two minor releases
 // after the zeta-object rename. ZETAOBJECT_* always wins when both are set.
 func loadCredentials() {
 	serverCredentials.AccessKeyID = credentialFromEnv("ZETAOBJECT_ACCESS_KEY", "MINIS3_ACCESS_KEY")
+	if rotated, ok := readAdminCredential(); ok {
+		serverCredentials.SecretAccessKey = rotated
+		return
+	}
 	serverCredentials.SecretAccessKey = credentialFromEnv("ZETAOBJECT_SECRET_KEY", "MINIS3_SECRET_KEY")
 }
 

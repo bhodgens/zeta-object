@@ -291,6 +291,7 @@ const (
 	routeBucket
 	routeBucketSettings
 	routePurge
+	routeAdminPassword
 )
 
 // classify maps (method, path) to a route kind, its {name} path parameter and
@@ -311,6 +312,11 @@ func classify(method, path string) (kind routeKind, name string, methodOK bool) 
 		return routeBuckets, "", method == http.MethodGet || method == http.MethodPost
 	case "/purge":
 		return routePurge, "", method == http.MethodPost
+	case "/api/admin/password":
+		// Contract G4 option (a): the appliance firstboot wizard POSTs this
+		// literal path at the admin frontend directly (no console proxy in
+		// front), so the /api prefix is part of the route itself here.
+		return routeAdminPassword, "", method == http.MethodPost
 	}
 	if !strings.HasPrefix(path, "/buckets/") {
 		return routeUnknown, "", false
@@ -376,6 +382,9 @@ func (f *adminFrontend) dispatch(w http.ResponseWriter, r *http.Request) (bucket
 		return name, ""
 	case routePurge:
 		return f.handlePurge(w, r)
+	case routeAdminPassword:
+		f.handleAdminPassword(w, r)
+		return "", ""
 	}
 	return "", ""
 }
@@ -593,4 +602,34 @@ func (f *adminFrontend) handlePurge(w http.ResponseWriter, r *http.Request) (buc
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"purged": true, "dataset": body.Dataset})
 	return "", body.Dataset
+}
+
+// handleAdminPassword serves POST /api/admin/password (appliance Contract
+// G4 option a): rotate the bootstrap admin credential. mTLS-gated like
+// every route (serveHTTP's authenticate wrapper); the body carries ONLY
+// {"new_password": "..."}. The password is never logged, never echoed in
+// a response or error body, and never used as an audit coordinate.
+func (f *adminFrontend) handleAdminPassword(w http.ResponseWriter, r *http.Request) {
+	if f.opts.Services.SetAdminPassword == nil {
+		serviceUnavailable(w, "POST /api/admin/password")
+		return
+	}
+	var body struct {
+		NewPassword string `json:"new_password"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.NewPassword) == "" {
+		writeError(w, http.StatusBadRequest, "InvalidArgument", `body must carry a non-empty "new_password"`)
+		return
+	}
+	if err := f.opts.Services.SetAdminPassword(r.Context(), body.NewPassword); err != nil {
+		// writeServiceFailure renders the service's own status/code; a
+		// generic failure becomes "admin password change failed" — the
+		// message never contains the credential.
+		writeServiceFailure(w, "admin password change", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"changed": true})
 }

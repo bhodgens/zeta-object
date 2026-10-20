@@ -91,7 +91,7 @@ type fedSessions struct {
 // exactly as before this leaf (mTLS only, 404 on /auth/*).
 func newAdminFederation(deps federationDeps) (*fedSessions, error) {
 	if !deps.Cfg.Enabled {
-		return nil, nil
+		return nil, nil //nolint:nilnil // documented sentinel: disabled federation = no sessions, no error (callers branch on nil)
 	}
 	if deps.Registry == nil {
 		return nil, fmt.Errorf("admin: zeta_console_oidc.enabled requires the zeta_federation registry")
