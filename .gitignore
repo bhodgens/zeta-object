@@ -32,3 +32,8 @@ zeta-cache/gui/fileprovider/.build/
 .swiftpm/
 Package.resolved
 DerivedData/
+# Xcode IDE artifacts (project/workspaces Xcode or xcodegen emits locally;
+# regenerable, none are source - same reasoning as the .build/ lines above).
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
