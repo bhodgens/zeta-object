@@ -7,7 +7,9 @@ go 1.27.0
 // go1.27.2; `make vuln` fails on go1.27.0. Pinning the toolchain makes the
 // requirement explicit and lets GOTOOLCHAIN fetch it, so nobody re-introduces
 // the gap by building on an older toolchain.
-toolchain go1.27.2
+// GO-2026-6809 (crypto/x509, distrust compromised intermediates) is fixed in
+// go1.27.3; the pin moved there 2026-10-21 for the same reason.
+toolchain go1.27.3
 
 require (
 	github.com/fclairamb/ftpserverlib v0.32.4
