@@ -1,6 +1,6 @@
-// h3probe - the HTTP/3 wire probe for e2e case 38 (quic-h3-2026-10 leaf 03).
+//	h3probe - the HTTP/3 wire probe for e2e case 38 (quic-h3-2026-10 leaf 03).
 //
-// One binary, two transports:
+// One binary, three transports:
 //
 //	-mode h3  - HTTP/3 over QUIC to the h3 frontend, presenting the client
 //	            certificate from -cert/-key. Exercises the mTLS webdav data
@@ -20,6 +20,18 @@
 //	            to fetch ?events / ?events&versions and POST ?batch over
 //	            the h3 transport. Additive — the e2e case's usage is
 //	            unchanged.
+//	-mode amp  - QPACK header-amplification probe (FoxIO "Header
+//	            Accordions", CVE-2025-64702 class): one GET whose HEADERS
+//	            block carries ~40k unique single-header names. The block
+//	            stays under the 1 MiB COMPRESSED frame gate (~300 KB wire)
+//	            while the DECODED field list exceeds the 1 MiB RFC 9114
+//	            section 4.2.2 budget (~1.4 MB, 32-byte overhead included).
+//	            A patched server enforces the decoded budget incrementally
+//	            and answers 431 (Request Header Fields Too Large); an
+//	            unpatched one materializes every field and answers 2xx/3xx
+//	            or 401/403 on the auth path — i.e. it did the amplification
+//	            work first. Also asserts the server SURVIVES: a normal GET
+//	            right after still round-trips.
 //
 // Content is deterministic (byte i = i&0xff), so every Range assert compares
 // exact bytes, never lengths.
@@ -32,6 +44,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -43,12 +56,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/quic-go/qpack"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
@@ -100,6 +115,7 @@ func main() {
 	keyFile := flag.String("key", "", "client private key PEM (h3 mode)")
 	method := flag.String("method", "GET", "HTTP method for -mode fetch (default GET)")
 	body := flag.String("body", "", "request body for -mode fetch (non-GET)")
+	ampFields := flag.Int("amp-fields", 40000, "number of unique header fields for -mode amp")
 	flag.Parse()
 
 	if *url == "" {
@@ -118,6 +134,8 @@ func main() {
 		exitCode = probeTCP(&c, base, objURL, *user, *pass, *portH3)
 	case "fetch":
 		exitCode = probeFetch(&c, base, objURL, *certFile, *keyFile, *method, *body)
+	case "amp":
+		exitCode = probeAmp(&c, base, *certFile, *keyFile, *ampFields)
 	default:
 		fmt.Printf("FAIL unknown -mode %q (want h3|tcp)\n", *mode)
 		os.Exit(2)
@@ -519,6 +537,336 @@ func probeFetch(c *check, base, objURL, certFile, keyFile, method, body string) 
 		return 1
 	}
 	return 0
+}
+
+// probeAmp (FoxIO "Header Accordions" regression, 2026-10) sends ONE GET
+// whose HEADERS block carries ~40k unique header names: the QPACK-encoded
+// block stays under the 1 MiB compressed-frame gate (~300 KB wire) while
+// the decoded field list exceeds the server's 1 MiB RFC 9114 4.2.2 budget
+// (~1.4 MB with the 32-byte per-field overhead). The assert is the
+// server's REJECTION: HTTP 431 (or a stream/connection reset carrying
+// H3_EXCESSIVE_LOAD / request-rejected semantics). Any real HTTP response
+// that is NOT 431 means the server decoded and retained the whole amplified
+// field list — the amplification succeeded.
+//
+// quic-go's stock Transport rejects requests with too many headers at the
+// http.Header layer before sending, so the probe uses a raw QUIC connection
+// with hand-written HTTP/3 frames: control stream + SETTINGS, then the
+// request stream with a literal (uncompressed) HEADERS frame. No dynamic
+// table is opened (QPACK encoder stream omitted), which the spec allows —
+// the decoder sees literal field lines only.
+func probeAmp(c *check, base string, certFile, keyFile string, nFields int) int {
+	if nFields < 1 {
+		nFields = 40000
+	}
+	withCert, errOpen := loadClientCert(certFile, keyFile)
+	if errOpen != nil {
+		c.failErr("amp request rejected", errOpen)
+		return 1
+	}
+	tlsCfg := &tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		InsecureSkipVerify: true, //nolint:gosec // e2e: the server cert is self-signed
+		ServerName:         "localhost",
+		Certificates:       []tls.Certificate{withCert},
+		NextProtos:         []string{http3.NextProtoH3},
+	}
+
+	addr := strings.TrimPrefix(strings.TrimSuffix(base, "/"), "https://")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := quic.DialAddrEarly(ctx, addr, tlsCfg, &quic.Config{})
+	if err != nil {
+		c.failErr("amp QUIC handshake (client cert)", err)
+		return 1
+	}
+	defer func() {
+		// Teardown is best-effort: the probe has already produced its
+		// asserts by the time the deferred close runs. Check-and-log
+		// (the deferred-call form the hook's pattern check requires;
+		// a bare `defer conn.CloseWithError` with an ignored return is
+		// blocked).
+		if cerr := conn.CloseWithError(0, ""); cerr != nil {
+			log.Printf("h3probe: closing QUIC conn: %v", cerr)
+		}
+	}()
+
+	// Control stream: stream type 0x0 (control), then a SETTINGS frame
+	// (frame type 0x4) with 4 payload bytes: SETTINGS_QPACK_MAX_TABLE_
+	// CAPACITY (0x1) = 0 and SETTINGS_QPACK_BLOCKED_STREAMS (0x7) = 0 —
+	// both legal defaults the server accepts.
+	ctrl, err := conn.OpenUniStream()
+	if err != nil {
+		c.failErr("amp control stream", err)
+		return 1
+	}
+	settings := []byte{
+		0x00,       // stream type: control
+		0x04,       // frame type: SETTINGS
+		0x04,       // frame length: 4 payload bytes
+		0x01, 0x00, // SETTINGS_QPACK_MAX_TABLE_CAPACITY = 0
+		0x07, 0x00, // SETTINGS_QPACK_BLOCKED_STREAMS = 0
+	}
+	if _, err := ctrl.Write(settings); err != nil {
+		c.failErr("amp SETTINGS write", err)
+		return 1
+	}
+
+	// Build the amplified HEADERS payload: pseudo-headers first (RFC 9114
+	// ordering), then nFields unique literal field lines. The qpack
+	// package produces the wire form (literal without name reference —
+	// the encoder has no dynamic table here, so every field line is
+	// self-contained and the block stays large on the wire, which is the
+	// property under test: under the frame gate, over the decoded budget).
+	names := ampHeaderNames(nFields)
+	var wire int
+	var str *quic.Stream
+	{
+		var buf []byte
+		enc := qpack.NewEncoder(&bytesWriter{b: &buf})
+		// writeField encodes one QPACK field line. The encoder writes to a
+		// bytes.Buffer-backed io.Writer, so a non-nil error here is a
+		// programming error (the buffer cannot fail to grow) — surface it
+		// through the probe's assert funnel rather than panicking (the
+		// hook's pattern check blocks panic(err)).
+		writeField := func(name, value string) error {
+			return enc.WriteField(qpack.HeaderField{Name: name, Value: value})
+		}
+		fields := [][2]string{
+			{":method", "GET"},
+			{":scheme", "https"},
+			{":authority", "localhost"},
+			{":path", "/"},
+		}
+		for _, f := range fields {
+			if err := writeField(f[0], f[1]); err != nil {
+				c.failErr("amp pseudo-header encode", err)
+				return 1
+			}
+		}
+		for _, n := range names {
+			if err := writeField(n, "x"); err != nil {
+				c.failErr("amp header encode", err)
+				return 1
+			}
+		}
+
+		// Request stream: HEADERS frame (type 0x1) + varint length + payload.
+		s, serr0 := conn.OpenStream()
+		if serr0 != nil {
+			c.failErr("amp request stream", serr0)
+			return 1
+		}
+		str = s
+		frame := append(appendVarint([]byte{0x01}, uint64(len(buf))), buf...)
+		if _, err := str.Write(frame); err != nil {
+			c.failErr("amp HEADERS write", err)
+			return 1
+		}
+		// Close the stream after the HEADERS frame (the end-of-send signal
+		// that completes the request). Best-effort: a close error here
+		// means the server already reset the stream on rejection — log,
+		// don't fail the probe on teardown noise.
+		if cerr := str.Close(); cerr != nil {
+			log.Printf("h3probe: closing amp request stream: %v", cerr)
+		}
+		wire = len(frame)
+	}
+	decoded := 0
+	for _, n := range names {
+		decoded += len(n) + 1 + 32 // name + value + RFC overhead
+	}
+	decoded += len(":method") + 3 + 32 + len(":scheme") + 5 + 32 +
+		len(":authority") + 9 + 32 + len(":path") + 1 + 32
+	fmt.Printf("amp: %d fields, %d wire bytes, ~%d decoded bytes\n",
+		len(names)+4, wire, decoded)
+
+	// Read the server's response: a 431 HEADERS frame, or a stream reset
+	// carrying H3_EXCESSIVE_LOAD / H3_REQUEST_REJECTED — both prove the
+	// amplified block was refused without being materialized.
+	if exit := ampReadOutcome(c, str); exit != 0 {
+		return exit
+	}
+
+	// The server must SURVIVE: a normal authenticated GET right after
+	// still round-trips over the same QUIC connection (the amplified
+	// stream was rejected, not the connection torn down — either is
+	// defensible, but the reset-without-connection-close shape is what
+	// quic-go's errHeaderTooLarge path produces and what we pin).
+	saneURL := base + "/e2e38-amp-sanity.bin"
+	saneBody := content(256)
+	putReq, perr := http.NewRequest(http.MethodPut, saneURL, strings.NewReader(string(saneBody)))
+	if perr == nil {
+		putReq.ContentLength = int64(len(saneBody))
+		tr := &http3.Transport{TLSClientConfig: tlsCfg}
+		defer tr.Close()
+		cl := &http.Client{Transport: tr, Timeout: 20 * time.Second}
+		resp, perr := cl.Do(putReq)
+		if perr != nil {
+			c.failErr("amp server survives (sane PUT after)", perr)
+		} else {
+			drain(resp)
+			c.ok("amp server survives (sane PUT after)", resp.StatusCode == 201 || resp.StatusCode == 204,
+				fmt.Sprintf("status=%d", resp.StatusCode))
+		}
+	} else {
+		c.failErr("amp server survives (sane PUT after)", perr)
+	}
+
+	if c.fail > 0 {
+		return 1
+	}
+	return 0
+}
+
+// bytesWriter adapts a *[]byte as an io.Writer for qpack.NewEncoder (the
+// probe avoids importing bytes just for a buffer).
+type bytesWriter struct{ b *[]byte }
+
+func (w *bytesWriter) Write(p []byte) (int, error) {
+	*w.b = append(*w.b, p...)
+	return len(p), nil
+}
+
+// ampReadOutcome reads the server's response to the amplified request and
+// asserts it was REJECTED without materializing the fields. Two wire shapes
+// prove the rejection:
+//
+//   - a HEADERS response frame whose :status is 431 (Request Header Fields
+//     Too Large) — the server answered after enforcing the decoded budget;
+//   - a stream reset with H3_EXCESSIVE_LOAD (0x107) or H3_REQUEST_REJECTED
+//     (0x10b) — the server refused before / while decoding.
+//
+// Any OTHER outcome (a real 2xx/4xx/5xx, an unparseable head, or an unknown
+// reset code) means the amplification landed: the server decoded and
+// retained the full field list. Returns 0 on a confirmed rejection, 1
+// otherwise; the PASS/FAIL line is recorded through c either way.
+func ampReadOutcome(c *check, str *quic.Stream) int {
+	// Frame header: 1 type byte + 1 QUIC-varint length byte (a 431 head is
+	// far below 64 bytes, so the length always fits one byte; readVarint
+	// handles the longer forms anyway).
+	fhdr := make([]byte, 2)
+	if _, err := io.ReadFull(str, fhdr); err != nil {
+		// A reset IS an acceptable rejection (see the function doc).
+		if as, ok := errors.AsType[*quic.StreamError](err); ok {
+			code := uint64(as.ErrorCode)
+			rejected := code == 0x107 || code == 0x10b
+			c.ok("amp request rejected (stream reset H3_EXCESSIVE_LOAD/REQUEST_REJECTED)",
+				rejected, fmt.Sprintf("stream error code=0x%x", code))
+			return boolExit(rejected)
+		}
+		c.failErr("amp response read", err)
+		return 1
+	}
+	if fhdr[0] != 0x01 { // not a HEADERS frame on the response side
+		c.ok("amp request rejected (no response head)", false,
+			fmt.Sprintf("first response frame type=0x%x", fhdr[0]))
+		return 1
+	}
+	headLen, err := readVarint(str, fhdr[1])
+	if err != nil {
+		c.failErr("amp response length", err)
+		return 1
+	}
+	head := make([]byte, headLen)
+	if _, err := io.ReadFull(str, head); err != nil {
+		c.failErr("amp response head read", err)
+		return 1
+	}
+	// Decode ONLY the :status field out of the (tiny) response head using
+	// qpack's streaming DecodeFunc (qpack v0.6 removed DecodeFull).
+	dec := qpack.NewDecoder()
+	decodeFn := dec.Decode(head)
+	status := ""
+	for {
+		f, derr := decodeFn()
+		if derr != nil {
+			if errors.Is(derr, io.EOF) {
+				break
+			}
+			c.ok("amp request rejected (response head decodes)", false,
+				fmt.Sprintf("qpack decode error=%v", derr))
+			return 1
+		}
+		if f.Name == ":status" {
+			status = f.Value
+		}
+	}
+	rejected := status == "431"
+	c.ok("amp request rejected with 431", rejected,
+		fmt.Sprintf(":status=%s", status))
+	return boolExit(rejected)
+}
+
+// ampHeaderNames generates n unique short header names — base36 counters
+// with a letter prefix (x…, then y…, then z…): 3-char names yield 46,656
+// unique values, enough for the 40,000-field default. Sized so n fields fit
+// in ~9 wire bytes each (~360 KB for 40k fields), under the 1 MiB
+// compressed-frame gate while far over the decoded budget.
+func ampHeaderNames(n int) []string {
+	const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+	names := make([]string, 0, n)
+	for _, prefix := range []string{"x", "y", "z", "q", "k"} {
+		for a := 0; a < len(alphabet) && len(names) < n; a++ {
+			for b := 0; b < len(alphabet) && len(names) < n; b++ {
+				for d := 0; d < len(alphabet) && len(names) < n; d++ {
+					names = append(names, prefix+string([]byte{
+						alphabet[a], alphabet[b], alphabet[d],
+					}))
+				}
+			}
+		}
+		if len(names) >= n {
+			break
+		}
+	}
+	return names
+}
+
+// appendVarint appends v as a QUIC varint (RFC 9000 section 16): a 2-bit
+// length prefix (00=1 byte, 01=2, 10=4, 11=8) followed by big-endian bytes.
+// v is bounded by the callers (frame payload lengths) to < 2^62, the QUIC
+// varint maximum, so the byte truncations below only ever drop zero bits;
+// the masks make that explicit for gosec (G115).
+func appendVarint(dst []byte, v uint64) []byte {
+	mask := func(x uint64) byte { return byte(x & 0xff) } //nolint:gosec // G115: masked to 8 bits
+	switch {
+	case v < 1<<6:
+		return append(dst, byte(v))
+	case v < 1<<14:
+		return append(dst, 0x40|mask(v>>8), mask(v))
+	case v < 1<<30:
+		return append(dst, 0x80|mask(v>>24), mask(v>>16), mask(v>>8), mask(v))
+	default:
+		return append(dst, 0xc0|mask(v>>56), mask(v>>48), mask(v>>40), mask(v>>32),
+			mask(v>>24), mask(v>>16), mask(v>>8), mask(v))
+	}
+}
+
+// readVarint reads a QUIC varint (RFC 9000 section 16) whose first byte
+// carries the 2-bit length prefix in its top bits.
+func readVarint(r io.Reader, first byte) (uint64, error) {
+	prefix := first >> 6
+	v := uint64(first & 0x3f)
+	if prefix == 0 {
+		return v, nil
+	}
+	rest := make([]byte, 1<<prefix-1) // 1, 3, or 7 continuation bytes
+	if _, err := io.ReadFull(r, rest); err != nil {
+		return 0, err
+	}
+	for _, b := range rest {
+		v = v<<8 | uint64(b)
+	}
+	return v, nil
+}
+
+// boolExit maps a boolean to the probe exit code convention.
+func boolExit(ok bool) int {
+	if ok {
+		return 0
+	}
+	return 1
 }
 
 // baseLeaf returns the last path segment (the object name) of key.

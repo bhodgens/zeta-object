@@ -13,6 +13,7 @@ require (
 	github.com/fclairamb/ftpserverlib v0.32.4
 	github.com/jlaffaye/ftp v0.2.4
 	github.com/pkg/sftp v1.13.11
+	github.com/quic-go/qpack v0.6.0
 	github.com/quic-go/quic-go v0.63.0
 	github.com/spf13/afero v1.15.0
 	golang.org/x/crypto v0.57.0
@@ -26,7 +27,6 @@ require (
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
-	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
