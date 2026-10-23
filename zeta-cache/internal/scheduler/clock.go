@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"math/rand/v2"
+	"sort"
 	"sync"
 	"time"
 )
@@ -48,35 +49,52 @@ func (c *FakeClock) Now() time.Time {
 	return c.now
 }
 
-// Advance moves the clock forward, firing every timer whose deadline has
-// arrived (in deadline order), before returning.
+// Advance moves the clock forward by d, firing every timer whose deadline
+// has arrived. The fires are ATOMIC with respect to consumers: all values
+// are delivered while the clock lock is held, in DESCENDING deadline order
+// (the later-due timer fires first). A consumer parked on the earliest-due
+// timer therefore only wakes once every later-due value is already buffered
+// in its own channel, so its drain select sees all of them in one pass.
+//
+// Why descending: firing earliest-first left a window - the consumer of
+// the earliest timer could wake and run its drain select BEFORE a later
+// timer fired, dropping that value to the next pass. TestSyncLoopNightlyFullRescan
+// hit it under -race (the 15m sleep beat the 24h nightly tick, so the
+// nightly pass degraded to a plain sync). Timer channels are cap-1 one-
+// shots, so the sends never block and are safe to do under the lock; a
+// concurrent NewTimer simply waits for the lock and registers a FUTURE
+// deadline, unaffected. c.now jumps straight to the target (no per-fire
+// back-and-forth), so a racing Now()/NewTimer never observes a
+// mid-advance clock.
 func (c *FakeClock) Advance(d time.Duration) {
 	c.mu.Lock()
 	target := c.now.Add(d)
-	for {
-		var (
-			best          *fakeTimer
-			deadline      time.Time
-			foundDeadline bool
-		)
-		for ft := range c.timers {
-			ft.mu.Lock()
-			dl := ft.deadline
-			ft.mu.Unlock()
-			if !dl.After(target) && (!foundDeadline || dl.Before(deadline)) {
-				best, deadline, foundDeadline = ft, dl, true
-			}
+	var due []*fakeTimer
+	for ft := range c.timers {
+		// ft.deadline is set once at NewTimer (under this same lock)
+		// and never mutated, so it is safe to read here.
+		if !ft.deadline.After(target) {
+			due = append(due, ft)
 		}
-		if best == nil {
-			break
-		}
-		c.now = deadline
-		delete(c.timers, best) // one-shot
-		c.mu.Unlock()
-		best.fire()
-		c.mu.Lock()
 	}
+	// Later-due fires first (ties are interchangeable: cap-1 one-shot
+	// channels, each timer fires exactly once).
+	sort.Slice(due, func(i, j int) bool { return due[i].deadline.After(due[j].deadline) })
 	c.now = target
+	for _, ft := range due {
+		delete(c.timers, ft)
+		ft.mu.Lock()
+		if ft.fired {
+			ft.mu.Unlock()
+			continue
+		}
+		ft.fired = true
+		ft.mu.Unlock()
+		// Fire value is the timer's own deadline (the old code sent
+		// c.Now() at fire time, which equalled the deadline because it
+		// set c.now first - same value, minus the lock re-acquisition).
+		ft.ch <- ft.deadline
+	}
 	c.mu.Unlock()
 }
 
@@ -86,28 +104,16 @@ func (c *FakeClock) Advance(d time.Duration) {
 func (c *FakeClock) Rand() func() float64 { return func() float64 { return 0 } }
 
 type fakeTimer struct {
-	c        *FakeClock
 	deadline time.Time
 	ch       chan time.Time
 	fired    bool
 	mu       sync.Mutex
 }
 
-func (t *fakeTimer) fire() {
-	t.mu.Lock()
-	if t.fired {
-		t.mu.Unlock()
-		return
-	}
-	t.fired = true
-	t.mu.Unlock()
-	t.ch <- t.c.Now()
-}
-
 // NewTimer implements Clock: the returned channel fires when Advance
 // crosses the deadline.
 func (c *FakeClock) NewTimer(d time.Duration) <-chan time.Time {
-	ft := &fakeTimer{c: c, ch: make(chan time.Time, 1)}
+	ft := &fakeTimer{ch: make(chan time.Time, 1)}
 	c.mu.Lock()
 	ft.deadline = c.now.Add(d)
 	c.timers[ft] = struct{}{}
