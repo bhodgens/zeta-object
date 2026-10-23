@@ -100,6 +100,15 @@ func main() {
 	// below swaps the wrapper's inner registry; this pointer is fixed.
 	identityRegistry = auth.NewReloadableRegistry(reg)
 
+	// STS token exchange (accessstor appliance leaf 02): load the
+	// signing key, build the CredentialResolver over the live federation
+	// registry, and install the s3 ZSTSID- hook. Fail-loud — a broken
+	// zeta_sts config aborts startup (the config is validated earlier,
+	// so a failure here is a key-file problem). Disabled = no-op.
+	if err := initSTS(); err != nil {
+		log.Fatalf("STS configuration failed: %v", err)
+	}
+
 	// Audit log (auth extensions leaf 10, charter-exception layer): open
 	// the append-only sink BEFORE the listener opens — an unwritable path
 	// is FATAL (fail-loud config contract). Absent = disabled (default

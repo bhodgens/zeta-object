@@ -7,12 +7,15 @@ go 1.27.0
 // go1.27.2; `make vuln` fails on go1.27.0. Pinning the toolchain makes the
 // requirement explicit and lets GOTOOLCHAIN fetch it, so nobody re-introduces
 // the gap by building on an older toolchain.
-toolchain go1.27.2
+// GO-2026-6809 (crypto/x509, distrust compromised intermediates) is fixed in
+// go1.27.3; the pin moved there 2026-10-21 for the same reason.
+toolchain go1.27.3
 
 require (
 	github.com/fclairamb/ftpserverlib v0.32.4
 	github.com/jlaffaye/ftp v0.2.4
 	github.com/pkg/sftp v1.13.11
+	github.com/quic-go/qpack v0.6.0
 	github.com/quic-go/quic-go v0.63.0
 	github.com/spf13/afero v1.15.0
 	golang.org/x/crypto v0.57.0
@@ -26,7 +29,6 @@ require (
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
-	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/text v0.42.0 // indirect

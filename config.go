@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/bhodgens/zeta-object/internal/auth"
 )
@@ -173,17 +174,107 @@ type ServerConfig struct {
 	// exception, decided 2026-10-02). nil/absent = disabled (default off).
 	AuditLog *AuditLogConfig `json:"auditLog,omitempty"`
 
+	// ZetaFederation configures the federated-identity registry
+	// (accessstor appliance tree leaf 01). nil/absent = federation
+	// disabled (the pre-leaf behavior, byte-identical). The block is
+	// validated fail-loud at startup (buildIdentityRegistry constructs
+	// the FederationRegistry, which fetches the discovery document) and
+	// RESTART-REQUIRED at the config store: hot-apply is deliberately not
+	// implemented in this leaf — the registry is built once, at startup.
+	ZetaFederation *auth.FederationConfig `json:"zeta_federation,omitempty"`
+
+	// ZetaSTS configures the /sts token-exchange frontend (accessstor
+	// appliance tree leaf 02). nil/absent = sts disabled (the pre-leaf
+	// behavior, byte-identical). RESTART-REQUIRED at the config store
+	// (the frontend and its listener are built once at startup); the
+	// signing-key FILE it names reloads through the SIGHUP path.
+	ZetaSTS *STSConfig `json:"zeta_sts,omitempty"`
+	// ZetaConsoleOIDC is the raw console-OIDC block (accessstor appliance
+	// leaf 03 wiring): parsed at admin-frontend assembly time via
+	// admin.ParseConsoleOIDCBlock, keeping the duration-string JSON shape
+	// in one place (the admin package).
+	ZetaConsoleOIDC json.RawMessage `json:"zeta_console_oidc,omitempty"`
+
 	// bucketsErr carries a buckets-map decode failure (null/empty bucket
 	// value) out of the custom UnmarshalJSON path; it is not a JSON key.
 	bucketsErr error
 }
 
 // AuditLogConfig is the config.json "auditLog" block (auth extensions leaf
-// 10): the append-only SigV4 request audit trail. Path empty/absent =
-// disabled (default off). The writer-ONLY contract (AGENTS.md charter): no
+// 10): the append-only SigV4 request audit trail. Path empty/absent = disabled
+// (default off). The writer-ONLY contract (AGENTS.md charter): no
 // code path ever reads the file.
 type AuditLogConfig struct {
 	Path string `json:"path"`
+}
+
+// STSConfig is the zeta_sts config block (accessstor appliance tree leaf
+// 02). Zero value / nil pointer = sts disabled.
+//
+// TTL fields are STRINGS in JSON ("3600s", Go duration syntax) because a
+// bare time.Duration would decode nanoseconds-as-int — the same trap the
+// zeta_console_oidc.session_ttl block avoids by parsing the string form.
+type STSConfig struct {
+	Enabled bool
+	// TTL / MaxTTL are the mint default (3600s) and the requested_ttl cap
+	// (43200s). Zero = leaf defaults applied by the sts frontend.
+	TTL    time.Duration `json:"-"`
+	MaxTTL time.Duration `json:"-"`
+	// TTLRaw / MaxTTLRaw are the JSON wire forms ("" = default).
+	TTLRaw    string `json:"ttl,omitempty"`
+	MaxTTLRaw string `json:"max_ttl,omitempty"`
+	// SigningKeyFile is the PATH to the HMAC server signing key (PEM or
+	// raw bytes). A path reference, NEVER an inline secret; the file is
+	// provisioned by the appliance and read at startup plus on every
+	// identity reload (SIGHUP / POST /auth/reload), so a key rotation
+	// invalidates outstanding temporary credentials fail-closed.
+	SigningKeyFile string `json:"signing_key_file,omitempty"`
+}
+
+// UnmarshalJSON decodes the wire form and resolves the duration strings.
+// Unknown keys are an error (fail-loud; the posture used across the
+// config surface) — a typo like "signing_key_fiel" must never silently
+// disable the signing key.
+func (c *STSConfig) UnmarshalJSON(data []byte) error {
+	type raw struct {
+		Enabled        bool   `json:"enabled"`
+		TTL            string `json:"ttl,omitempty"`
+		MaxTTL         string `json:"max_ttl,omitempty"`
+		SigningKeyFile string `json:"signing_key_file,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var r raw
+	if err := dec.Decode(&r); err != nil {
+		return err
+	}
+	*c = STSConfig{Enabled: r.Enabled, SigningKeyFile: r.SigningKeyFile, TTLRaw: r.TTL, MaxTTLRaw: r.MaxTTL}
+	dur := func(name, raw string, into *time.Duration) error {
+		if raw == "" {
+			return nil
+		}
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return fmt.Errorf("invalid zeta_sts.%s %q: %w", name, raw, err)
+		}
+		*into = d
+		return nil
+	}
+	if err := dur("ttl", r.TTL, &c.TTL); err != nil {
+		return err
+	}
+	return dur("max_ttl", r.MaxTTL, &c.MaxTTL)
+}
+
+// MarshalJSON renders the wire form (durations as their raw strings).
+func (c STSConfig) MarshalJSON() ([]byte, error) {
+	type raw struct {
+		Enabled        bool   `json:"enabled"`
+		TTL            string `json:"ttl,omitempty"`
+		MaxTTL         string `json:"max_ttl,omitempty"`
+		SigningKeyFile string `json:"signing_key_file,omitempty"`
+	}
+	return json.Marshal(raw{Enabled: c.Enabled, TTL: c.TTLRaw, MaxTTL: c.MaxTTLRaw, SigningKeyFile: c.SigningKeyFile})
 }
 
 // AuthConfig is the config.json "auth" block (pluggable-authentication tree
@@ -529,24 +620,27 @@ func loadConfig(configPath string) error {
 // A null buckets value fails with the bucket's name in the message.
 func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	type alias struct {
-		DataDir                       string                `json:"dataDir"`
-		ListenAddr                    string                `json:"listenAddr"`
-		CertFile                      string                `json:"certFile"`
-		KeyFile                       string                `json:"keyFile"`
-		Frontends                     []FrontendConfig      `json:"frontends"`
-		Backends                      map[string]BackendCfg `json:"backends"`
-		Buckets                       bucketsRaw            `json:"buckets"`
-		AuditLog                      *AuditLogConfig       `json:"auditLog"`
-		Identities                    []auth.IdentityConfig `json:"identities"`
-		Auth                          AuthConfig            `json:"auth"`
-		ZmetadDBPath                  string                `json:"zmetad_db_path"`
-		ZmetadBinary                  string                `json:"zmetad_binary"`
-		Region                        string                `json:"region"`
-		ZfsVersioning                 string                `json:"zfs_versioning"`
-		ZfsVersioningReflinkRetention int                   `json:"zfs_versioning_reflink_retention"`
-		ZfsBucketDatasets             bool                  `json:"zfs_bucket_datasets"`
-		ZfsBinary                     string                `json:"zfs_binary"`
-		ZfsNativeTags                 bool                  `json:"zfs_native_tags"`
+		DataDir                       string                 `json:"dataDir"`
+		ListenAddr                    string                 `json:"listenAddr"`
+		CertFile                      string                 `json:"certFile"`
+		KeyFile                       string                 `json:"keyFile"`
+		Frontends                     []FrontendConfig       `json:"frontends"`
+		Backends                      map[string]BackendCfg  `json:"backends"`
+		Buckets                       bucketsRaw             `json:"buckets"`
+		AuditLog                      *AuditLogConfig        `json:"auditLog"`
+		Identities                    []auth.IdentityConfig  `json:"identities"`
+		Auth                          AuthConfig             `json:"auth"`
+		ZetaFederation                *auth.FederationConfig `json:"zeta_federation"`
+		ZetaSTS                       *STSConfig             `json:"zeta_sts"`
+		ZetaConsoleOIDC               json.RawMessage        `json:"zeta_console_oidc"`
+		ZmetadDBPath                  string                 `json:"zmetad_db_path"`
+		ZmetadBinary                  string                 `json:"zmetad_binary"`
+		Region                        string                 `json:"region"`
+		ZfsVersioning                 string                 `json:"zfs_versioning"`
+		ZfsVersioningReflinkRetention int                    `json:"zfs_versioning_reflink_retention"`
+		ZfsBucketDatasets             bool                   `json:"zfs_bucket_datasets"`
+		ZfsBinary                     string                 `json:"zfs_binary"`
+		ZfsNativeTags                 bool                   `json:"zfs_native_tags"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
@@ -571,6 +665,9 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	c.ZfsBinary = a.ZfsBinary
 	c.ZfsNativeTags = a.ZfsNativeTags
 	c.AuditLog = a.AuditLog
+	c.ZetaFederation = a.ZetaFederation
+	c.ZetaSTS = a.ZetaSTS
+	c.ZetaConsoleOIDC = a.ZetaConsoleOIDC
 	a.Buckets.apply(c)
 	return c.bucketsErr
 }
@@ -588,6 +685,23 @@ func buildIdentityRegistry() (*auth.MultiRegistry, error) {
 	case "", authModeNone:
 	default:
 		return nil, fmt.Errorf("invalid auth.mode %q (want \"\" or %q)", cfg.Auth.Mode, authModeNone)
+	}
+	// Federation block (accessstor appliance leaf 01): validate fail-loud
+	// at startup by constructing the registry (which fetches and checks
+	// the discovery document). Absent block = federation disabled, zero
+	// impact. Validation happens BEFORE the registry build so a broken
+	// federation config never half-installs identities.
+	//
+	// The constructed registry is ALSO published to the process mirror
+	// (sts_wiring.go) the sts resolver reads through: identity reloads
+	// replace the mirror, so ZSTSID- grant re-resolution always sees the
+	// live registry.
+	if cfg.ZetaFederation != nil {
+		fed, err := auth.NewFederationRegistry(*cfg.ZetaFederation)
+		if err != nil {
+			return nil, fmt.Errorf("invalid zeta_federation: %w", err)
+		}
+		installFederationRegistry(fed)
 	}
 	identities := make([]auth.IdentityConfig, 0, 1+len(cfg.Identities))
 	identities = append(identities, auth.EnvPair(serverCredentials.AccessKeyID, serverCredentials.SecretAccessKey))
@@ -624,21 +738,32 @@ var serverConfigPath string
 // NOT apply at reload, so a bad edit cannot take a running server down —
 // and one loud line carries the validator's named-offender error. On
 // success it logs the rotated-in identity NAMES only, never secrets
-// (buildIdentityRegistry re-reads the env pair from the process
-// environment, which is fixed; rotating the env identity therefore still
-// requires a restart — documented limitation, never hidden).
+// (buildIdentityRegistry re-reads the env pair via loadCredentials,
+// which now prefers the persisted rotated-secret file written by
+// POST /api/admin/password — the env VAR itself is fixed, so the
+// route's rotation reaches the registry through that file).
 func reloadIdentityRegistry() error {
 	if err := loadConfig(serverConfigPath); err != nil {
 		log.Printf("WARNING: auth identity reload failed, keeping previous registry: %v", err)
 		return err
 	}
-	// The process environment is fixed, so this re-read is a no-op in
-	// practice; it keeps the reload sequence byte-identical to startup.
+	// loadCredentials re-resolves the env pair — the env VARS are fixed,
+	// but a rotated secret persisted by POST /api/admin/password changes
+	// what this read resolves, which is exactly how the route activates
+	// a rotation without a restart.
 	loadCredentials()
 	reg, err := buildIdentityRegistry()
 	if err != nil {
 		log.Printf("WARNING: auth identity reload failed, keeping previous registry: %v", err)
 		return err
+	}
+	// The signing key rides the same reload sequence (leaf 02): a
+	// rotated zeta_sts.signing_key_file invalidates outstanding
+	// ZSTSID- credentials without a restart. A key-read failure is
+	// reported but does NOT fail the identity reload (each rotation
+	// surface is independent; the old key keeps serving).
+	if err := reloadSTSSigningKey(); err != nil {
+		log.Printf("WARNING: sts signing key reload failed, keeping previous key: %v", err)
 	}
 	identityRegistry.Swap(reg)
 	names := reg.Names()
@@ -662,10 +787,21 @@ var serverCredentials = struct {
 // that is SET but EMPTY is warned about and falls back to the default
 // (zetaadmin) instead of silently behaving like an unset variable.
 //
+// Rotated-secret precedence (Contract G4): when POST /api/admin/password
+// has persisted a rotated secret beside the config file, that file WINS
+// over ZETAOBJECT_SECRET_KEY for the secret half (the access key stays
+// env-resolved). Startup and every reload run this function, so the
+// rotation survives restarts and takes effect on the reloadIdentityRegistry
+// swap without one.
+//
 // Deprecated prefix: MINIS3_* remains a fallback until two minor releases
 // after the zeta-object rename. ZETAOBJECT_* always wins when both are set.
 func loadCredentials() {
 	serverCredentials.AccessKeyID = credentialFromEnv("ZETAOBJECT_ACCESS_KEY", "MINIS3_ACCESS_KEY")
+	if rotated, ok := readAdminCredential(); ok {
+		serverCredentials.SecretAccessKey = rotated
+		return
+	}
 	serverCredentials.SecretAccessKey = credentialFromEnv("ZETAOBJECT_SECRET_KEY", "MINIS3_SECRET_KEY")
 }
 

@@ -140,7 +140,22 @@ func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter 
 // Every AUTHENTICATED request appends EXACTLY ONE audit record (principal =
 // certificate CN, op = admin); a rejected handshake writes no record because
 // there is no principal to attribute it to.
+//
+// Leaf 03: /auth/login, /auth/callback and /auth/logout are the console
+// OIDC flow — login and callback are the IdP round trip and run WITHOUT
+// credentials (the state cookie and the exchange ARE the authentication);
+// everything else, including /capabilities, requires mTLS OR a valid
+// fed_session (mTLS precedence when both are present), and every
+// authenticated request still appends exactly one audit record.
 func (f *adminFrontend) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if path := r.URL.Path; path == "/auth/login" || path == "/auth/callback" || path == "/auth/logout" {
+		f.serveFedRoute(w, r)
+		return
+	}
+	if r.URL.Path == "/capabilities" {
+		f.serveCapabilities(w, r)
+		return
+	}
 	principal, status, code := f.authenticate(r)
 	if status != 0 {
 		writeError(w, status, code, messageForCode(code))
@@ -177,6 +192,92 @@ func messageForCode(code string) string {
 	}
 }
 
+// serveFedRoute is the /auth/* dispatcher (leaf 03). When console
+// federation is disabled the routes do not exist (404, exactly the pre-leaf
+// behavior). login/callback run unauthenticated (they ARE the
+// authentication round trip); logout requires a principal — mTLS or a
+// valid fed_session — via fedAuth. Every request is audited exactly once.
+func (f *adminFrontend) serveFedRoute(w http.ResponseWriter, r *http.Request) {
+	if !f.fed.enabled() {
+		writeError(w, http.StatusNotFound, "NotFound", "no such route")
+		return
+	}
+	wrap := f.fed.fedAuth(func(w http.ResponseWriter, r *http.Request, principal string, fed bool) {
+		f.dispatchFed(w, r, principal, fed)
+	})
+	switch r.URL.Path {
+	case "/auth/login":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed for this route")
+			return
+		}
+		f.fed.handleAuthLogin(w, r)
+	case "/auth/callback":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed for this route")
+			return
+		}
+		f.fed.handleAuthCallback(w, r)
+	case "/auth/logout":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed for this route")
+			return
+		}
+		wrap(w, r)
+	default:
+		writeError(w, http.StatusNotFound, "NotFound", "no such route")
+	}
+}
+
+// dispatchFed runs the logout handler inside the fedAuth wrapper and
+// appends the single audit record for an authenticated fed-route request.
+// (Login and callback are NOT audited here: the callback path audits its
+// own login record inside handleAuthCallback, and login is a redirect —
+// there is no authenticated principal yet.)
+func (f *adminFrontend) dispatchFed(w http.ResponseWriter, r *http.Request, principal string, fed bool) {
+	rec := &statusRecorder{ResponseWriter: w}
+	f.fed.handleAuthLogout(rec, r, principal, fed)
+	if rec.status == 0 {
+		rec.status = http.StatusOK
+	}
+	f.auditRequest(principal, r.Method, "", "", rec.status)
+}
+
+// serveCapabilities is the /capabilities dispatcher (leaf 03): fedAuth
+// (mTLS precedence, fed_session accepted), then the live-source handler.
+// The single per-request audit record is written by
+// serveCapabilitiesAuthed, which fedAuth's inner handler wraps.
+func (f *adminFrontend) serveCapabilities(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed for this route")
+		return
+	}
+	if f.fed.enabled() {
+		f.fed.fedAuth(func(w http.ResponseWriter, r *http.Request, principal string, fed bool) {
+			f.serveCapabilitiesAuthed(w, r, principal)
+		})(w, r)
+		return
+	}
+	// Federation disabled: mTLS only, exact pre-leaf behavior.
+	p, status, code := f.authenticate(r)
+	if status != 0 {
+		writeError(w, status, code, messageForCode(code))
+		return
+	}
+	f.serveCapabilitiesAuthed(w, r, p)
+}
+
+// serveCapabilitiesAuthed runs the capabilities handler and records the
+// single per-request audit entry.
+func (f *adminFrontend) serveCapabilitiesAuthed(w http.ResponseWriter, r *http.Request, principal string) {
+	rec := &statusRecorder{ResponseWriter: w}
+	f.handleCapabilities(rec, r)
+	if rec.status == 0 {
+		rec.status = http.StatusOK
+	}
+	f.auditRequest(principal, r.Method, "", "", rec.status)
+}
+
 // routeKind identifies a management route independently of its method.
 type routeKind int
 
@@ -190,6 +291,7 @@ const (
 	routeBucket
 	routeBucketSettings
 	routePurge
+	routeAdminPassword
 )
 
 // classify maps (method, path) to a route kind, its {name} path parameter and
@@ -210,6 +312,11 @@ func classify(method, path string) (kind routeKind, name string, methodOK bool) 
 		return routeBuckets, "", method == http.MethodGet || method == http.MethodPost
 	case "/purge":
 		return routePurge, "", method == http.MethodPost
+	case "/api/admin/password":
+		// Contract G4 option (a): the appliance firstboot wizard POSTs this
+		// literal path at the admin frontend directly (no console proxy in
+		// front), so the /api prefix is part of the route itself here.
+		return routeAdminPassword, "", method == http.MethodPost
 	}
 	if !strings.HasPrefix(path, "/buckets/") {
 		return routeUnknown, "", false
@@ -275,6 +382,9 @@ func (f *adminFrontend) dispatch(w http.ResponseWriter, r *http.Request) (bucket
 		return name, ""
 	case routePurge:
 		return f.handlePurge(w, r)
+	case routeAdminPassword:
+		f.handleAdminPassword(w, r)
+		return "", ""
 	}
 	return "", ""
 }
@@ -492,4 +602,34 @@ func (f *adminFrontend) handlePurge(w http.ResponseWriter, r *http.Request) (buc
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"purged": true, "dataset": body.Dataset})
 	return "", body.Dataset
+}
+
+// handleAdminPassword serves POST /api/admin/password (appliance Contract
+// G4 option a): rotate the bootstrap admin credential. mTLS-gated like
+// every route (serveHTTP's authenticate wrapper); the body carries ONLY
+// {"new_password": "..."}. The password is never logged, never echoed in
+// a response or error body, and never used as an audit coordinate.
+func (f *adminFrontend) handleAdminPassword(w http.ResponseWriter, r *http.Request) {
+	if f.opts.Services.SetAdminPassword == nil {
+		serviceUnavailable(w, "POST /api/admin/password")
+		return
+	}
+	var body struct {
+		NewPassword string `json:"new_password"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.NewPassword) == "" {
+		writeError(w, http.StatusBadRequest, "InvalidArgument", `body must carry a non-empty "new_password"`)
+		return
+	}
+	if err := f.opts.Services.SetAdminPassword(r.Context(), body.NewPassword); err != nil {
+		// writeServiceFailure renders the service's own status/code; a
+		// generic failure becomes "admin password change failed" — the
+		// message never contains the credential.
+		writeServiceFailure(w, "admin password change", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"changed": true})
 }

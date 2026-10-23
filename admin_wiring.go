@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"runtime/debug"
 	"sort"
 	"sync"
@@ -53,17 +55,18 @@ func buildAdminWiring(audit admin.AuditFunc) adminWiring {
 		metadata.SetZmetadBinary(provider, serverConfig().ZmetadBinary)
 	}
 	svc := admin.Services{
-		Status:         adminStatusService,
-		GetConfig:      adminGetConfigService,
-		PutConfig:      adminPutConfigService,
-		SaveConfig:     adminSaveConfigService,
-		ReloadAuth:     adminReloadAuthService,
-		ListBuckets:    adminListBucketsService,
-		CreateBucket:   adminCreateBucketService,
-		DeleteBucket:   adminDeleteBucketService,
-		BucketDetail:   adminBucketDetailService,
-		BucketSettings: adminBucketSettingsService,
-		Purge:          adminPurgeService(provider),
+		Status:           adminStatusService,
+		GetConfig:        adminGetConfigService,
+		PutConfig:        adminPutConfigService,
+		SaveConfig:       adminSaveConfigService,
+		ReloadAuth:       adminReloadAuthService,
+		SetAdminPassword: adminSetAdminPasswordService,
+		ListBuckets:      adminListBucketsService,
+		CreateBucket:     adminCreateBucketService,
+		DeleteBucket:     adminDeleteBucketService,
+		BucketDetail:     adminBucketDetailService,
+		BucketSettings:   adminBucketSettingsService,
+		Purge:            adminPurgeService(provider),
 	}
 	return adminWiring{services: svc, audit: audit}
 }
@@ -207,6 +210,43 @@ func adminReloadAuthService(_ context.Context) error {
 	}
 	if caErr != nil {
 		return &admin.ServiceError{Status: 500, Code: "ReloadFailed", Message: caErr.Error()}
+	}
+	return nil
+}
+
+// adminSetAdminPasswordService is POST /api/admin/password (appliance
+// Contract G4 option a): rotate the bootstrap admin credential (the env
+// identity's secret). Two phases, fail-loud:
+//
+//  1. Persist: the new secret is written atomically (0600, temp+rename) to
+//     the admin-credential file beside the config file — on the appliance
+//     that is the zas-config dataset, so the credential travels with the
+//     pool. A persist failure changes nothing and answers 500.
+//  2. Activate: reloadIdentityRegistry() — the EXACT path POST /auth/reload
+//     and SIGHUP use (loadConfig → loadCredentials → rebuild → atomic
+//     swap). loadCredentials now prefers the persisted file, so the new
+//     secret takes effect without a restart and survives restarts.
+//
+// On an activation failure the persisted file is REMOVED and
+// loadCredentials is re-run so the live credential store snaps back to the
+// env value (the old registry keeps serving in the meantime — the reload
+// path is fail-closed). The password value itself never appears in a log
+// line or an error message.
+func adminSetAdminPasswordService(_ context.Context, newPassword string) error {
+	if err := persistAdminCredential(newPassword); err != nil {
+		return &admin.ServiceError{Status: 500, Code: "PersistFailed", Message: err.Error()}
+	}
+	if err := reloadIdentityRegistry(); err != nil {
+		// Roll the persisted rotation back so the process credential
+		// store and the next restart agree on the previous secret.
+		if path, perr := adminCredentialPath(); perr == nil {
+			if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+				log.Printf("WARNING: rollback of the persisted admin credential failed (%v); remove %s manually", rmErr, path)
+			}
+		}
+		loadCredentials()
+		return &admin.ServiceError{Status: 500, Code: "ReloadFailed",
+			Message: "credential activation failed and the rotation was rolled back: " + err.Error()}
 	}
 	return nil
 }

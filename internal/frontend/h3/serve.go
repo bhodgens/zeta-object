@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -50,12 +51,29 @@ func (f *Frontend) Listen() (*Server, error) {
 		udpConn.Close()
 		return nil, fmt.Errorf("h3 frontend %s: opening QUIC listener: %w", f.Addr(), err)
 	}
+	// h3MaxHeaderBytes pins the decoded-header budget explicitly instead of
+	// leaning on quic-go's http.DefaultMaxHeaderBytes fallback: the FoxIO
+	// "Header Accordions" research (Oct 2026, CVE-2025-64702 class) showed
+	// servers that leave the decoded size unconfigured are the ones that
+	// amplify. quic-go v0.63.0 enforces this budget incrementally per
+	// decoded field (RFC 9114 4.2.2: name + value + 32-byte overhead each)
+	// and answers 431 / H3_EXCESSIVE_LOAD, but the value only exists at all
+	// when the server sets it — so it is set here, matching the TCP
+	// frontends' http.DefaultMaxHeaderBytes (1 MiB).
 	return &Server{
-		srv:     &http3.Server{Handler: f.wrapped.Handler()},
+		srv: &http3.Server{
+			Handler:        f.wrapped.Handler(),
+			MaxHeaderBytes: h3MaxHeaderBytes,
+		},
 		ln:      ln,
 		udpConn: udpConn,
 	}, nil
 }
+
+// h3MaxHeaderBytes is the decoded request-header budget (compressed OR
+// expanded — RFC 9114 4.2.2 accounting) for the h3 frontend. Same number the
+// net/http TCP servers use by default (http.DefaultMaxHeaderBytes).
+const h3MaxHeaderBytes = http.DefaultMaxHeaderBytes
 
 // Serve accepts QUIC connections until Close. Blocking. Returns
 // http.ErrServerClosed after Close (the same contract the TCP

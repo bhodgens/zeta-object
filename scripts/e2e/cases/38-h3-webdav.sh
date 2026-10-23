@@ -17,6 +17,10 @@
 #        (transport-independent), and alt-svc: h3="<port>"; persist=1 on
 #        every response (the UDP port in the value matches the h3
 #        frontend's configured port).
+#   38d. QPACK header-amplification rejection (FoxIO "Header Accordions",
+#        CVE-2025-64702 class): a HEADERS block under the compressed-frame
+#        gate whose decoded form exceeds the budget -> 431 / H3_EXCESSIVE_
+#        LOAD reset, and the server still serves a normal request after.
 #
 # No soft-skip path: go is always present (the harness builds the server).
 # Certificates follow case 35's generation pattern (CA + signed client leaf
@@ -181,5 +185,29 @@ E38_ALTSVC=$(curl -sk -o /dev/null -D - -u "$E38_USER:$E38_PASS" \
 	"$E38_WD_URL/" 2>/dev/null | grep -i '^alt-svc:' | tr -d '\r')
 assert_contains '38c alt-svc names the h3 UDP port from config' "$E38_ALTSVC" "h3=\":$E38_PORT_H3\"; persist=1"
 
+# --- 38d: QPACK header-amplification rejection (FoxIO "Header Accordions", ----
+# CVE-2025-64702 class, 2026-10). One request whose HEADERS block stays under
+# the 1 MiB compressed-frame gate on the wire (~300 KB) while its DECODED
+# field list exceeds the 1 MiB RFC 9114 4.2.2 budget. The server must reject
+# it (431 or H3_EXCESSIVE_LOAD reset) WITHOUT materializing the fields, and
+# must still serve a normal request afterwards. Requires mTLS, so it rides
+# the same client certificate 38a/38b used.
+E38_AOUT=$(# -mod=mod: cases 12/13 create vendor/ mid-suite; Go then treats vendor/ as
+# a vendor tree and dies on the missing modules.txt.
+go run -mod=mod ./scripts/e2e/h3probe -mode amp \
+	-url "$E38_H3_URL" \
+	-cert "$E38_CERT/client.pem" -key "$E38_CERT/client-key.pem" 2>&1)
+E38_ARC=$?
+printf '%s\n' "$E38_AOUT" | sed 's/^/    /'
+case "$E38_AOUT" in
+*"h3probe: "*)
+	E38_ATALLY=$(printf '%s\n' "$E38_AOUT" | sed -n 's/^h3probe: \([0-9]*\/[0-9]*\) PASS$/\1/p' | tail -1)
+	assert_eq '38d amp probe tally clean (N/N PASS)' "$E38_ATALLY" "${E38_ATALLY%%/*}/${E38_ATALLY##*/}"
+	assert_eq '38d amp probe exit code 0' 0 "$E38_ARC"
+	;;
+*)
+	assert_contains '38d amp probe produced a tally line' "$E38_AOUT" 'h3probe:'
+	;;
+esac
 
 printf '\n'

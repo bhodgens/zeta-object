@@ -58,6 +58,14 @@ var configUpdateKeys = map[string]bool{
 	"zmetad_binary": true, "region": true, "zfs_versioning": true,
 	"zfs_versioning_reflink_retention": true, "zfs_bucket_datasets": true,
 	"zfs_binary": true, "bucketSettings": true,
+	// Federation (accessstor appliance leaf 01): patchable but always
+	// restart-required — the registry is built once at startup.
+	"zeta_federation": true,
+	// STS token-exchange frontend (accessstor appliance leaf 02):
+	// patchable but restart-required — the frontend and its listener are
+	// built once at startup. The signing-key FILE the block names reloads
+	// through the identity-reload path without a restart.
+	"zeta_sts": true,
 }
 
 // hotApplyKeys is the pinned hot-apply set (Contract 3): the top-level keys
@@ -405,6 +413,31 @@ func mergePatchField(candidate, live *ServerConfig, key string, raw json.RawMess
 			return fmt.Errorf("invalid auth: %w", err)
 		}
 		candidate.Auth = v
+	case "zeta_federation":
+		var v *auth.FederationConfig
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return fmt.Errorf("invalid zeta_federation: %w", err)
+		}
+		// Same fail-loud validation the startup path uses: construct the
+		// registry (fetching discovery). A nil object (explicit null)
+		// disables federation.
+		if v != nil {
+			if _, err := auth.NewFederationRegistry(*v); err != nil {
+				return fmt.Errorf("invalid zeta_federation: %w", err)
+			}
+		}
+		candidate.ZetaFederation = v
+	case "zeta_sts":
+		v, err := parseSTSConfigBlock(raw)
+		if err != nil {
+			return err
+		}
+		// A nil-returning parse means the block is absent/disabled.
+		stsCfg := v
+		candidate.ZetaSTS = &stsCfg
+		if raw == nil || string(raw) == "null" {
+			candidate.ZetaSTS = nil
+		}
 	case "auditLog":
 		var v *AuditLogConfig
 		if err := json.Unmarshal(raw, &v); err != nil {
@@ -906,6 +939,14 @@ func deepCopyServerConfig(cfg *ServerConfig) ServerConfig {
 		al := *cfg.AuditLog
 		cp.AuditLog = &al
 	}
+	if cfg.ZetaFederation != nil {
+		fed := *cfg.ZetaFederation
+		cp.ZetaFederation = &fed
+	}
+	if cfg.ZetaSTS != nil {
+		stsCfg := *cfg.ZetaSTS
+		cp.ZetaSTS = &stsCfg
+	}
 	cp.bucketsErr = nil
 	return cp
 }
@@ -932,6 +973,8 @@ type persistableConfig struct {
 	Backends                      map[string]BackendCfg    `json:"backends,omitempty"`
 	Identities                    []auth.IdentityConfig    `json:"identities,omitempty"`
 	Auth                          AuthConfig               `json:"auth"`
+	ZetaFederation                *auth.FederationConfig   `json:"zeta_federation,omitempty"`
+	ZetaSTS                       *STSConfig               `json:"zeta_sts,omitempty"`
 	ZmetadDBPath                  string                   `json:"zmetad_db_path"`
 	ZmetadBinary                  string                   `json:"zmetad_binary"`
 	Region                        string                   `json:"region"`
@@ -967,6 +1010,8 @@ func marshalConfigDocument(cfg *ServerConfig) ([]byte, error) {
 		Backends:                      cfg.Backends,
 		Identities:                    cfg.Identities,
 		Auth:                          cfg.Auth,
+		ZetaFederation:                cfg.ZetaFederation,
+		ZetaSTS:                       cfg.ZetaSTS,
 		ZmetadDBPath:                  cfg.ZmetadDBPath,
 		ZmetadBinary:                  cfg.ZmetadBinary,
 		Region:                        cfg.Region,

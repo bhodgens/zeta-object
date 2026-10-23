@@ -191,11 +191,21 @@ jobs:
             # 80% coverage and a package with none were gated identically. CI has
             # been running these jobs and enforcing nothing. Floors are CI's own
             # linux numbers from the green run 37990770019, minus 2.
-            github.com/bhodgens/zeta-object/internal/adminserver/gateway) FLOOR=76 ;; # measured 77.6 (2026-10-11, linux, go1.27.2)
-            github.com/bhodgens/zeta-object/internal/batchops) FLOOR=87 ;; # measured 88.4 (2026-10-11, linux, go1.27.2)
-            github.com/bhodgens/zeta-object/internal/frontend/admin) FLOOR=83 ;; # measured 84.9 (2026-10-11, linux, go1.27.2)
-            github.com/bhodgens/zeta-object/internal/frontend/autherr) FLOOR=99 ;; # measured 100.0 (2026-10-11, linux, go1.27.2)
-            github.com/bhodgens/zeta-object/internal/frontend/h3) FLOOR=89 ;; # measured 90.7 (2026-10-11, linux, go1.27.2)
+            #
+            # 2026-10-22 appliance merge: main and the appliance branch each
+            # re-measured these 5 packages since the G8 audit, and the merged
+            # tree (union of both test sets) has not been measured on linux
+            # yet. Until the CI floor job re-measures, gate on the MIN of the
+            # two branches' floors - the only value guaranteed not to exceed
+            # the merged tree's coverage. Ratchet each back up to the
+            # CI-measured number in the next change that touches the package
+            # (AGENTS.md "floors move with code").
+            github.com/bhodgens/zeta-object/internal/adminserver/gateway) FLOOR=76 ;; # min(main 76 @77.6, appliance 78 @80.2); re-measure post-merge
+            github.com/bhodgens/zeta-object/internal/batchops) FLOOR=86 ;; # min(main 87 @88.4, appliance 86 @88.4); re-measure post-merge
+            github.com/bhodgens/zeta-object/internal/frontend/admin) FLOOR=83 ;; # both branches 83 (main @84.9, appliance @85.2)
+            github.com/bhodgens/zeta-object/internal/frontend/autherr) FLOOR=98 ;; # min(main 99 @100.0, appliance 98 @100.0)
+            github.com/bhodgens/zeta-object/internal/frontend/h3) FLOOR=89 ;; # both branches 89 (main @90.7, appliance @91.0)
+            github.com/bhodgens/zeta-object/internal/frontend/sts) FLOOR=60 ;; # appliance-only pkg (leaf 02 sts); measured 62.6; mTLS listener paths e2e-covered, resolver via s3; RAISE as tests land
             # main-only probe/fixture programs: exercised by their e2e cases,
             # not by unit tests. FLOOR=0 is correct for these, stated on purpose.
             github.com/bhodgens/zeta-object/scripts/e2e/h3probe)            FLOOR=0  ;; # main-only e2e probe binary; run by scripts/e2e, not unit-tested

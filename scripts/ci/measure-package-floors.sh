@@ -56,10 +56,11 @@ floor_for() {
     */internal/objectmodel)                         echo 91 ;;
     */internal/adminserver)                         echo 86 ;;
     */internal/adminserver/gateway)                  echo 76 ;;
-    */internal/batchops)                             echo 87 ;;
+    */internal/batchops)                             echo 86 ;;
     */internal/frontend/admin)                       echo 83 ;;
-    */internal/frontend/autherr)                     echo 99 ;;
+    */internal/frontend/autherr)                     echo 98 ;;
     */internal/frontend/h3)                          echo 89 ;;
+    */internal/frontend/sts)                         echo 60 ;;
     */scripts/e2e/h3probe)                           echo 0  ;;
     */scripts/e2e/fixtures/zmetad-fixture)           echo 0  ;;
     */cmd/admin-server)                             echo 0  ;;

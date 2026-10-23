@@ -260,11 +260,17 @@ func (f *Frontend) authenticateRequest(r *http.Request) (auth.Identity, *authFai
 
 // credentialSecret resolves the signing secret for accessKeyID and returns
 // the FULL identity (pluggable-authentication tree leaf 02). Resolution
-// order: the installed IdentityRegistry (LookupByAccessKey — grants
-// populated) wins; the legacy CredentialSource is the fallback (tests /
-// transitional), synthesizing the wildcard identity so the pre-tree
-// "single omnipotent pair" semantic is unchanged on that path.
+// order: ZSTSID- temporary credentials first (leaf 02 Task 2 — stateless
+// re-derivation + expiry + request-time grants; the env/access-key paths
+// below are untouched), then the installed IdentityRegistry
+// (LookupByAccessKey — grants populated) wins; the legacy CredentialSource
+// is the fallback (tests / transitional), synthesizing the wildcard
+// identity so the pre-tree "single omnipotent pair" semantic is unchanged
+// on that path.
 func (f *Frontend) credentialSecret(accessKeyID string) (string, auth.Identity, bool) {
+	if isTempAccessKey(accessKeyID) {
+		return f.tempCredentialSecret(accessKeyID)
+	}
 	if reg := identityRegistryFor(); reg != nil {
 		if id, ok := reg.LookupByAccessKey(accessKeyID); ok {
 			if st, ok2 := registrySecretSource(reg); ok2 {

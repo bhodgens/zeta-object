@@ -197,6 +197,12 @@ ssh -o BatchMode=yes "$HOST" "
   sudo zfs set events=on '$DATASET'
   sudo chown -R \$(id -u):\$(id -g) '/$DATASET'
 "
+# The server runs UNPRIVILEGED as the ssh user (setsid nohup ./zeta-server),
+# so a root-owned mountpoint makes every PUT EACCES (section-15 checks fail
+# with opaque empty lists; observed in CI run 38956871762). Assert as the
+# ssh user - NOT via sudo - before anything starts the server.
+ssh -o BatchMode=yes "$HOST" "test -w '/$DATASET'" \
+  || die "scratch dataset $DATASET is not writable by the server user ($(ssh -o BatchMode=yes "$HOST" 'id -un')); chown it (sudo chown -R caimlas /$DATASET) - the zeta-server PUTs will EACCES otherwise (observed in CI run 38956871762)"
 
 # ------------------------------------------------------------- zmetad ------
 # /dev/zfs is 0666 on this host, so zmetad runs unprivileged. Poll interval

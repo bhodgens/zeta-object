@@ -186,7 +186,7 @@ Edit `identities` in `config.json`, then send the server SIGHUP (`kill -HUP <pid
 - A bad edit fails closed. A config that will not parse or validate (torn file, duplicate access key) is rejected at reload: the old registry keeps serving and the error is logged naming the offender. The server never goes down over a bad edit.
 - Reload logs identity names only. Secret keys are never printed.
 
-Limitations: SIGHUP is a POSIX signal (on Windows, rotate by restart). The env pair (`ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY`) is read from the process environment, which cannot change at runtime — rotating the env identity still requires a restart. Use `identities` in `config.json` for keys you need to rotate.
+Limitations: SIGHUP is a POSIX signal (on Windows, rotate by restart). The env pair (`ZETAOBJECT_ACCESS_KEY`/`ZETAOBJECT_SECRET_KEY`) is read from the process environment, which cannot change at runtime — but the management API's `POST /api/admin/password` rotates the env identity's SECRET without a restart by persisting the rotated value beside the config file (which then takes precedence over the env var at every subsequent load). The env ACCESS KEY is still restart-only. Use `identities` in `config.json` for keys you need to rotate freely.
 
 ### Zero-auth dev mode (opt-in, loud)
 
@@ -296,6 +296,7 @@ certificate CN as the principal.
 | PUT | `/config` | partial update through the runtime store; `200` with `applied` and `restartRequired`; `400` with the validator error and nothing changed on error |
 | POST | `/config/save` | persist the live configuration to the config file atomically |
 | POST | `/auth/reload` | re-read identities AND the client CA (see Key and CA rotation) |
+| POST | `/api/admin/password` | rotate the bootstrap admin credential: body `{"new_password":"..."}`, mTLS-gated; persists the rotated secret beside the config file (0600, atomic) and activates it through the identity reload path — effective without a restart |
 | GET | `/buckets` | list buckets with backend and per-bucket tunables |
 | POST | `/buckets` | create a bucket (name in the JSON body) |
 | GET | `/buckets/{name}` | one bucket: backend, tunables, whether it is a dataset. Object count is NOT reported (no index exists) |
@@ -1078,7 +1079,7 @@ Every pull goes through the pre-commit chain (secrets scan, vet, error-pattern c
 ## Known Limitations
 
 *   No ACLs or bucket policies; authorization is per-identity grants (the `identities` config block — bucket-level and prefix/op/time-scoped rich expressions).
-*   Key rotation for `identities` is a SIGHUP reload (edit config.json → `kill -HUP`) or a management API `POST /auth/reload`; the env pair still needs a restart. No OAuth/OIDC/token-based auth for S3 (SigV4 cannot express it).
+*   Key rotation for `identities` is a SIGHUP reload (edit config.json → `kill -HUP`) or a management API `POST /auth/reload`; the env pair's secret rotates restart-free via `POST /api/admin/password` (persisted beside the config file), while the env ACCESS KEY still needs a restart. No OAuth/OIDC/token-based auth for S3 (SigV4 cannot express it).
 *   Region: defaults to `us-east-1`; set `region` in config.json to pin another region (strict credential-scope compare — a mismatch fails with `SignatureDoesNotMatch` naming the expected region). When `region` is left unset, default mode accepts any well-formed client region permissively with a log notice — a dev escape hatch; set `region` for a strict production posture.
 *   Object keys with `..` or `.metadata` path segments are rejected, and keys must be in canonical form (safety over S3 compatibility; no `a//b` aliasing).
 *   S3 versioning snapshots mode (ZFS buckets) is windowed by the host's snapshot policy: only writes that predate an existing snapshot are version-visible, and snapshot reads require zmetad tracking (an untracked dataset answers honestly-not-found). The ZFS-events-derived version listing (`?events&versions`) remains a separate extension, not S3 versioning.
