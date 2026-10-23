@@ -100,11 +100,10 @@ type CursorFeed struct {
 	// pending is the page Delta mapped and the engine has NOT yet
 	// acked: the newest id + loss counters to commit on Ack, and
 	// plantCursor for the first-contact case.
-	pendingID    int64
-	pendingLoss  [2]uint64
-	pendValid    bool
-	plantCursor  bool // first contact: Ack plants the cursor at pendingID
-	skipProbedAt time.Time
+	pendingID   int64
+	pendingLoss [2]uint64
+	pendValid   bool
+	plantCursor bool // first contact: Ack plants the cursor at pendingID
 }
 
 // NewCursorFeed validates options and returns a ready feed. The cursor
@@ -148,7 +147,7 @@ func (f *CursorFeed) Delta(ctx context.Context) ([]string, bool, error) {
 	// to know the answer will be 503 again.
 	if f.ProbeFresh(ctx) {
 		f.log.Printf("sync: negative events probe fresh (re-probe in %s); full scan without fetch",
-			time.Duration(probeInterval-(time.Duration(f.now().Unix()-f.probeStampedAt(ctx))*time.Second)).Round(time.Second))
+			(probeInterval - time.Duration(f.now().Unix()-f.probeStampedAt(ctx))*time.Second).Round(time.Second))
 		return nil, true, nil
 	}
 

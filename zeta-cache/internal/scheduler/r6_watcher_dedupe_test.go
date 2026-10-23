@@ -290,7 +290,7 @@ func TestWatcherShutdownDrainsFanIns(t *testing.T) {
 	// pre-fix, all feeds keep succeeding (fan-in alive but wedged), so
 	// the probe hits its feed cap and fails the assertion below.
 	exits := false
-	for i := 0; i < 64; i++ {
+	for range 64 {
 		select {
 		case cwd.rootEv <- fsnotify.Event{Name: filepath.Join(files, "bulk.txt"), Op: fsnotify.Create}:
 			// delivered to a live forwarder; pre-fix keeps accepting

@@ -150,13 +150,11 @@ func TestSingleRunGate(t *testing.T) {
 
 	var wg sync.WaitGroup
 	var nightlyErr error
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		// The "nightly" FullRescan holds the gate and blocks in d/'s
 		// listing (FullRescan bypasses the token skip -> it lists d/).
 		nightlyErr = h.eng.FullRescan(bg())
-	}()
+	})
 	<-blocked
 
 	// Concurrent passes from the watcher fallback and the sync loop.

@@ -100,8 +100,7 @@ func cpuTime() time.Duration {
 // spins continuously - process CPU climbs with wall clock.
 func TestPausedLoopsParkNotSpin(t *testing.T) {
 	s, eng, _ := newProbeScheduler(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	seedDirty(t, s, "a.txt")
 

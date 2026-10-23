@@ -143,7 +143,7 @@ func watchAll(root string) (<-chan fsnotify.Event, func(), error) {
 // release drops the claim AND calls stop. Deleting the claim alone leaks
 // the Watcher (H6): the fan-in exits only when its channel closes, and
 // that channel closes only when the Watcher is closed. release is also
-// the failed-watchAll path (stop still nil). activeCount is the test seam.
+// the failed-watchAll path (stop still nil).
 type subtreeWatchers struct {
 	mu    sync.Mutex
 	roots map[string]func()
@@ -188,14 +188,6 @@ func (s *subtreeWatchers) release(root string) {
 	if stop != nil {
 		stop()
 	}
-}
-
-// activeCount is the number of currently-claimed roots (test seam; the
-// deterministic assertion that churn keeps the watcher count bounded).
-func (s *subtreeWatchers) activeCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.roots)
 }
 
 // watcher carries the loop state.

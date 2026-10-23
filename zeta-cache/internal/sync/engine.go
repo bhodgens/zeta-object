@@ -60,13 +60,12 @@ type Engine struct {
 	nowFn func() time.Time
 	log   *log.Logger
 
-	mu        sync.Mutex // guards the status snapshot below
-	state     string
-	lastSync  time.Time
-	lastErr   string
-	conflicts int  // RETIRED (L38): kept zeroed; Status derives from the live records
-	listAll   bool // FullRescan: bypass the collection-token skip
-	lastRep   Report
+	mu       sync.Mutex // guards the status snapshot below
+	state    string
+	lastSync time.Time
+	lastErr  string
+	listAll  bool // FullRescan: bypass the collection-token skip
+	lastRep  Report
 
 	// running is the single-run gate (M19): the scheduler's watcher
 	// fallback can call SyncOnce concurrently with the sync loop; a
@@ -238,14 +237,6 @@ func (e *Engine) setStateErr(err error) {
 	e.state = StateError
 	e.lastErr = err.Error()
 	e.mu.Unlock()
-}
-
-// snapshotConflicts reads the current conflict counter. RETIRED (L38):
-// the live count comes from pendingConflictCount (the conflict records).
-func (e *Engine) snapshotConflicts() int {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.conflicts
 }
 
 // listingAll reports whether the running pass must list every subtree
