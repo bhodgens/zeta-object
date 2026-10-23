@@ -39,8 +39,8 @@ trap 'rm -f "$PROF"' EXIT
 # updated, the table below says "MISSING" and the mismatch is obvious.
 floor_for() {
   case "$1" in
-    github.com/bhodgens/zeta-object)              echo 81 ;;
-    */internal/auth)                                echo 90 ;;
+    github.com/bhodgens/zeta-object)              echo 79 ;;
+    */internal/auth)                                echo 84 ;;
     */internal/backend)                             echo 92 ;;
     */internal/backend/conformance)                 echo 75 ;;
     */internal/backend/fsbackend)                   echo 80 ;;

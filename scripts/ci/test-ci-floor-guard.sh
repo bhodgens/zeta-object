@@ -133,32 +133,34 @@ for pkg in github.com/bhodgens/zeta-object/scripts/e2e/h3probe \
 done
 
 # --- 4. no floor exceeds what CI measured ------------------------------------
-# Numbers from CI run 38114160393 (ubuntu-24.04, go1.27.2) - the FIRST run on the
-# go1.27.2 toolchain. Every number moved when the compiler moved (frontend/s3
-# 83.2 -> 81.4), which is why this table is versioned WITH the toolchain rather
-# than treated as a constant. This is
+# Numbers from CI run 39894745643 (ubuntu-latest, go1.27.3) - the first run on
+# the go1.27.3 toolchain. The go1.27.2->go1.27.3 compiler bump is a coverage
+# event: every number moved when the compiler moved (root 82.7 -> 80.7, auth
+# 91.1 -> 85.0, conformance 76.6 -> 100.0, s3 81.4 -> 84.5), so this table is
+# versioned WITH the toolchain, not treated as a constant. This is
 # the ratchet direction check: a floor ABOVE the measured value is what turned
-# a green run red once already (audit G7).
+# a green run red once already (audit G7). Re-measure in the SAME change when
+# the toolchain or the code moves (AGENTS.md "floors move with code").
 measured() {
 	case "$1" in
-		github.com/bhodgens/zeta-object)            echo 82.7 ;;
-		*/internal/adminserver)                     echo 87.1 ;;
-		*/internal/adminserver/gateway)             echo 77.6 ;;
-		*/internal/auth)                            echo 91.1 ;;
+		github.com/bhodgens/zeta-object)            echo 80.7 ;;
+		*/internal/adminserver)                     echo 87.6 ;;
+		*/internal/adminserver/gateway)             echo 94.9 ;;
+		*/internal/auth)                            echo 85.0 ;;
 		*/internal/backend)                         echo 93.9 ;;
-		*/internal/backend/conformance)             echo 76.6 ;;
-		*/internal/backend/fsbackend)               echo 81.6 ;;
-		*/internal/batchops)                        echo 88.4 ;;
+		*/internal/backend/conformance)             echo 100.0 ;;
+		*/internal/backend/fsbackend)               echo 85.5 ;;
+		*/internal/batchops)                        echo 86.3 ;;
 		*/internal/bucketmanager)                   echo 87.8 ;;
 		*/internal/frontend)                        echo 92.2 ;;
-		*/internal/frontend/admin)                  echo 84.9 ;;
+		*/internal/frontend/admin)                  echo 84.0 ;;
 		*/internal/frontend/autherr)                echo 100.0 ;;
 		*/internal/frontend/ftp)                    echo 67.1 ;;
 		*/internal/frontend/h3)                     echo 90.7 ;;
 		*/internal/frontend/owncloud)               echo 93.6 ;;
-		*/internal/frontend/s3)                     echo 81.4 ;;
+		*/internal/frontend/s3)                     echo 84.5 ;;
 		*/internal/frontend/sftp)                   echo 68.7 ;;
-		*/internal/frontend/webdav)                 echo 84.0 ;;
+		*/internal/frontend/webdav)                 echo 84.4 ;;
 		*/internal/fslock)                          echo 100.0 ;;
 		*/internal/metadata)                        echo 92.1 ;;
 		*/internal/objectmodel)                     echo 92.6 ;;

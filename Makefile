@@ -148,12 +148,19 @@ zeta-cache-test:
 #
 # This target is the SINGLE source of truth for the module's race gate: CI's
 # zeta-cache-test job calls it (W2 LOW: an inline copy of the command there
-# drifted from this one), and `make check` runs it locally — same flags, same
+# drifted from this one), and `make check` runs it locally - same flags, same
 # floor, both places.
+#
+# The test line deliberately does NOT pin CGO_ENABLED: on linux the race
+# detector REQUIRES cgo (gcc), so a pinned CGO_ENABLED=0 made the whole job
+# die in 4s on CI with "go: -race requires cgo; enable cgo by setting
+# CGO_ENABLED=1" while still passing locally on darwin (race works cgo-less
+# there). The no-cgo law is proven by the build job's separate
+# CGO_ENABLED=0 go build step in check.yml - not by this test line.
 ZETA_CACHE_COVER_MIN := 59
 
 zeta-cache-test-race:
-	@cd zeta-cache && CGO_ENABLED=0 go test -count=1 -race -coverprofile=cover.out ./...
+	@cd zeta-cache && go test -count=1 -race -coverprofile=cover.out ./...
 	@cd zeta-cache && go tool cover -func=cover.out | tee /dev/stderr | awk '/^total:/ {gsub(/%/,"",$$3); if ($$3+0 < $(ZETA_CACHE_COVER_MIN)) {print "zeta-cache aggregate coverage " $$3 "% below floor $(ZETA_CACHE_COVER_MIN)"; exit 1}}'; rc=$$?; rm -f cover.out; exit $$rc
 
 clean:

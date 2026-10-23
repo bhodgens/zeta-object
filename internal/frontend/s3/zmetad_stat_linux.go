@@ -22,5 +22,10 @@ func objectIDFromStat(path string) (uint64, error) {
 	if !ok || st == nil {
 		return 0, os.ErrInvalid
 	}
+	// st.Ino is uint64 on the amd64/arm64 targets CI lints (linux/amd64),
+	// so the cast is a no-op there and unconvert flags it; on 32-bit linux
+	// it is uint32, where the cast is required. Keep it for arch
+	// portability; suppress the no-op finding on the 64-bit targets.
+	//nolint:unconvert
 	return uint64(st.Ino), nil
 }

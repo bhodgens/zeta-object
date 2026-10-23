@@ -56,8 +56,11 @@ jobs:
   # 2026-10-13 H12): the coverage matrix is generated from the ROOT module's
   # `go list ./...`, which does not reach the zeta-cache/ module, so its
   # `go test` never ran in CI. Same triggers as the other test jobs
-  # (push main + PR); race, matching the matrix's gate; CGO_ENABLED=0 proves
-  # the module keeps honoring the repo-wide no-cgo law.
+  # (push main + PR); race, matching the matrix's gate. The no-cgo law is
+  # proven by the BUILD job's CGO_ENABLED=0 go build step above - NOT by the
+  # test line: on linux the race detector requires cgo (gcc), so pinning
+  # CGO_ENABLED=0 on the -race test made this job die in 4s on CI while
+  # passing locally on darwin (race works cgo-less there).
   zeta-cache-test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -68,7 +71,7 @@ jobs:
           go-version-file: zeta-cache/go.mod
       # The gate itself is `make zeta-cache-test-race` — the SAME target
       # `make check` runs locally (race + count=1 + coverage profile +
-      # aggregate floor, CGO_ENABLED=0), so CI and the local gate cannot
+      # aggregate floor), so CI and the local gate cannot
       # drift (W2 LOW). The floor value and its measurement provenance live
       # in the Makefile next to the target.
       # MEASURED 2026-10-14 (darwin/arm64, go1.27.x, -race AND non-race
@@ -80,7 +83,7 @@ jobs:
       # zeta-cache/go.mod is a coverage event: re-measure in the SAME
       # change (see the root matrix's coverage-is-toolchain-dependent
       # note — the same law applies to this module).
-      - name: Test zeta-cache module (count=1 + race + coverage floor, CGO_ENABLED=0)
+      - name: Test zeta-cache module (count=1 + race + coverage floor)
         run: make zeta-cache-test-race
 
   lint:
@@ -167,8 +170,8 @@ jobs:
           # s3 85.8, sftp 68.4, webdav 81.8, owncloud 89.7, metadata 89.0,
           # objectmodel 92.7.
           case "${{ matrix.package }}" in
-            github.com/bhodgens/zeta-object) FLOOR=81 ;; # measured 82.7 (2026-10-11, linux, go1.27.2)
-            github.com/bhodgens/zeta-object/internal/auth) FLOOR=90 ;; # measured 91.1 (2026-10-11, linux, go1.27.2)
+            github.com/bhodgens/zeta-object) FLOOR=79 ;; # measured 80.7 (2026-10-23, linux, go1.27.3); the go1.27.2->go1.27.3 toolchain bump is a coverage event, floors re-measured in the SAME change
+            github.com/bhodgens/zeta-object/internal/auth) FLOOR=84 ;; # measured 85.0 (2026-10-23, linux, go1.27.3); merged appliance auth + go1.27.3 re-measure
             github.com/bhodgens/zeta-object/internal/backend) FLOOR=92 ;; # measured 93.9 (2026-10-11, linux, go1.27.2)
             github.com/bhodgens/zeta-object/internal/backend/conformance) FLOOR=75 ;; # measured 76.6 (2026-10-11, linux, go1.27.2)
             github.com/bhodgens/zeta-object/internal/backend/fsbackend) FLOOR=80 ;; # measured 81.6 (2026-10-11, linux, go1.27.2)
