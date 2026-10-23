@@ -225,6 +225,19 @@ func TestValidateHotSeamsLeavesLiveProvisionerUntouched(t *testing.T) {
 // dataset installed, so a concurrent bucket request never takes the
 // plain-directory branch.
 func TestRejectedPatchLeavesInstalledProvisionerLive(t *testing.T) {
+	// Save/restore every process global this test mutates so it is
+	// hermetic under any shuffle order: the setServerConfig swap leaves
+	// ZfsBucketDatasets=true in the global (a later test's
+	// installS3Seams(serverConfig()) guard would otherwise fatal on the
+	// unresolvable parent dataset), and initConfigStore() publishes the
+	// global configStore.
+	prevCfg := *serverConfig()
+	prevStore := configStore
+	t.Cleanup(func() {
+		setServerConfig(prevCfg)
+		configStore = prevStore
+	})
+
 	origParent := zfsBucketsParentDataset
 	t.Cleanup(func() { zfsBucketsParentDataset = origParent })
 	zfsBucketsParentDataset = "pool/live"

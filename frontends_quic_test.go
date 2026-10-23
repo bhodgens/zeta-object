@@ -208,6 +208,12 @@ func TestMountFrontends_QUICTLSConfigErrorPropagates(t *testing.T) {
 // opening sockets. Requires a cert pair + CA file on disk and a registry.
 func TestStartupPlan_H3FrontendConfig(t *testing.T) {
 	env := h3TestEnvForMain(t)
+	// The factory registers this instance's clientCAFile into the
+	// process-global reloader registry; isolate it so the registrant dies
+	// with this test (its t.TempDir() CA path is gone when the next test
+	// runs the reload fan - the order-dependent failure isolateClientCAReloaders
+	// pins in ca_reloader_isolation_test.go).
+	isolateClientCAReloaders(t)
 	prevReg := identityRegistry
 	identityRegistry = auth.NewReloadableRegistry(env.registry)
 	defer func() { identityRegistry = prevReg }()

@@ -136,6 +136,11 @@ func TestTLSListener_EmptyAddrConstructionError(t *testing.T) {
 }
 
 func TestAdminFactory_BuildsTLSListenerFrontend(t *testing.T) {
+	// The factory registers this instance's clientCAFile into the
+	// process-global reloader registry; isolate it so the registrant dies
+	// with this test (its t.TempDir() CA path is gone when a later test
+	// runs the reload fan).
+	isolateClientCAReloaders(t)
 	caPath := writeTestCAFile(t)
 	fe, err := frontendFactories["admin"](
 		FrontendConfig{Type: "admin", ListenAddr: "127.0.0.1:0", Options: map[string]string{"clientCAFile": caPath}},
