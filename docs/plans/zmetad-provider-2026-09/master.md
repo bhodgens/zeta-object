@@ -403,14 +403,21 @@ After leaf 05:
      VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
      Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
 
-| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
-|---|---------------------|--------|-----------|-----------|--------|
-| F1 | zmetad SQLite DB Accessor - Implementation Leaf | 01-db-accessor.md | (pending) | (pending) | PENDING |
-| F2 | Row -> ObjectEvent Mapping (full_path-first) - Implementation Leaf | 02-row-mapping.md | (pending) | (pending) | PENDING |
-| F3 | zmetad Events Provider - Implementation Leaf | 03-provider.md | (pending) | (pending) | PENDING |
-| F4 | Config, Wiring, and CLI-Transport Removal - Implementation Leaf | 04-wiring-config.md | (pending) | (pending) | PENDING |
-| F5 | Parity Gate + E2E Coverage - Implementation Leaf | 05-parity-e2e.md | (pending) | (pending) | PENDING |
+Branch scope: zmetad-exclusive metadata provider: SQLite DB accessor, row→ObjectEvent mapping, provider, config/wiring + CLI-transport removal, parity gate + e2e 18-zmetad-events.
+
+| # | Feature (from plan) | Unit test evidence | E2E evidence | Status |
+|---|---------------------|--------------------|--------------|--------|
+| F1 | zmetad SQLite DB Accessor | internal/metadata/zmetad_db_test.go:TestZmetadDB_Events; TestOpenZmetadDB_VersionGate | scripts/e2e/cases/18-zmetad-events.sh | VALIDATED |
+| F2 | Row -> ObjectEvent Mapping (full_path-first) | internal/metadata/zmetad_paths_test.go:TestRowsToEventsFullPathFirst | scripts/e2e/cases/18-zmetad-events.sh | VALIDATED |
+| F3 | zmetad Events Provider | internal/metadata/zmetad_provider_test.go:TestZmetadProviderHistoryFiltering; TestZmetadProviderPurge | scripts/e2e/cases/18-zmetad-events.sh | VALIDATED |
+| F4 | Config, Wiring, and CLI-Transport Removal | config_frontend_test.go:TestLoadConfig_ZmetadKeys | scripts/e2e/cases/18-zmetad-events.sh | VALIDATED |
+| F5 | Parity Gate + E2E Coverage | internal/metadata/parity_test.go:TestParityZmetadProviderBucket; internal/frontend/s3/zmetad_wire_parity_test.go:TestZmetadWireShapeContract5 | scripts/e2e/cases/18-zmetad-events.sh | VALIDATED |
+
+All 5 rows verified on disk by the survey subagent (grep-verified test
+functions + e2e case existence) and spot-checked by the control agent
+(8/8 random test funcs FOUND, 5/5 e2e cases exist, 2026-10-25). Baseline:
+`make test` exit 0, aggregate coverage 80.5% (floor 79.8%).
 
 Statuses: PENDING | DELTA | VALIDATED
 
-Delta log: (none yet)
+Delta log: 2026-10-25, all rows, control-agent survey — mechanically seeded task-header rows replaced with per-row verified test evidence (5 rows). Tree conforms to its plan per this matrix.

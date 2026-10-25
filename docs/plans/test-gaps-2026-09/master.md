@@ -106,19 +106,26 @@ asserts, coverage 83.6% (floor raised 50 -> 70), make check/lint/e2e green,
      VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
      Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
 
-| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
-|---|---------------------|--------|-----------|-----------|--------|
-| F1 | Leaf 4.1 — Actions runtime tests | 4.1-actions-runtime.md | (pending) | (pending) | PENDING |
-| F2 | Leaf 4.10 — Bench + coverage floor (final integration leaf) | 4.10-floor.md | (pending) | (pending) | PENDING |
-| F3 | Leaf 4.2 — Sweeper lifecycle tests | 4.2-sweeper.md | (pending) | (pending) | PENDING |
-| F4 | Leaf 4.3 — Dispatch routing matrix | 4.3-routing.md | (pending) | (pending) | PENDING |
-| F5 | Leaf 4.4 — Multipart error paths | 4.4-multipart-errors.md | (pending) | (pending) | PENDING |
-| F6 | Leaf 4.5 — Copy/Delete edge matrix | 4.5-copy-delete-edges.md | (pending) | (pending) | PENDING |
-| F7 | Leaf 4.6 — Storage atomic helpers | 4.6-storage-atomic.md | (pending) | (pending) | PENDING |
-| F8 | Leaf 4.7 — Fuzz targets + make fuzz | 4.7-fuzz.md | (pending) | (pending) | PENDING |
-| F9 | Leaf 4.8 — Concurrency stress suite | 4.8-concurrency-stress.md | (pending) | (pending) | PENDING |
-| F10 | Leaf 4.9 — Auth negative-fuzz corpus | 4.9-auth-negative.md | (pending) | (pending) | PENDING |
+Branch scope: Test-gap closure (leaves 4.1-4.10): runtime tests for actions/sweeper/routing/multipart/copy-delete/storage-atomic, fuzz targets, concurrency stress, auth negative corpus, bench + floor.
+
+| # | Feature (from plan) | Unit test evidence | E2E evidence | Status |
+|---|---------------------|--------------------|--------------|--------|
+| F1 | Actions runtime tests | actions_test.go:TestLoadActionsFile; inactivity_runtime_test.go:TestInactivityTimerFiresAfterWindow | scripts/e2e/cases/10-actions.sh | VALIDATED |
+| F2 | Bench + coverage floor | bench_test.go:BenchmarkListObjectsFromKeysPlain; Makefile test-cover-enforce | n/a — process/bench row | VALIDATED |
+| F3 | Sweeper lifecycle tests | multipart_sweeper_test.go:TestSweepAllBucketsOnce_ExpiredAndFreshMix | n/a — sweep timing not real-time testable in e2e (noted in 05-multipart.sh) | VALIDATED |
+| F4 | Dispatch routing matrix | routing_test.go:TestRouting_ServiceLevel; TestRouting_ObjectLevel | n/a — routing covered implicitly by all wire cases | VALIDATED |
+| F5 | Multipart error paths | multipart_handlers_test.go:TestCompleteMultipartUploadHandler_EntityTooSmallNonFinalPart | scripts/e2e/cases/05-multipart.sh | VALIDATED |
+| F6 | Copy/Delete edge matrix | copy_batch_test.go:TestDeleteObjects_Over1000Keys; TestCopyObject_MalformedCopySourceVariants | scripts/e2e/cases/08-copy-batch.sh | VALIDATED |
+| F7 | Storage atomic helpers | storage_atomic_test.go:TestStorageAtomic_OverwriteIsByteExactAndClean | n/a — helper-level | VALIDATED |
+| F8 | Fuzz targets + make fuzz | fuzz_test.go:FuzzParseRangeHeader; FuzzGetCanonicalURI (6 Fuzz funcs verified) | n/a — fuzz targets | VALIDATED |
+| F9 | Concurrency stress suite | concurrency_stress_test.go:TestConcurrentSameKeyPutGetDelete | n/a — stress suite | VALIDATED |
+| F10 | Auth negative-fuzz corpus | auth_negative_test.go:TestAuthNegSignaturePerByteFlipRejected | n/a — negative corpus | VALIDATED |
+
+All 10 rows verified on disk by the survey subagent (grep-verified test
+functions + e2e case existence) and spot-checked by the control agent
+(8/8 random test funcs FOUND, 5/5 e2e cases exist, 2026-10-25). Baseline:
+`make test` exit 0, aggregate coverage 80.5% (floor 79.8%).
 
 Statuses: PENDING | DELTA | VALIDATED
 
-Delta log: (none yet)
+Delta log: 2026-10-25, all rows, control-agent survey — mechanically seeded task-header rows replaced with per-row verified test evidence (10 rows). Tree conforms to its plan per this matrix.

@@ -263,10 +263,18 @@ zfs-validate harness gets section 10).
      VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
      Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
 
-| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
-|---|---------------------|--------|-----------|-----------|--------|
-| F1 | Reflink (Block-Clone) Versioning Mode - Implementation Leaf | 06-reflink-mode.md | (pending) | (pending) | PENDING |
+Branch scope: S3 versioning (?versioning subresource, versioned PUT/DELETE markers, ListObjectVersions) with sidecar and reflink modes; master matrix lists only the reflink leaf (F1).
+
+| # | Feature (from plan) | Unit test evidence | E2E evidence | Status |
+|---|---------------------|--------------------|--------------|--------|
+| F1 | Reflink (Block-Clone) Versioning Mode | internal/frontend/s3/reflinkversions_test.go:TestCaptureReflink_RoundTrip; TestVersionStoreFor_ReflinkModes; config_versioning_test.go:TestLoadConfig_ZfsVersioningReflink | scripts/e2e/cases/33-reflink-versioning.sh (sidecar path: 32-versioning.sh) | VALIDATED |
+| F2 | (context) versioning core — sidecar store + handlers | internal/frontend/s3/versionstore_test.go:TestSidecarVersionStore_ImplementsContract1; versioning_handlers_test.go:TestVersioningSubresource_RoundTripAndOffEcho | scripts/e2e/cases/32-versioning.sh | VALIDATED |
+
+All 2 rows verified on disk by the survey subagent (grep-verified test
+functions + e2e case existence) and spot-checked by the control agent
+(8/8 random test funcs FOUND, 5/5 e2e cases exist, 2026-10-25). Baseline:
+`make test` exit 0, aggregate coverage 80.5% (floor 79.8%).
 
 Statuses: PENDING | DELTA | VALIDATED
 
-Delta log: (none yet)
+Delta log: 2026-10-25, all rows, control-agent survey — mechanically seeded task-header rows replaced with per-row verified test evidence (2 rows). Tree conforms to its plan per this matrix.

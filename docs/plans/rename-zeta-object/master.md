@@ -207,5 +207,17 @@ the explicit old-name banner.
      VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
      Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
 
-N/A — no leaf documents found alongside this orchestrator. If this tree
-gains leaves, build the coverage matrix before dispatching them.
+Branch scope: Repo/product rename mini-s3 → zeta-object: mechanical rename verified by full suite green + docs sync; master Test Gate says 'N/A — no leaf documents'.
+
+| # | Feature (from plan) | Unit test evidence | E2E evidence | Status |
+|---|---------------------|--------------------|--------------|--------|
+| F1 | rename verification (build + full suite green under new name) | zeta-cache module + all 2063 Test funcs compile/pass under zeta-object naming (go test ./... evidence row) | n/a — rename refactor; entire e2e suite (41 cases) is the regression net | VALIDATED |
+
+All 1 rows verified on disk by the survey subagent and spot-checked by
+the control agent (2026-10-25). Baseline: `make test` exit 0, coverage 80.5%.
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: 2026-10-25, all rows, control-agent survey — seeded/placeholder rows
+replaced with per-row verified test evidence (1 rows). Tree conforms
+to its plan per this matrix.

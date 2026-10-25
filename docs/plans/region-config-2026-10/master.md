@@ -137,12 +137,19 @@ None - design was fixed in zeta-object#10.
      VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
      Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
 
-| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
-|---|---------------------|--------|-----------|-----------|--------|
-| F1 | Region Config Key - Implementation Leaf | 01-region-config.md | (pending) | (pending) | PENDING |
-| F2 | SigV4 Wiring - Implementation Leaf | 02-sigv4-wiring.md | (pending) | (pending) | PENDING |
-| F3 | Region Tests + E2E + README - Implementation Leaf | 03-tests-e2e.md | (pending) | (pending) | PENDING |
+Branch scope: Configurable SigV4 region: 'region' config key, credential-scope verification wiring, tests + e2e case 30.
+
+| # | Feature (from plan) | Unit test evidence | E2E evidence | Status |
+|---|---------------------|--------------------|--------------|--------|
+| F1 | Region Config Key | config_frontend_test.go:TestLoadConfig_RegionKey | scripts/e2e/cases/30-region.sh | VALIDATED |
+| F2 | SigV4 Wiring | internal/frontend/s3/region_sigv4_test.go:TestRegionMatrix_Header; TestRegionMatrix_StrictMismatchCode | scripts/e2e/cases/30-region.sh | VALIDATED |
+| F3 | Region Tests + E2E + README | internal/frontend/s3/region_test.go:TestRegionOf; region_race_test.go:TestRegionConcurrentSetAndRead | scripts/e2e/cases/30-region.sh | VALIDATED |
+
+All 3 rows verified on disk by the survey subagent (grep-verified test
+functions + e2e case existence) and spot-checked by the control agent
+(8/8 random test funcs FOUND, 5/5 e2e cases exist, 2026-10-25). Baseline:
+`make test` exit 0, aggregate coverage 80.5% (floor 79.8%).
 
 Statuses: PENDING | DELTA | VALIDATED
 
-Delta log: (none yet)
+Delta log: 2026-10-25, all rows, control-agent survey — mechanically seeded task-header rows replaced with per-row verified test evidence (3 rows). Tree conforms to its plan per this matrix.

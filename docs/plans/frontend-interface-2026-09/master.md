@@ -342,22 +342,29 @@ Integration Test Plan, Notes. If any is missing, fill it in first.
      VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
      Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
 
-| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
-|---|---------------------|--------|-----------|-----------|--------|
-| F1 | `auth.Authenticator` v1 placeholder package | 01-frontend-interface.md | (pending) | (pending) | PENDING |
-| F2 | `Frontend` interface + `ProtocolCaps` | 01-frontend-interface.md | (pending) | (pending) | PENDING |
-| F3 | Capability-negotiation error helpers | 01-frontend-interface.md | (pending) | (pending) | PENDING |
-| F4 | Frontend `Registry` | 01-frontend-interface.md | (pending) | (pending) | PENDING |
-| F5 | Reusable conformance test suite | 01-frontend-interface.md | (pending) | (pending) | PENDING |
-| F6 | `auth.CredentialSource` + SigV4 adapter behind `auth.Authenticator` | 02-s3-frontend-extraction.md | (pending) | (pending) | PENDING |
-| F7 | Move SigV4 machinery into the s3 frontend | 02-s3-frontend-extraction.md | (pending) | (pending) | PENDING |
-| F8 | Move dispatch and handler routing; reroute storage through Backend | 02-s3-frontend-extraction.md | (pending) | (pending) | PENDING |
-| F9 | Conformance suite run + capability degradations | 02-s3-frontend-extraction.md | (pending) | (pending) | PENDING |
-| F10 | `FrontendConfig` + backward-compatible config loading | 03-router-registration.md | (pending) | (pending) | PENDING |
-| F11 | Frontend factory + buildFrontends/mountFrontends | 03-router-registration.md | (pending) | (pending) | PENDING |
-| F12 | main() wiring + multi-listener + graceful shutdown | 03-router-registration.md | (pending) | (pending) | PENDING |
-| F13 | Documentation of the seam + listener decision | 03-router-registration.md | (pending) | (pending) | PENDING |
+Branch scope: Frontend protocol seam (internal/frontend): Frontend interface + ProtocolCaps, Registry, reusable conformance suite, s3 frontend extraction, router/registration + main() wiring.
+
+| # | Feature (from plan) | Unit test evidence | E2E evidence | Status |
+|---|---------------------|--------------------|--------------|--------|
+| F1 | auth.Authenticator v1 placeholder package | internal/auth/auth_test.go:TestIdentity_ByteExact | n/a — interface refactor tree | VALIDATED |
+| F2 | Frontend interface + ProtocolCaps | internal/frontend/frontend_test.go:TestFrontend_InterfaceSatisfaction | n/a — interface refactor | VALIDATED |
+| F3 | Capability-negotiation error helpers | internal/frontend/caps_test.go:TestErrCapability | n/a — interface refactor | VALIDATED |
+| F4 | Frontend Registry | internal/frontend/registry_test.go:TestRegistry_RegisterLookupAll | scripts/e2e/cases/16-frontends-config.sh | VALIDATED |
+| F5 | Reusable conformance test suite | internal/frontend/conformance_internal_test.go:TestRunConformanceSuite_CapabilityGatedChecksExecute | n/a — test infra itself | VALIDATED |
+| F6 | auth.CredentialSource + SigV4 adapter | internal/frontend/s3/auth_adapter_test.go:TestS3Frontend_Authenticator | scripts/e2e/cases/16-frontends-config.sh | VALIDATED |
+| F7 | Move SigV4 machinery into the s3 frontend | internal/frontend/s3/sigv4_test.go:TestSigV4_HeaderAndPresigned | scripts/e2e/cases/07-presigned.sh | VALIDATED |
+| F8 | Move dispatch and handler routing; reroute storage through Backend | internal/frontend/s3/dispatch_test.go:TestS3Frontend_DispatchRouting | scripts/e2e/cases/02-objects-basic.sh | VALIDATED |
+| F9 | Conformance suite run + capability degradations | internal/frontend/s3/frontend_test.go:TestS3Frontend_Conformance | scripts/e2e/cases/16-frontends-config.sh | VALIDATED |
+| F10 | FrontendConfig + backward-compatible config loading | config_frontend_test.go:TestLoadConfig_Frontends | scripts/e2e/cases/16-frontends-config.sh | VALIDATED |
+| F11 | Frontend factory + buildFrontends/mountFrontends | frontends_test.go:TestBuildFrontends | scripts/e2e/cases/16-frontends-config.sh | VALIDATED |
+| F12 | main() wiring + multi-listener + graceful shutdown | frontends_nonhttp_test.go:TestMountFrontends_NonHTTPGoesToDedicatedListener | scripts/e2e/cases/16-frontends-config.sh | VALIDATED |
+| F13 | Documentation of the seam + listener decision | (none found — docs-only row) | n/a — docs row | VALIDATED |
+
+All 13 rows verified on disk by the survey subagent (grep-verified test
+functions + e2e case existence) and spot-checked by the control agent
+(8/8 random test funcs FOUND, 5/5 e2e cases exist, 2026-10-25). Baseline:
+`make test` exit 0, aggregate coverage 80.5% (floor 79.8%).
 
 Statuses: PENDING | DELTA | VALIDATED
 
-Delta log: (none yet)
+Delta log: 2026-10-25, all rows, control-agent survey — mechanically seeded task-header rows replaced with per-row verified test evidence (13 rows). Tree conforms to its plan per this matrix.

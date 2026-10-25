@@ -165,5 +165,20 @@ on the lockstore package tests.
      VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
      Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
 
-N/A — no leaf documents found alongside this orchestrator. If this tree
-gains leaves, build the coverage matrix before dispatching them.
+Branch scope: WebDAV LOCK/UNLOCK + If-header enforcement (GH issue #11); master Test Gate says 'N/A — no leaf documents'; e2e case 31 names leaf 04.
+
+| # | Feature (from plan) | Unit test evidence | E2E evidence | Status |
+|---|---------------------|--------------------|--------------|--------|
+| F1 | lock store (file-backed, expiry, sweep) | internal/frontend/webdav/lockstore_test.go:TestFileLockStore_AcquireAndConflict | scripts/e2e/cases/31-webdav-lock.sh | VALIDATED |
+| F2 | LOCK/UNLOCK handlers | internal/frontend/webdav/lockhandler_test.go:TestLOCK_HappyPath; TestUNLOCK_CorrectToken204_WrongToken409 | scripts/e2e/cases/31-webdav-lock.sh | VALIDATED |
+| F3 | If-header parsing + write enforcement | internal/frontend/webdav/lockif_test.go:TestParseIfHeader; TestCheckWriteLock; lockhandler_test.go:TestLockEnforcement_PUTWithoutToken423 | scripts/e2e/cases/31-webdav-lock.sh | VALIDATED |
+| F4 | batch/lock-bypass parity | internal/frontend/webdav/bughunt_w2_grants_test.go:TestBatchLockBypass_ManifestDeleteOnLockedKeyIs423 | scripts/e2e/cases/31-webdav-lock.sh | VALIDATED |
+
+All 4 rows verified on disk by the survey subagent and spot-checked by
+the control agent (2026-10-25). Baseline: `make test` exit 0, coverage 80.5%.
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: 2026-10-25, all rows, control-agent survey — seeded/placeholder rows
+replaced with per-row verified test evidence (4 rows). Tree conforms
+to its plan per this matrix.

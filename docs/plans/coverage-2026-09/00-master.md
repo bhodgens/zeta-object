@@ -79,3 +79,23 @@ mini-s3 86.9 / auth 0 (type-only seam) / backend 94.1 / conformance 79.3
 fsbackend 85.6 / frontend 94.7 / frontend-s3 86.0 / metadata 89.2 /
 objectmodel 92.7. CI floors = achieved-2, dry-run verified. Gate:
 9/9 packages green, race clean, lint 0, e2e 155/155.
+
+## Test Gate
+
+Branch scope: Coverage-100 plan: close coverage gaps in auth, s3 frontend, frontend/backend seam, root/misc; coverage floors — test-only tree, no new behavior.
+
+| # | Feature (from plan) | Unit test evidence | E2E evidence | Status |
+|---|---------------------|--------------------|--------------|--------|
+| F1 | auth coverage (leaf 6.1) | auth_negative_test.go:TestAuthNegSignaturePerByteFlipRejected | n/a — coverage tree; existing suite green | VALIDATED |
+| F2 | s3-frontend coverage (leaf 6.2) | internal/frontend/s3/coverage_restore_test.go:TestSidecarStoreSemantics | n/a — coverage tree | VALIDATED |
+| F3 | frontend/backend seam coverage (leaf 6.3) | internal/frontend/conformance_internal_test.go:TestRunConformanceSuite_StubPasses | n/a — coverage tree | VALIDATED |
+| F4 | root/misc coverage (leaf 6.4) | root_coverage_wiring_test.go (TestAdminStatusServiceAssemblesLiveState et al.) | n/a — coverage tree | VALIDATED |
+| F5 | coverage floors (leaf 6.5) | Makefile test-cover-enforce + ci-floor-test targets | n/a — process row | VALIDATED |
+
+All 5 rows verified on disk by the survey subagent and spot-checked by
+the control agent (2026-10-25). Baseline: `make test` exit 0, coverage 80.5%.
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: 2026-10-25, all rows, control-agent survey — per-row verified test
+evidence (5 rows). Tree conforms to its plan per this matrix.

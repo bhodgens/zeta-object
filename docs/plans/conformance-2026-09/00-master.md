@@ -48,3 +48,20 @@ docs/, coverage floor holds.
 |---|---|---|---|
 | 5.1 | COMPLETE | ddb609e | 277 in-scope; 4 real bugs fixed; matrix+ratchet committed |
 | 5.2 | COMPLETE | 27524bc | boto3+mc 27/27 each; 155/155 e2e |
+
+## Test Gate
+
+Branch scope: Protocol conformance (ceph/s3-tests subset) + client interop (boto3, mc, rclone) verification tree — test-infrastructure, no new server features.
+
+| # | Feature (from plan) | Unit test evidence | E2E evidence | Status |
+|---|---------------------|--------------------|--------------|--------|
+| F1 | ceph/s3-tests conformance subset + baseline ratchet (leaf 5.1) | scripts/conformance/ via Makefile 'conformance' target; vendor/s3-tests-venv present | n/a — this tree IS the test infra; interop e2e: scripts/e2e/cases/12-interop-boto3.sh, 13-interop-mc.sh, 22-interop-rclone.sh | VALIDATED |
+| F2 | client interop scenario table (leaf 5.2) | scripts/e2e/interop-lib.sh + cases 12/13/22 | scripts/e2e/cases/12-interop-boto3.sh; 13-interop-mc.sh; 22-interop-rclone.sh | VALIDATED |
+
+All 2 rows verified on disk by the survey subagent and spot-checked by
+the control agent (2026-10-25). Baseline: `make test` exit 0, coverage 80.5%.
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: 2026-10-25, all rows, control-agent survey — per-row verified test
+evidence (2 rows). Tree conforms to its plan per this matrix.

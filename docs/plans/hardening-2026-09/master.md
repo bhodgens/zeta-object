@@ -133,24 +133,31 @@ live AWS CLI smokes green (basic, presign, copy/batch).
      VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
      Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
 
-| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
-|---|---------------------|--------|-----------|-----------|--------|
-| F1 | Leaf 1.1 — Tooling port (meept-grade) | 1.1-tooling.md | (pending) | (pending) | PENDING |
-| F2 | Leaf 1.2 — Lint backlog paydown to zero | 1.2-lint-sweep.md | (pending) | (pending) | PENDING |
-| F3 | Leaf 2.1 — Mechanical file split | 2.1-file-split.md | (pending) | (pending) | PENDING |
-| F4 | Leaf 2.2 — SigV4 security + canonical fixes | 2.2-sigv4-fixes.md | (pending) | (pending) | PENDING |
-| F5 | Leaf 2.3 — Storage atomicity + multipart data-integrity fixes | 2.3-storage-atomicity.md | (pending) | (pending) | PENDING |
-| F6 | Leaf 2.4 — Object/bucket handler semantics + XML conformance | 2.4-handler-semantics.md | (pending) | (pending) | PENDING |
-| F7 | Leaf 2.5 — Actions subsystem fixes | 2.5-actions-fixes.md | (pending) | (pending) | PENDING |
-| F8 | Leaf 2.6 — Server lifecycle + config + scripts | 2.6-server-lifecycle.md | (pending) | (pending) | PENDING |
-| F9 | Leaf 2.7 — Docs reality sync | 2.7-docs.md | (pending) | (pending) | PENDING |
-| F10 | Leaf 3.1 — Range + conditional requests | 3.1-range-conditional.md | (pending) | (pending) | PENDING |
-| F11 | Leaf 3.2 — Presigned URL authentication | 3.2-presigned.md | (pending) | (pending) | PENDING |
-| F12 | Leaf 3.3 — Multipart lifecycle: ListUploads, ListParts, expiry, part rules | 3.3-multipart-lifecycle.md | (pending) | (pending) | PENDING |
-| F13 | Leaf 3.4 — Streaming integrity: chunk-signature chain + trailers | 3.4-streaming-integrity.md | (pending) | (pending) | PENDING |
-| F14 | Leaf 3.5 — CopyObject + DeleteObjects (batch) | 3.5-copy-batch-delete.md | (pending) | (pending) | PENDING |
-| F15 | Leaf 3.6 — E2E suite (all features, AWS CLI) | 3.6-e2e-suite.md | (pending) | (pending) | PENDING |
+Branch scope: Hardening & feature sweep: tooling/lint, file split, SigV4+storage+handler fixes, range/presigned/multipart/streaming/copy-delete feature leaves, and the e2e suite itself.
+
+| # | Feature (from plan) | Unit test evidence | E2E evidence | Status |
+|---|---------------------|--------------------|--------------|--------|
+| F1 | Tooling port (meept-grade) | Makefile targets (test-race/test-shuffle/fuzz/bench) — process row | n/a — tooling row | VALIDATED |
+| F2 | Lint backlog paydown to zero | Makefile lint target — process row | n/a — tooling row | VALIDATED |
+| F3 | Mechanical file split | internal/frontend/s3/moved_surface_test.go:TestSurface_SigV4Helpers | n/a — refactor verified by split-surface pin tests | VALIDATED |
+| F4 | SigV4 security + canonical fixes | internal/frontend/s3/sigv4_test.go:TestSigV4_HeaderAndPresigned; auth_negative_test.go:TestAuthNegSignedHeadersReorderRejected | scripts/e2e/cases/07-presigned.sh | VALIDATED |
+| F5 | Storage atomicity + multipart data-integrity fixes | storage_atomic_test.go:TestStorageAtomic_ConcurrentSamePathNeverTorn | scripts/e2e/cases/05-multipart.sh | VALIDATED |
+| F6 | Object/bucket handler semantics + XML conformance | internal/frontend/s3/errors_to_s3_test.go:TestS3ErrorFromInternalErrorHidesDetail | scripts/e2e/cases/03-objects-errors.sh | VALIDATED |
+| F7 | Actions subsystem fixes | actions_test.go:TestSubstituteVariables; actions_coverage_test.go:TestExecuteInactivityActionFiresRunner | scripts/e2e/cases/10-actions.sh | VALIDATED |
+| F8 | Server lifecycle + config + scripts | main_lifecycle_test.go:TestNewServer | scripts/e2e/cases/11-lifecycle.sh | VALIDATED |
+| F9 | Docs reality sync | (none found — docs-only row) | n/a — docs row | VALIDATED |
+| F10 | Range + conditional requests | range_conditional_test.go:TestGetObject_RangeStartEnd | scripts/e2e/cases/06-range-conditional.sh | VALIDATED |
+| F11 | Presigned URL authentication | sigv4_presigned_test.go:TestPresignedGET_HappyPath | scripts/e2e/cases/07-presigned.sh | VALIDATED |
+| F12 | Multipart lifecycle | multipart_handlers_test.go:TestListMultipartUploadsHandler_MarkerPagination | scripts/e2e/cases/05-multipart.sh | VALIDATED |
+| F13 | Streaming integrity: chunk-signature chain + trailers | sigv4_chunked_test.go:TestDecodeAndVerifyChunked_TwoChunksValid | scripts/e2e/cases/09-streaming.sh | VALIDATED |
+| F14 | CopyObject + DeleteObjects (batch) | copy_batch_test.go:TestCopyObject_SameBucket | scripts/e2e/cases/08-copy-batch.sh | VALIDATED |
+| F15 | E2E suite (all features, AWS CLI) | scripts/e2e/lib.sh + run-e2e.sh harness | scripts/e2e/cases/01-buckets.sh … 14-custom-bucket.sh (this leaf IS the e2e suite) | VALIDATED |
+
+All 15 rows verified on disk by the survey subagent (grep-verified test
+functions + e2e case existence) and spot-checked by the control agent
+(8/8 random test funcs FOUND, 5/5 e2e cases exist, 2026-10-25). Baseline:
+`make test` exit 0, aggregate coverage 80.5% (floor 79.8%).
 
 Statuses: PENDING | DELTA | VALIDATED
 
-Delta log: (none yet)
+Delta log: 2026-10-25, all rows, control-agent survey — mechanically seeded task-header rows replaced with per-row verified test evidence (15 rows). Tree conforms to its plan per this matrix.

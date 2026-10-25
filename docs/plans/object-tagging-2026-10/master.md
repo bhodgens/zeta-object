@@ -152,5 +152,20 @@ None blocking; upstream #13 answers the ZFS-native storage shape later.
      VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
      Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
 
-N/A — no leaf documents found alongside this orchestrator. If this tree
-gains leaves, build the coverage matrix before dispatching them.
+Branch scope: Object tagging: x-amz-tagging on PUT, TagCount on HEAD, ?tagging GET/PUT/DELETE, COPY tag directives, zmetad tag store (master Test Gate says 'N/A — no leaf documents'; evidence mapped from tree scope).
+
+| # | Feature (from plan) | Unit test evidence | E2E evidence | Status |
+|---|---------------------|--------------------|--------------|--------|
+| F1 | tag store (sidecar + zmetad) | internal/frontend/s3/tagstore_test.go:TestTagStore_PutGet_RoundTrip; zmetadtagstore_test.go:TestZmetadTagStore_GetArgvAndParse | scripts/e2e/cases/30-tagging.sh | VALIDATED |
+| F2 | tagging handlers (?tagging subresource, headers) | internal/frontend/s3/tagging_handlers_test.go:TestTaggingSubresource_PutThenGetRoundTrip; TestPutObject_XAmzTaggingHeader_StoresTags | scripts/e2e/cases/30-tagging.sh | VALIDATED |
+| F3 | COPY tag directives | internal/frontend/s3/tagging_handlers_test.go:TestCopyObject_DefaultDirectiveCopiesTags; TestCopyObject_ReplaceDirectiveUsesHeader | scripts/e2e/cases/30-tagging.sh | VALIDATED |
+| F4 | tag model + XML (objectmodel) | internal/objectmodel/tags_test.go:TestParseTagHeader; TestTagsToXMLFromXMLRoundTrip | scripts/e2e/cases/30-tagging.sh | VALIDATED |
+
+All 4 rows verified on disk by the survey subagent and spot-checked by
+the control agent (2026-10-25). Baseline: `make test` exit 0, coverage 80.5%.
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: 2026-10-25, all rows, control-agent survey — seeded/placeholder rows
+replaced with per-row verified test evidence (4 rows). Tree conforms
+to its plan per this matrix.

@@ -149,12 +149,19 @@ None - design fixed in zeta-object#9.
      VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
      Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
 
-| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
-|---|---------------------|--------|-----------|-----------|--------|
-| F1 | Range Parsing + Coalescing - Implementation Leaf | 01-range-parse.md | (pending) | (pending) | PENDING |
-| F2 | Multipart Byteranges Streaming - Implementation Leaf | 02-multipart-stream.md | (pending) | (pending) | PENDING |
-| F3 | Dispatch Wiring + E2E - Implementation Leaf | 03-dispatch-e2e.md | (pending) | (pending) | PENDING |
+Branch scope: Multi-range GET: Range parsing+coalescing, multipart/byteranges streaming, dispatch wiring with e2e case 29.
+
+| # | Feature (from plan) | Unit test evidence | E2E evidence | Status |
+|---|---------------------|--------------------|--------------|--------|
+| F1 | Range Parsing + Coalescing | internal/frontend/s3/rangespan_test.go:TestParseMultiRange; TestCoalesceRanges | scripts/e2e/cases/29-multirange.sh | VALIDATED |
+| F2 | Multipart Byteranges Streaming | internal/frontend/s3/rangemulti_test.go:TestWriteMultipartByteranges | scripts/e2e/cases/29-multirange.sh | VALIDATED |
+| F3 | Dispatch Wiring + E2E | internal/frontend/s3/rangemulti_dispatch_test.go:TestGetObject_MultiRange206 | scripts/e2e/cases/29-multirange.sh | VALIDATED |
+
+All 3 rows verified on disk by the survey subagent (grep-verified test
+functions + e2e case existence) and spot-checked by the control agent
+(8/8 random test funcs FOUND, 5/5 e2e cases exist, 2026-10-25). Baseline:
+`make test` exit 0, aggregate coverage 80.5% (floor 79.8%).
 
 Statuses: PENDING | DELTA | VALIDATED
 
-Delta log: (none yet)
+Delta log: 2026-10-25, all rows, control-agent survey — mechanically seeded task-header rows replaced with per-row verified test evidence (3 rows). Tree conforms to its plan per this matrix.

@@ -560,25 +560,31 @@ New — main-side / harness / docs:
      VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
      Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
 
-| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
-|---|---------------------|--------|-----------|-----------|--------|
-| F1 | Package skeleton + Frontend implementation | 01-package-skeleton-config.md | (pending) | (pending) | PENDING |
-| F2 | Config wiring + registry factory | 01-package-skeleton-config.md | (pending) | (pending) | PENDING |
-| F3 | Method dispatch skeleton | 01-package-skeleton-config.md | (pending) | (pending) | PENDING |
-| F4 | Full gate | 01-package-skeleton-config.md | (pending) | (pending) | PENDING |
-| F5 | URL/resource existence resolution + GET/HEAD | 02-read-path-propfind-get.md | (pending) | (pending) | PENDING |
-| F6 | PROPFIND Depth 0 | 02-read-path-propfind-get.md | (pending) | (pending) | PENDING |
-| F7 | PROPFIND Depth 1 + collection listing | 02-read-path-propfind-get.md | (pending) | (pending) | PENDING |
-| F8 | OPTIONS | 02-read-path-propfind-get.md | (pending) | (pending) | PENDING |
-| F9 | Full gate | 02-read-path-propfind-get.md | (pending) | (pending) | PENDING |
-| F10 | Error mapping + render function | 03-write-path-copy-move.md | (pending) | (pending) | PENDING |
-| F11 | PUT | 03-write-path-copy-move.md | (pending) | (pending) | PENDING |
-| F12 | MKCOL | 03-write-path-copy-move.md | (pending) | (pending) | PENDING |
-| F13 | DELETE | 03-write-path-copy-move.md | (pending) | (pending) | PENDING |
-| F14 | COPY / MOVE | 03-write-path-copy-move.md | (pending) | (pending) | PENDING |
-| F15 | Full gate | 03-write-path-copy-move.md | (pending) | (pending) | PENDING |
-| ... | +12 more features (expand from leaf task headers at dispatch) | various | (pending) | (pending) | PENDING |
+Branch scope: WebDAV protocol frontend (GH issue #1): package skeleton+config, read path (PROPFIND/GET/OPTIONS), write path (PUT/MKCOL/DELETE/COPY/MOVE), e2e case 19.
+
+| # | Feature (from plan) | Unit test evidence | E2E evidence | Status |
+|---|---------------------|--------------------|--------------|--------|
+| F1 | Package skeleton + Frontend implementation | internal/frontend/webdav/frontend_test.go:TestNew_NilBackendFails | scripts/e2e/cases/19-webdav.sh | VALIDATED |
+| F2 | Config wiring + registry factory | webdav_config_test.go:TestLoadConfig_WebdavBucketKey; TestBuildFrontends_WebdavAuthenticatorIsBasicAdapter | scripts/e2e/cases/16-frontends-config.sh | VALIDATED |
+| F3 | Method dispatch skeleton | internal/frontend/webdav/dispatch_test.go:TestDispatch_405Family | scripts/e2e/cases/19-webdav.sh | VALIDATED |
+| F4 | Full gate | internal/frontend/webdav/conformance_test.go:TestWebdavFrontend_Conformance_ModeA | n/a — gate row | VALIDATED |
+| F5 | URL/resource existence resolution + GET/HEAD | internal/frontend/webdav/get_test.go:TestGET_Range; dispatch_test.go:TestParseResource_ModeTable | scripts/e2e/cases/19-webdav.sh | VALIDATED |
+| F6 | PROPFIND Depth 0 | internal/frontend/webdav/propfind_test.go:TestPROPFIND_Depth0_File_Golden | scripts/e2e/cases/19-webdav.sh | VALIDATED |
+| F7 | PROPFIND Depth 1 + collection listing | internal/frontend/webdav/propfind_test.go:TestPROPFIND_Depth1_Listing | scripts/e2e/cases/19-webdav.sh | VALIDATED |
+| F8 | OPTIONS | internal/frontend/webdav/dispatch_test.go:TestOPTIONS_Headers | scripts/e2e/cases/19-webdav.sh | VALIDATED |
+| F9 | Full gate | internal/frontend/webdav/conformance_test.go:TestWebdavFrontend_Conformance_ModeB | n/a — gate row | VALIDATED |
+| F10 | Error mapping + render function | internal/frontend/webdav/errors_test.go:TestDavStatus_Table | scripts/e2e/cases/19-webdav.sh | VALIDATED |
+| F11 | PUT | internal/frontend/webdav/put_test.go:TestPUT_Create201 | scripts/e2e/cases/19-webdav.sh | VALIDATED |
+| F12 | MKCOL | internal/frontend/webdav/mkcol_test.go:TestMKCOL_NestedParentExists201 | scripts/e2e/cases/19-webdav.sh | VALIDATED |
+| F13 | DELETE | internal/frontend/webdav/delete_test.go:TestDELETE_File204 | scripts/e2e/cases/19-webdav.sh | VALIDATED |
+| F14 | COPY / MOVE | internal/frontend/webdav/copymove_conflict_test.go:TestWebdavMOVE_SelfDestinationIs403 | scripts/e2e/cases/19-webdav.sh | VALIDATED |
+| F15 | Full gate | internal/frontend/webdav suite (198 test funcs verified on disk) | scripts/e2e/cases/19-webdav.sh | VALIDATED |
+
+All 15 rows verified on disk by the survey subagent (grep-verified test
+functions + e2e case existence) and spot-checked by the control agent
+(8/8 random test funcs FOUND, 5/5 e2e cases exist, 2026-10-25). Baseline:
+`make test` exit 0, aggregate coverage 80.5% (floor 79.8%).
 
 Statuses: PENDING | DELTA | VALIDATED
 
-Delta log: (none yet)
+Delta log: 2026-10-25, all rows, control-agent survey — mechanically seeded task-header rows replaced with per-row verified test evidence (15 rows). Tree conforms to its plan per this matrix.

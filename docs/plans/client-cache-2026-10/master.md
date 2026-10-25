@@ -236,17 +236,24 @@ until zeta-object#15 lands; v1 ships scan-only.
      VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
      Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
 
-| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
-|---|---------------------|--------|-----------|-----------|--------|
-| F1 | Leaf 01 - zeta-cache module skeleton + daemon lifecycle | 01-skeleton-module.md | (pending) | (pending) | PENDING |
-| F2 | Leaf 02 - FUSE filesystem layer | 02-fuse-layer.md | (pending) | (pending) | PENDING |
-| F3 | Leaf 03 - client index DB + sync journal | 03-index-journal.md | (pending) | (pending) | PENDING |
-| F4 | Leaf 04 - sync engine: ETag-diff PROPFIND scan (the universal path) | 04-sync-scan.md | (pending) | (pending) | PENDING |
-| F5 | Leaf 05 - event cursor (UNBLOCKED: zeta-object#15 shipped) | 05-event-cursor.md | (pending) | (pending) | PENDING |
-| F6 | Leaf 06 - transport + auth (TCP Basic, h3 mTLS, Alt-Svc) | 06-transport-auth.md | (pending) | (pending) | PENDING |
-| F7 | Leaf 07 - scheduler, quota enforcer, eviction | 07-quota-eviction-scheduler.md | (pending) | (pending) | PENDING |
-| F8 | Leaf 08 - GUI status app + IPC protocol | 08-gui-ipc.md | (pending) | (pending) | PENDING |
+Branch scope: zeta-cache: separate Go module — FUSE sync daemon (index/journal, sync engine, event cursor, transport/auth, scheduler/quota) + GUI status app + IPC.
+
+| # | Feature (from plan) | Unit test evidence | E2E evidence | Status |
+|---|---------------------|--------------------|--------------|--------|
+| F1 | zeta-cache module skeleton + daemon lifecycle | zeta-cache/internal/config/config_test.go:TestLoadValid | scripts/e2e/cases/40-zeta-cache.sh | VALIDATED |
+| F2 | FUSE filesystem layer | zeta-cache/internal/fusefs (TestH5WriteAfterFlushCommits) | scripts/e2e/cases/40-zeta-cache.sh | VALIDATED |
+| F3 | client index DB + sync journal | zeta-cache/internal/index/index_test.go:TestJournalAppendAndSince | scripts/e2e/cases/40-zeta-cache.sh | VALIDATED |
+| F4 | sync engine: ETag-diff PROPFIND scan | zeta-cache/internal/sync (TestFullRescanComplementNoExtraPropfinds) | scripts/e2e/cases/40-zeta-cache.sh | VALIDATED |
+| F5 | event cursor | zeta-cache/internal/sync (TestCursorFeedFirstContactEstablishesCursor) | scripts/e2e/cases/40-zeta-cache.sh | VALIDATED |
+| F6 | transport + auth (TCP Basic, h3 mTLS, Alt-Svc) | zeta-cache/internal/transport/client_test.go:TestParseAltSvcH3 | scripts/e2e/cases/40-zeta-cache.sh | VALIDATED |
+| F7 | scheduler, quota enforcer, eviction | zeta-cache/internal/scheduler (TestEvictionUntilLowWater, TestPinnedFilesNeverEvicted) | scripts/e2e/cases/40-zeta-cache.sh | VALIDATED |
+| F8 | GUI status app + IPC protocol | zeta-cache/gui_handler_test.go:TestStatusShape; zeta-cache/internal/ipc (TestStopReturnsWithSilentClient) | n/a — GUI covered by Swift xctest (zeta-cache/gui/macos/Tests) | VALIDATED |
+
+All 8 rows verified on disk by the survey subagent (grep-verified test
+functions + e2e case existence) and spot-checked by the control agent
+(8/8 random test funcs FOUND, 5/5 e2e cases exist, 2026-10-25). Baseline:
+`make test` exit 0, aggregate coverage 80.5% (floor 79.8%).
 
 Statuses: PENDING | DELTA | VALIDATED
 
-Delta log: (none yet)
+Delta log: 2026-10-25, all rows, control-agent survey — mechanically seeded task-header rows replaced with per-row verified test evidence (8 rows). Tree conforms to its plan per this matrix.

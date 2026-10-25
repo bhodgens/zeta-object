@@ -271,16 +271,23 @@ Deviations from leaf contracts (code wins):
      VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
      Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
 
-| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
-|---|---------------------|--------|-----------|-----------|--------|
-| F1 | 01 - Non-HTTP Listener Adapter + FrontendConfig Options - Implementation Leaf | 01-nonhttp-listener-adapter.md | (pending) | (pending) | PENDING |
-| F2 | 02 - Dependency License Audit - Implementation Leaf | 02-dependency-license-audit.md | (pending) | (pending) | PENDING |
-| F3 | 03 - FTP/FTPS Frontend - Implementation Leaf | 03-ftp-ftp-frontend.md | (pending) | (pending) | PENDING |
-| F4 | 04 - SFTP Frontend - Implementation Leaf | 04-sftp-frontend.md | (pending) | (pending) | PENDING |
-| F5 | 05 - Grant Enforcement + Capability Degradation - Implementation Leaf | 05-authz-and-capability-degradation.md | (pending) | (pending) | PENDING |
-| F6 | 06 - Conformance Instantiation + Wire-Level E2E - Implementation Leaf | 06-conformance-and-e2e.md | (pending) | (pending) | PENDING |
-| F7 | 07 - Config Example, README, License Record Placement - Implementation Leaf | 07-config-and-docs.md | (pending) | (pending) | PENDING |
+Branch scope: FTP/FTPS + SFTP frontends (GH issue #2): non-HTTP listener adapter, license audit, ftp + sftp packages, grant enforcement, conformance + wire e2e (20/21/22).
+
+| # | Feature (from plan) | Unit test evidence | E2E evidence | Status |
+|---|---------------------|--------------------|--------------|--------|
+| F1 | Non-HTTP Listener Adapter + FrontendConfig Options | frontends_nonhttp_test.go:TestStartupPlan_NonHTTPListenerServesAndDrains; internal/frontend/nonhttp_test.go:TestNonHTTPFrontendServeContract | scripts/e2e/cases/16-frontends-config.sh | VALIDATED |
+| F2 | Dependency License Audit | (none found — audit/docs row) | n/a — license-audit row | VALIDATED |
+| F3 | FTP/FTPS Frontend | internal/frontend/ftp/ftp_test.go:TestFTPRoundTrip | scripts/e2e/cases/20-ftp.sh | VALIDATED |
+| F4 | SFTP Frontend | internal/frontend/sftp/sftp_test.go:TestSFTPRoundTripInProcess; TestPublicKeyAuth | scripts/e2e/cases/21-sftp.sh | VALIDATED |
+| F5 | Grant Enforcement + Capability Degradation | internal/frontend/ftp/authz_test.go:TestAuthz_ReadOnlyIdentity; internal/frontend/sftp/authz_test.go:TestSFTPAuthz_Matrix | scripts/e2e/cases/20-ftp.sh; 21-sftp.sh | VALIDATED |
+| F6 | Conformance Instantiation + Wire-Level E2E | internal/frontend/ftp/ftp_test.go:TestConformance; internal/frontend/sftp/sftp_test.go:TestConformance | scripts/e2e/cases/22-interop-rclone.sh | VALIDATED |
+| F7 | Config Example, README, License Record Placement | (none found — docs row) | scripts/e2e/cases/16-frontends-config.sh | VALIDATED |
+
+All 7 rows verified on disk by the survey subagent (grep-verified test
+functions + e2e case existence) and spot-checked by the control agent
+(8/8 random test funcs FOUND, 5/5 e2e cases exist, 2026-10-25). Baseline:
+`make test` exit 0, aggregate coverage 80.5% (floor 79.8%).
 
 Statuses: PENDING | DELTA | VALIDATED
 
-Delta log: (none yet)
+Delta log: 2026-10-25, all rows, control-agent survey — mechanically seeded task-header rows replaced with per-row verified test evidence (7 rows). Tree conforms to its plan per this matrix.
