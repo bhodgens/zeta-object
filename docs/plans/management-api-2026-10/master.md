@@ -444,3 +444,35 @@ misread as a forest root).
 - **Cluster future:** the certificate principal (CN) is the identity
   recorded in the audit log, so a future cluster that shares the CA can
   attribute management actions without redesigning the credential.
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | the TLS listener seam | 01-admin-frontend-mtls.md | (pending) | (pending) | PENDING |
+| F2 | certificate verification and the principal | 01-admin-frontend-mtls.md | (pending) | (pending) | PENDING |
+| F3 | loopback guard | 01-admin-frontend-mtls.md | (pending) | (pending) | PENDING |
+| F4 | frontend skeleton, factory entry, 503 defaults | 01-admin-frontend-mtls.md | (pending) | (pending) | PENDING |
+| F5 | make the seam installer take the configuration | 02-runtime-config-store.md | (pending) | (pending) | PENDING |
+| F6 | the store | 02-runtime-config-store.md | (pending) | (pending) | PENDING |
+| F7 | masked read | 02-runtime-config-store.md | (pending) | (pending) | PENDING |
+| F8 | atomic persistence | 02-runtime-config-store.md | (pending) | (pending) | PENDING |
+| F9 | wire the store into startup | 02-runtime-config-store.md | (pending) | (pending) | PENDING |
+| F10 | extract the per-path lock | 03-shared-bucket-manager.md | (pending) | (pending) | PENDING |
+| F11 | the bucketmanager package | 03-shared-bucket-manager.md | (pending) | (pending) | PENDING |
+| F12 | the provisioner adapter in package s3 | 03-shared-bucket-manager.md | (pending) | (pending) | PENDING |
+| F13 | rewire the S3 handlers | 03-shared-bucket-manager.md | (pending) | (pending) | PENDING |
+| F14 | coverage floors | 03-shared-bucket-manager.md | (pending) | (pending) | PENDING |
+| F15 | the audit seam and the admin op | 04-admin-routes.md | (pending) | (pending) | PENDING |
+| ... | +10 more features (expand from leaf task headers at dispatch) | various | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

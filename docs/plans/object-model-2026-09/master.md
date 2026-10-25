@@ -422,3 +422,29 @@ Required in every orchestrator: `## Dispatch Protocol`, `## Interface Contracts`
   words later. Keep mapping logic OUT of internal/objectmodel.
 - Repo fact check: `go.mod` says `go 1.25.6` (CLAUDE.md says 1.27 — trust go.mod).
   Leaf agents must not bump the go directive.
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | Package scaffolding + pinned structs | 01-canonical-types.md | (pending) | (pending) | PENDING |
+| F2 | ETag normalization helpers | 01-canonical-types.md | (pending) | (pending) | PENDING |
+| F3 | Metadata key normalization helpers | 01-canonical-types.md | (pending) | (pending) | PENDING |
+| F4 | Error type and taxonomy | 01-canonical-types.md | (pending) | (pending) | PENDING |
+| F5 | Full package verification | 01-canonical-types.md | (pending) | (pending) | PENDING |
+| F6 | ParseMetadataHeaders — header names → canonical user metadata | 02-metadata-surface.md | (pending) | (pending) | PENDING |
+| F7 | ObjectFromHeaders / ObjectToMetadataHeaders — the canonical surface | 02-metadata-surface.md | (pending) | (pending) | PENDING |
+| F8 | Legacy ObjectMetadata conversion | 02-metadata-surface.md | (pending) | (pending) | PENDING |
+| F9 | Parity test helpers (drift gate for sibling trees) | 02-metadata-surface.md | (pending) | (pending) | PENDING |
+| F10 | Full package verification | 02-metadata-surface.md | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

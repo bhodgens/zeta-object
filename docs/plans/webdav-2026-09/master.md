@@ -550,3 +550,35 @@ New — main-side / harness / docs:
 | 04-auth-grants | COMPLETE |
 | 05-conformance-e2e | COMPLETE |
 | 06-docs | COMPLETE |
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | Package skeleton + Frontend implementation | 01-package-skeleton-config.md | (pending) | (pending) | PENDING |
+| F2 | Config wiring + registry factory | 01-package-skeleton-config.md | (pending) | (pending) | PENDING |
+| F3 | Method dispatch skeleton | 01-package-skeleton-config.md | (pending) | (pending) | PENDING |
+| F4 | Full gate | 01-package-skeleton-config.md | (pending) | (pending) | PENDING |
+| F5 | URL/resource existence resolution + GET/HEAD | 02-read-path-propfind-get.md | (pending) | (pending) | PENDING |
+| F6 | PROPFIND Depth 0 | 02-read-path-propfind-get.md | (pending) | (pending) | PENDING |
+| F7 | PROPFIND Depth 1 + collection listing | 02-read-path-propfind-get.md | (pending) | (pending) | PENDING |
+| F8 | OPTIONS | 02-read-path-propfind-get.md | (pending) | (pending) | PENDING |
+| F9 | Full gate | 02-read-path-propfind-get.md | (pending) | (pending) | PENDING |
+| F10 | Error mapping + render function | 03-write-path-copy-move.md | (pending) | (pending) | PENDING |
+| F11 | PUT | 03-write-path-copy-move.md | (pending) | (pending) | PENDING |
+| F12 | MKCOL | 03-write-path-copy-move.md | (pending) | (pending) | PENDING |
+| F13 | DELETE | 03-write-path-copy-move.md | (pending) | (pending) | PENDING |
+| F14 | COPY / MOVE | 03-write-path-copy-move.md | (pending) | (pending) | PENDING |
+| F15 | Full gate | 03-write-path-copy-move.md | (pending) | (pending) | PENDING |
+| ... | +12 more features (expand from leaf task headers at dispatch) | various | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

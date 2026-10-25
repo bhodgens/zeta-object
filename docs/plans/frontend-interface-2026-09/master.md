@@ -332,3 +332,32 @@ Integration Test Plan, Notes. If any is missing, fill it in first.
 - SigV4 stays whole: canonical requests, chunked decoding, presigned URLs move
   as one unit into `internal/frontend/s3` — do not split or refactor signing
   logic during the move (separate hardening trees own that).
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | `auth.Authenticator` v1 placeholder package | 01-frontend-interface.md | (pending) | (pending) | PENDING |
+| F2 | `Frontend` interface + `ProtocolCaps` | 01-frontend-interface.md | (pending) | (pending) | PENDING |
+| F3 | Capability-negotiation error helpers | 01-frontend-interface.md | (pending) | (pending) | PENDING |
+| F4 | Frontend `Registry` | 01-frontend-interface.md | (pending) | (pending) | PENDING |
+| F5 | Reusable conformance test suite | 01-frontend-interface.md | (pending) | (pending) | PENDING |
+| F6 | `auth.CredentialSource` + SigV4 adapter behind `auth.Authenticator` | 02-s3-frontend-extraction.md | (pending) | (pending) | PENDING |
+| F7 | Move SigV4 machinery into the s3 frontend | 02-s3-frontend-extraction.md | (pending) | (pending) | PENDING |
+| F8 | Move dispatch and handler routing; reroute storage through Backend | 02-s3-frontend-extraction.md | (pending) | (pending) | PENDING |
+| F9 | Conformance suite run + capability degradations | 02-s3-frontend-extraction.md | (pending) | (pending) | PENDING |
+| F10 | `FrontendConfig` + backward-compatible config loading | 03-router-registration.md | (pending) | (pending) | PENDING |
+| F11 | Frontend factory + buildFrontends/mountFrontends | 03-router-registration.md | (pending) | (pending) | PENDING |
+| F12 | main() wiring + multi-listener + graceful shutdown | 03-router-registration.md | (pending) | (pending) | PENDING |
+| F13 | Documentation of the seam + listener decision | 03-router-registration.md | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

@@ -127,3 +127,22 @@ For each child document, in dependency order:
 ## Open Questions
 
 None - design was fixed in zeta-object#10.
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | Region Config Key - Implementation Leaf | 01-region-config.md | (pending) | (pending) | PENDING |
+| F2 | SigV4 Wiring - Implementation Leaf | 02-sigv4-wiring.md | (pending) | (pending) | PENDING |
+| F3 | Region Tests + E2E + README - Implementation Leaf | 03-tests-e2e.md | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

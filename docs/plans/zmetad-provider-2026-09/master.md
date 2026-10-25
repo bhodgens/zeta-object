@@ -393,3 +393,24 @@ After leaf 05:
 4. **WRITE/READ ops (wire schema v2):** passed through lowercased in event
    JSON, excluded from the `&versions` derivation (which maps only
    create/rename/truncate/remove). Revisit if IO auditing should surface.
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | zmetad SQLite DB Accessor - Implementation Leaf | 01-db-accessor.md | (pending) | (pending) | PENDING |
+| F2 | Row -> ObjectEvent Mapping (full_path-first) - Implementation Leaf | 02-row-mapping.md | (pending) | (pending) | PENDING |
+| F3 | zmetad Events Provider - Implementation Leaf | 03-provider.md | (pending) | (pending) | PENDING |
+| F4 | Config, Wiring, and CLI-Transport Removal - Implementation Leaf | 04-wiring-config.md | (pending) | (pending) | PENDING |
+| F5 | Parity Gate + E2E Coverage - Implementation Leaf | 05-parity-e2e.md | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

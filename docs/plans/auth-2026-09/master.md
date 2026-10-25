@@ -452,3 +452,34 @@ no new product code needed.
    `internal/auth/devmode.go` rather than a looser "WARNING" grep, so the
    e2e pins the loudness contract itself, not just any warning text.
 
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | Grant query methods on Identity | 01-identity-model-config.md | (pending) | (pending) | PENDING |
+| F2 | `IdentityRegistry` interface + `MultiRegistry` | 01-identity-model-config.md | (pending) | (pending) | PENDING |
+| F3 | Config schema + env merge + fail-loud validation | 01-identity-model-config.md | (pending) | (pending) | PENDING |
+| F4 | Coverage floor re-measurement (AGENTS.md rule) | 01-identity-model-config.md | (pending) | (pending) | PENDING |
+| F5 | Registry-backed credential resolution | 02-sigv4-adapter.md | (pending) | (pending) | PENDING |
+| F6 | Grant enforcement in dispatch | 02-sigv4-adapter.md | (pending) | (pending) | PENDING |
+| F7 | Wire the registry in package main | 02-sigv4-adapter.md | (pending) | (pending) | PENDING |
+| F8 | Coverage floors + gates | 02-sigv4-adapter.md | (pending) | (pending) | PENDING |
+| F9 | `BasicAuthenticator` | 03-basic-auth-grants.md | (pending) | (pending) | PENDING |
+| F10 | Shared `AuthorizeRequest` helper | 03-basic-auth-grants.md | (pending) | (pending) | PENDING |
+| F11 | Protocol-neutrality proof (two frontends, one registry) | 03-basic-auth-grants.md | (pending) | (pending) | PENDING |
+| F12 | Canonicalization + fingerprint | 04-sftp-key-hook.md | (pending) | (pending) | PENDING |
+| F13 | `MultiRegistry` implements `PublicKeyAuthenticator` | 04-sftp-key-hook.md | (pending) | (pending) | PENDING |
+| F14 | Fingerprint-safe logging helper | 04-sftp-key-hook.md | (pending) | (pending) | PENDING |
+| F15 | `DevAuthenticator` | 05-zero-auth-dev-mode.md | (pending) | (pending) | PENDING |
+| ... | +8 more features (expand from leaf task headers at dispatch) | various | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

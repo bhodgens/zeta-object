@@ -261,3 +261,26 @@ Deviations from leaf contracts (code wins):
    session state channel; round-trip is lossless and tested.
 5. Leaf 06's suggested case numbers 18/19/20 were taken (auth tree + webdav
    landed first); the cases took 20/21/22 as the task brief directed.
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | 01 - Non-HTTP Listener Adapter + FrontendConfig Options - Implementation Leaf | 01-nonhttp-listener-adapter.md | (pending) | (pending) | PENDING |
+| F2 | 02 - Dependency License Audit - Implementation Leaf | 02-dependency-license-audit.md | (pending) | (pending) | PENDING |
+| F3 | 03 - FTP/FTPS Frontend - Implementation Leaf | 03-ftp-ftp-frontend.md | (pending) | (pending) | PENDING |
+| F4 | 04 - SFTP Frontend - Implementation Leaf | 04-sftp-frontend.md | (pending) | (pending) | PENDING |
+| F5 | 05 - Grant Enforcement + Capability Degradation - Implementation Leaf | 05-authz-and-capability-degradation.md | (pending) | (pending) | PENDING |
+| F6 | 06 - Conformance Instantiation + Wire-Level E2E - Implementation Leaf | 06-conformance-and-e2e.md | (pending) | (pending) | PENDING |
+| F7 | 07 - Config Example, README, License Record Placement - Implementation Leaf | 07-config-and-docs.md | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

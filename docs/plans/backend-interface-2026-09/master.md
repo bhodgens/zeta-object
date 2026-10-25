@@ -342,3 +342,33 @@ before dispatching any agent; fix until `ALL TREES COMPLIANT: True`.
 - **No third-party deps.** The eventual distributed backend (crush-lite ZFS ring) and any
   S3-proxy backend land in their own trees against the same Registry; nothing in this tree
   should anticipate their internals beyond the constructor signature.
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | Package skeleton + frozen Backend interface | 01-backend-interface.md | (pending) | (pending) | PENDING |
+| F2 | Error taxonomy | 01-backend-interface.md | (pending) | (pending) | PENDING |
+| F3 | Conformance suite | 01-backend-interface.md | (pending) | (pending) | PENDING |
+| F4 | Gates + doc comments | 01-backend-interface.md | (pending) | (pending) | PENDING |
+| F5 | Pre-extraction behavior pin (verification, no new behavior) | 02-filesystem-backend.md | (pending) | (pending) | PENDING |
+| F6 | fsbackend skeleton + New + Capabilities + Buckets | 02-filesystem-backend.md | (pending) | (pending) | PENDING |
+| F7 | Put/Get/Stat/Delete — the extraction core | 02-filesystem-backend.md | (pending) | (pending) | PENDING |
+| F8 | List | 02-filesystem-backend.md | (pending) | (pending) | PENDING |
+| F9 | Handler flip (behavior-preserving) | 02-filesystem-backend.md | (pending) | (pending) | PENDING |
+| F10 | Multipart staging decision (documentation, mandatory) | 02-filesystem-backend.md | (pending) | (pending) | PENDING |
+| F11 | Registry with Register/Lookup/Names | 03-registry-config.md | (pending) | (pending) | PENDING |
+| F12 | Config schema — backends map + per-bucket backend (backward compatible) | 03-registry-config.md | (pending) | (pending) | PENDING |
+| F13 | buildBackendLookup + main.go wiring | 03-registry-config.md | (pending) | (pending) | PENDING |
+| F14 | Docs — config.json.example + CLAUDE.md configuration section | 03-registry-config.md | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

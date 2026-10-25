@@ -65,3 +65,24 @@
 
 - Parent issue: zeta-object#14.
 - Prerequisite: client-cache-2026-10 (DONE).
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | Leaf 01 - daemon FileProvider surface | 01-daemon-fileprovider-surface.md | (pending) | (pending) | PENDING |
+| F2 | Leaf 02 - FileProvider extension sources (thin Swift adapter) | 02-extension-source.md | (pending) | (pending) | PENDING |
+| F3 | Leaf 03 - enablement + distribution documentation | 03-enablement-docs.md | (pending) | (pending) | PENDING |
+| F4 | issue-14-comment.md | issue-14-comment.md | (pending) | (pending) | PENDING |
+| F5 | Replicated extension: live-device bringup findings (2026-10-12) | replicated-bringup-findings.md | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

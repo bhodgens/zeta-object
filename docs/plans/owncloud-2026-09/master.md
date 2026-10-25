@@ -416,3 +416,35 @@ Integration Test Plan, Notes. If any is missing, fill it in first.
 - Client-version pinning: record the exact desktop client version(s) tested
   in the decision doc; capability negotiation is version-sensitive and a
   future client bump may re-open leaf 01.
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | Stand up the target stack | 01-decision-and-client-subset-discovery.md | (pending) | (pending) | PENDING |
+| F2 | Capture the client's wire behavior | 01-decision-and-client-subset-discovery.md | (pending) | (pending) | PENDING |
+| F3 | Write the decision + subset + degradation documents | 01-decision-and-client-subset-discovery.md | (pending) | (pending) | PENDING |
+| F4 | Stop-condition check | 01-decision-and-client-subset-discovery.md | (pending) | (pending) | PENDING |
+| F5 | Package skeleton + Frontend composition | 02-ocs-capabilities-endpoint.md | (pending) | (pending) | PENDING |
+| F6 | OCS envelope + router + error responses | 02-ocs-capabilities-endpoint.md | (pending) | (pending) | PENDING |
+| F7 | Capabilities document | 02-ocs-capabilities-endpoint.md | (pending) | (pending) | PENDING |
+| F8 | User metadata endpoint | 02-ocs-capabilities-endpoint.md | (pending) | (pending) | PENDING |
+| F9 | Conformance suite instantiability (smoke only) | 02-ocs-capabilities-endpoint.md | (pending) | (pending) | PENDING |
+| F10 | Versions surface over a fake provider (TDD) | 03-versions-endpoint.md | (pending) | (pending) | PENDING |
+| F11 | Capability wiring | 03-versions-endpoint.md | (pending) | (pending) | PENDING |
+| F12 | Real-provider integration test (skippable) | 03-versions-endpoint.md | (pending) | (pending) | PENDING |
+| F13 | Degradation documentation hook | 03-versions-endpoint.md | (pending) | (pending) | PENDING |
+| F14 | Token-aware adapter wiring (TDD) | 04-app-password-auth.md | (pending) | (pending) | PENDING |
+| F15 | Interactive token flow endpoints (ONLY if observed) | 04-app-password-auth.md | (pending) | (pending) | PENDING |
+| ... | +10 more features (expand from leaf task headers at dispatch) | various | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

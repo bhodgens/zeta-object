@@ -139,3 +139,22 @@ review, tracking table updated.
 ## Open Questions
 
 None - design fixed in zeta-object#9.
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | Range Parsing + Coalescing - Implementation Leaf | 01-range-parse.md | (pending) | (pending) | PENDING |
+| F2 | Multipart Byteranges Streaming - Implementation Leaf | 02-multipart-stream.md | (pending) | (pending) | PENDING |
+| F3 | Dispatch Wiring + E2E - Implementation Leaf | 03-dispatch-e2e.md | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

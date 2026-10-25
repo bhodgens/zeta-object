@@ -336,3 +336,35 @@ Run: `python3 ~/.hermes/skills/software-development/hierarchical-planning/script
 - **The logo files stay where they are** (`logo-icon.png`, `logo.jpeg` at
   the repo root, referenced by README). The console embeds its own copy
   for the favicon and the rail mark; do not move or rewrite the originals.
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | binary skeleton and config | 01-console-skeleton-auth.md | (pending) | (pending) | PENDING |
+| F2 | session and CSRF | 01-console-skeleton-auth.md | (pending) | (pending) | PENDING |
+| F3 | embedded assets and the unauthenticated surface | 01-console-skeleton-auth.md | (pending) | (pending) | PENDING |
+| F4 | Makefile, ignore list, floor row | 01-console-skeleton-auth.md | (pending) | (pending) | PENDING |
+| F5 | mTLS transport and error mapping | 02-gateway-client.md | (pending) | (pending) | PENDING |
+| F6 | the route methods | 02-gateway-client.md | (pending) | (pending) | PENDING |
+| F7 | certificate reload | 02-gateway-client.md | (pending) | (pending) | PENDING |
+| F8 | HTML shell | 03-ui-shell-theme.md | (pending) | (pending) | PENDING |
+| F9 | styles and theme | 03-ui-shell-theme.md | (pending) | (pending) | PENDING |
+| F10 | shell behaviour JavaScript | 03-ui-shell-theme.md | (pending) | (pending) | PENDING |
+| F11 | logo copies and favicon | 03-ui-shell-theme.md | (pending) | (pending) | PENDING |
+| F12 | dashboard | 04-ui-screens.md | (pending) | (pending) | PENDING |
+| F13 | configuration | 04-ui-screens.md | (pending) | (pending) | PENDING |
+| F14 | buckets | 04-ui-screens.md | (pending) | (pending) | PENDING |
+| F15 | danger zone and sign-in | 04-ui-screens.md | (pending) | (pending) | PENDING |
+| ... | +9 more features (expand from leaf task headers at dispatch) | various | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

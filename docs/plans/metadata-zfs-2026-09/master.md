@@ -384,3 +384,35 @@ carries "Do NOT commit" and a Self-Verification Checklist.
   optional fields exist); build-tag drift between GOOSes breaking
   cross-compile; parity test flakiness from mtime differences (leaf 03 pins
   the tolerance policy).
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | Package skeleton with frozen types | 01-provider-interface-probe.md | (pending) | (pending) | PENDING |
+| F2 | Registry with duplicate-name panic | 01-provider-interface-probe.md | (pending) | (pending) | PENDING |
+| F3 | ProbeAndAttach lazy wiring | 01-provider-interface-probe.md | (pending) | (pending) | PENDING |
+| F4 | Per-GOOS ZFS filesystem detection (statfs, build tags) | 01-provider-interface-probe.md | (pending) | (pending) | PENDING |
+| F5 | Dataset resolution helper (zfs get -H -o value) | 01-provider-interface-probe.md | (pending) | (pending) | PENDING |
+| F6 | Command seam (record-and-replay testability) | 02-zfs-events-consumer.md | (pending) | (pending) | PENDING |
+| F7 | Strict parser for the pinned wire format | 02-zfs-events-consumer.md | (pending) | (pending) | PENDING |
+| F8 | Object-to-key mapping and History filtering | 02-zfs-events-consumer.md | (pending) | (pending) | PENDING |
+| F9 | Probe (detection + dataset + feature flag) and Purge | 02-zfs-events-consumer.md | (pending) | (pending) | PENDING |
+| F10 | Replay fixture + graceful skip integration test | 02-zfs-events-consumer.md | (pending) | (pending) | PENDING |
+| F11 | Parity harness — two buckets, one request matrix | 03-s3-metadata-parity.md | (pending) | (pending) | PENDING |
+| F12 | The parity matrix | 03-s3-metadata-parity.md | (pending) | (pending) | PENDING |
+| F13 | Sidecar byte-compat + mtime tolerance policy | 03-s3-metadata-parity.md | (pending) | (pending) | PENDING |
+| F14 | make parity-test target + precommit wiring | 03-s3-metadata-parity.md | (pending) | (pending) | PENDING |
+| F15 | Dispatch wiring (subresource checks, existing style) | 04-capability-endpoints.md | (pending) | (pending) | PENDING |
+| ... | +4 more features (expand from leaf task headers at dispatch) | various | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

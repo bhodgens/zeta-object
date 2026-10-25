@@ -542,3 +542,35 @@ All 7 leaves COMPLETE. Integration review (parent): make test 79.3% aggregate, m
   concurrent reads (a cache daemon hydrating a directory) complete
   sooner. On a clean LAN the gain is small; the feature is aimed at
   wifi and distant links.
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | the parser seam | 01-webdav-range.md | (pending) | (pending) | PENDING |
+| F2 | single-span and unsatisfiable/malformed handling | 01-webdav-range.md | (pending) | (pending) | PENDING |
+| F3 | capability truthfulness | 01-webdav-range.md | (pending) | (pending) | PENDING |
+| F4 | gates | 01-webdav-range.md | (pending) | (pending) | PENDING |
+| F5 | the QUIC listener seam | 02-h3-frontend.md | (pending) | (pending) | PENDING |
+| F6 | the h3 frontend package | 02-h3-frontend.md | (pending) | (pending) | PENDING |
+| F7 | Alt-Svc advertisement | 02-h3-frontend.md | (pending) | (pending) | PENDING |
+| F8 | serving HTTP/3 (integration) | 02-h3-frontend.md | (pending) | (pending) | PENDING |
+| F9 | dependency and build discipline | 02-h3-frontend.md | (pending) | (pending) | PENDING |
+| F10 | the probe | 03-e2e-case-docs.md | (pending) | (pending) | PENDING |
+| F11 | the e2e case | 03-e2e-case-docs.md | (pending) | (pending) | PENDING |
+| F12 | docs | 03-e2e-case-docs.md | (pending) | (pending) | PENDING |
+| F13 | gates | 03-e2e-case-docs.md | (pending) | (pending) | PENDING |
+| F14 | extend the harness | 04-live-validation.md | (pending) | (pending) | PENDING |
+| F15 | run to green on zfs-meta | 04-live-validation.md | (pending) | (pending) | PENDING |
+| ... | +14 more features (expand from leaf task headers at dispatch) | various | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

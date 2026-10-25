@@ -341,3 +341,34 @@ misread as a forest root).
   `.metadata` mkdir, so the rollback destroy CAN hit
   ErrDatasetHasSnapshots. Pin the behavior: still 500, LEAVE the empty
   dataset in place, log loudly - never `-r`, never force.
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | Config fields + defaults + example docs | 01-config-keys.md | (pending) | (pending) | PENDING |
+| F2 | zfs_startup.go resolver + validation | 01-config-keys.md | (pending) | (pending) | PENDING |
+| F3 | Wire the resolved parent dataset for later leaves | 01-config-keys.md | (pending) | (pending) | PENDING |
+| F4 | Runner + semaphore scaffold | 02-dataset-ops.md | (pending) | (pending) | PENDING |
+| F5 | create / destroy ops | 02-dataset-ops.md | (pending) | (pending) | PENDING |
+| F6 | mountpoint resolution + Install/Uninstall | 02-dataset-ops.md | (pending) | (pending) | PENDING |
+| F7 | createBucketHandler dataset path | 03-handler-wiring.md | (pending) | (pending) | PENDING |
+| F8 | deleteBucketHandler dataset path | 03-handler-wiring.md | (pending) | (pending) | PENDING |
+| F9 | Startup wiring (package main) | 03-handler-wiring.md | (pending) | (pending) | PENDING |
+| F10 | e2e case 34 | 04-e2e-docs.md | (pending) | (pending) | PENDING |
+| F11 | README section + highlight bullet | 04-e2e-docs.md | (pending) | (pending) | PENDING |
+| F12 | protocol-compatibility.md rows | 04-e2e-docs.md | (pending) | (pending) | PENDING |
+| F13 | Harness section (edit on the repo side first) | 05-live-validation.md | (pending) | (pending) | PENDING |
+| F14 | Live run on zfs-meta | 05-live-validation.md | (pending) | (pending) | PENDING |
+| F15 | Cross-repo observation (report only) | 05-live-validation.md | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

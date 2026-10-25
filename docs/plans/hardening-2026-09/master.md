@@ -123,3 +123,34 @@ W6: 3.6, final gates
 All 16 leaves COMPLETE as of 2026-09-28. Final gates: 210 unit tests +
 101 e2e asserts green, make lint 0, race clean, staticcheck clean,
 live AWS CLI smokes green (basic, presign, copy/batch).
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | Leaf 1.1 — Tooling port (meept-grade) | 1.1-tooling.md | (pending) | (pending) | PENDING |
+| F2 | Leaf 1.2 — Lint backlog paydown to zero | 1.2-lint-sweep.md | (pending) | (pending) | PENDING |
+| F3 | Leaf 2.1 — Mechanical file split | 2.1-file-split.md | (pending) | (pending) | PENDING |
+| F4 | Leaf 2.2 — SigV4 security + canonical fixes | 2.2-sigv4-fixes.md | (pending) | (pending) | PENDING |
+| F5 | Leaf 2.3 — Storage atomicity + multipart data-integrity fixes | 2.3-storage-atomicity.md | (pending) | (pending) | PENDING |
+| F6 | Leaf 2.4 — Object/bucket handler semantics + XML conformance | 2.4-handler-semantics.md | (pending) | (pending) | PENDING |
+| F7 | Leaf 2.5 — Actions subsystem fixes | 2.5-actions-fixes.md | (pending) | (pending) | PENDING |
+| F8 | Leaf 2.6 — Server lifecycle + config + scripts | 2.6-server-lifecycle.md | (pending) | (pending) | PENDING |
+| F9 | Leaf 2.7 — Docs reality sync | 2.7-docs.md | (pending) | (pending) | PENDING |
+| F10 | Leaf 3.1 — Range + conditional requests | 3.1-range-conditional.md | (pending) | (pending) | PENDING |
+| F11 | Leaf 3.2 — Presigned URL authentication | 3.2-presigned.md | (pending) | (pending) | PENDING |
+| F12 | Leaf 3.3 — Multipart lifecycle: ListUploads, ListParts, expiry, part rules | 3.3-multipart-lifecycle.md | (pending) | (pending) | PENDING |
+| F13 | Leaf 3.4 — Streaming integrity: chunk-signature chain + trailers | 3.4-streaming-integrity.md | (pending) | (pending) | PENDING |
+| F14 | Leaf 3.5 — CopyObject + DeleteObjects (batch) | 3.5-copy-batch-delete.md | (pending) | (pending) | PENDING |
+| F15 | Leaf 3.6 — E2E suite (all features, AWS CLI) | 3.6-e2e-suite.md | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

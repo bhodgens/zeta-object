@@ -96,3 +96,29 @@ W4: 4.10 + integration gate
 All 10 leaves COMPLETE as of 2026-09-28. Final: 306 unit tests + 101 e2e
 asserts, coverage 83.6% (floor raised 50 -> 70), make check/lint/e2e green,
 2 production races found by the stress suite and fixed.
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | Leaf 4.1 — Actions runtime tests | 4.1-actions-runtime.md | (pending) | (pending) | PENDING |
+| F2 | Leaf 4.10 — Bench + coverage floor (final integration leaf) | 4.10-floor.md | (pending) | (pending) | PENDING |
+| F3 | Leaf 4.2 — Sweeper lifecycle tests | 4.2-sweeper.md | (pending) | (pending) | PENDING |
+| F4 | Leaf 4.3 — Dispatch routing matrix | 4.3-routing.md | (pending) | (pending) | PENDING |
+| F5 | Leaf 4.4 — Multipart error paths | 4.4-multipart-errors.md | (pending) | (pending) | PENDING |
+| F6 | Leaf 4.5 — Copy/Delete edge matrix | 4.5-copy-delete-edges.md | (pending) | (pending) | PENDING |
+| F7 | Leaf 4.6 — Storage atomic helpers | 4.6-storage-atomic.md | (pending) | (pending) | PENDING |
+| F8 | Leaf 4.7 — Fuzz targets + make fuzz | 4.7-fuzz.md | (pending) | (pending) | PENDING |
+| F9 | Leaf 4.8 — Concurrency stress suite | 4.8-concurrency-stress.md | (pending) | (pending) | PENDING |
+| F10 | Leaf 4.9 — Auth negative-fuzz corpus | 4.9-auth-negative.md | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)

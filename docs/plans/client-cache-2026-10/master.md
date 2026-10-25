@@ -226,3 +226,27 @@ until zeta-object#15 lands; v1 ships scan-only.
   plan).
 - Future work: FileProvider extension (issue #14), resumable upload
   (server-side), Windows client.
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | Leaf 01 - zeta-cache module skeleton + daemon lifecycle | 01-skeleton-module.md | (pending) | (pending) | PENDING |
+| F2 | Leaf 02 - FUSE filesystem layer | 02-fuse-layer.md | (pending) | (pending) | PENDING |
+| F3 | Leaf 03 - client index DB + sync journal | 03-index-journal.md | (pending) | (pending) | PENDING |
+| F4 | Leaf 04 - sync engine: ETag-diff PROPFIND scan (the universal path) | 04-sync-scan.md | (pending) | (pending) | PENDING |
+| F5 | Leaf 05 - event cursor (UNBLOCKED: zeta-object#15 shipped) | 05-event-cursor.md | (pending) | (pending) | PENDING |
+| F6 | Leaf 06 - transport + auth (TCP Basic, h3 mTLS, Alt-Svc) | 06-transport-auth.md | (pending) | (pending) | PENDING |
+| F7 | Leaf 07 - scheduler, quota enforcer, eviction | 07-quota-eviction-scheduler.md | (pending) | (pending) | PENDING |
+| F8 | Leaf 08 - GUI status app + IPC protocol | 08-gui-ipc.md | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)
