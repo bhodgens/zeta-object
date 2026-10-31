@@ -4,6 +4,7 @@ set -u
 BKT='e2e-03-errors'
 aws s3api create-bucket --bucket "$BKT" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 TMP=$(mktemp /tmp/e2e03.XXXXXX)
+trap 'rm -f "$TMP"' EXIT
 printf 'err-payload\n' > "$TMP"
 
 # NoSuchBucket on GET into a bucket that never existed

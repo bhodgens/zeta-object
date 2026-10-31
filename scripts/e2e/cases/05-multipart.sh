@@ -7,6 +7,7 @@ BKT='e2e-05-multipart'
 aws s3api create-bucket --bucket "$BKT" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 
 TMPD=$(mktemp -d /tmp/e2e05.XXXXXX)
+trap 'rm -rf "$TMPD"' EXIT
 
 # --- 3-part multipart round trip ------------------------------------------
 # Parts 1,2: 5MiB each (>= min); part 3 (final): small.

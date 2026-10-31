@@ -26,6 +26,7 @@ cat > "$E2E_DATA_DIR/$BKT/.bucket-actions" <<EOF
 EOF
 
 TMP=$(mktemp /tmp/e2e10.XXXXXX)
+trap 'rm -f "$TMP"' EXIT
 printf 'fire-the-action\n' > "$TMP"
 aws s3 cp "$TMP" "s3://$BKT/trigger.txt" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 assert_eq 'upload for action trigger exit 0' 0 $?

@@ -20,6 +20,7 @@ BKT='e2e-39-name-gate'
 aws s3api create-bucket --bucket "$BKT" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 
 TMP=$(mktemp /tmp/e2e39.XXXXXX)
+trap 'rm -f "$TMP"' EXIT
 printf 'canary-39\n' > "$TMP"
 
 # Positive control first: the same operations on a real bucket must work, so

@@ -7,6 +7,13 @@ aws s3api create-bucket --bucket "$BKT" --endpoint-url "$ENDPOINT" --no-verify-s
 
 # 4KB object with known content (byte i = i mod 256)
 TMP=$(mktemp /tmp/e2e29.XXXXXX)
+HDRS=''
+HDRS2=''
+BODY=''
+MFST=''
+OCT=''
+CHDRS=''
+trap 'rm -f "$TMP" "$HDRS" "$HDRS2" "$BODY" "$MFST" "$OCT" "$CHDRS"' EXIT
 python3 -c "import sys; sys.stdout.buffer.write(bytes(i % 256 for i in range(4096)))" > "$TMP"
 s3req PUT "/$BKT/m.bin" --data-binary @"$TMP" -H 'Content-Type: application/octet-stream'
 assert_eq 'setup: put 4096-byte object' 200 "$S3_STATUS"

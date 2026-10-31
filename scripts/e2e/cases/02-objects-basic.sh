@@ -5,6 +5,7 @@ BKT='e2e-02-objects'
 aws s3api create-bucket --bucket "$BKT" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 
 TMP=$(mktemp /tmp/e2e02.XXXXXX)
+trap 'rm -f "$TMP" "$TMP.out" "$TMP.nest" "$TMP.uni"' EXIT
 printf 'round-trip-payload-02\n' > "$TMP"
 
 # simple round trip via aws CLI

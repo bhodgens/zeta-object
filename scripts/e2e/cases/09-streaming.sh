@@ -9,6 +9,7 @@ aws s3api create-bucket --bucket "$BKT" --endpoint-url "$ENDPOINT" --no-verify-s
 
 # 16 MiB pseudo-random payload — well over the CLI's aws-chunked threshold
 TMPD=$(mktemp -d /tmp/e2e09.XXXXXX)
+trap 'rm -rf "$TMPD"' EXIT
 python3 - "$TMPD/big" <<'PY'
 import sys, random
 rng = random.Random(7)

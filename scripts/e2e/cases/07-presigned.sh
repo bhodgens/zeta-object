@@ -5,6 +5,7 @@ BKT='e2e-07-presign'
 aws s3api create-bucket --bucket "$BKT" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 
 TMP=$(mktemp /tmp/e2e07.XXXXXX)
+trap 'rm -f "$TMP" "$TMP.out"' EXIT
 printf 'presign-me-07\n' > "$TMP"
 aws s3 cp "$TMP" "s3://$BKT/ps.txt" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 

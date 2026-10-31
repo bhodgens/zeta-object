@@ -6,6 +6,8 @@ aws s3api create-bucket --bucket "$BKT" --endpoint-url "$ENDPOINT" --no-verify-s
 
 # 120-byte object with known content
 TMP=$(mktemp /tmp/e2e06.XXXXXX)
+RFILE=''
+trap 'rm -f "$TMP" "$RFILE"' EXIT
 python3 -c "print(''.join(chr(97 + i % 26) for i in range(119)) + '\n', end='')" > "$TMP"
 s3req PUT "/$BKT/r.bin" --data-binary @"$TMP" -H 'Content-Type: application/octet-stream'
 assert_eq 'setup: put 120-byte object' 200 "$S3_STATUS"

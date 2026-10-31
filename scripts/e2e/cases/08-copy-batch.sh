@@ -7,6 +7,7 @@ aws s3api create-bucket --bucket "$BA" --endpoint-url "$ENDPOINT" --no-verify-ss
 aws s3api create-bucket --bucket "$BB" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 
 TMP=$(mktemp /tmp/e2e08.XXXXXX)
+trap 'rm -f "$TMP" "$TMP.out" "$TMP.del"' EXIT
 printf 'copy-payload-08\n' > "$TMP"
 aws s3 cp "$TMP" "s3://$BA/src.txt" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 aws s3 cp "$TMP" "s3://$BA/src2.txt" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1

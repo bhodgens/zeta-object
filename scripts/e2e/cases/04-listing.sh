@@ -11,6 +11,7 @@ keycount_py='import json,sys;d=json.load(sys.stdin);print(d.get("KeyCount", len(
 
 # Layout: 6 files under pfx/ (a..f), 2 loose files at root, 1 nested under pfx/sub/.
 TMP=$(mktemp /tmp/e2e04.XXXXXX)
+trap 'rm -f "$TMP"' EXIT
 printf 'x' > "$TMP"
 for k in a b c d e f; do
 	aws s3 cp "$TMP" "s3://$BKT/pfx/$k.txt" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1

@@ -6,6 +6,8 @@
 set -u
 BKT='e2e-30-tagging'
 ZT_TMP=$(mktemp /tmp/e2e30-zt.XXXXXX)  # ZFS-gated section body file (trap-named cleanup)
+TMP=''
+trap 'rm -f "$ZT_TMP" "$TMP"' EXIT
 printf 'ztags-payload\n' > "$ZT_TMP"
 aws s3api create-bucket --bucket "$BKT" --endpoint-url "$ENDPOINT" --no-verify-ssl >/dev/null 2>&1
 
