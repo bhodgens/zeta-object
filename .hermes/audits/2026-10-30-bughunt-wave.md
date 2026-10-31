@@ -43,8 +43,12 @@ commits since are fixes + docs + the appliance merge.
   at end-of-case (02: rm -f "$TMP" ...; 29: rm -f per temp); the gap is
   only the mid-case early-exit path, and e2e_sweep_stale (30s age gate)
   already reaps those leaks. Still a contract violation per AGENTS.md
-  ("named in that trap's rm") — FIXING: EXIT traps added to the 14
-  cases (01-10, 17, 29, 30-tagging, 39) by a fixer; bash -n gate.
+  ("named in that trap's rm") — FIXED (commit bed5eda): EXIT traps in
+  the 12 cases that create temps (01/17 create none). Parent review
+  caught 4 fixer gaps before commit: 29 missing HDRS2, 02 trap named
+  never-assigned vars instead of the real $TMP.out/.nest/.uni derived
+  files, 07/08 missing derived files. Gate: bash -n all 12;
+  run-one.sh 02 PASS 16/0, 01 PASS 19/0.
 - COVER_MIN=78 vs measured 80.5% (coverage.out, 2026-10-25): floor is
   BELOW reality by 2.5 points — no red-gate drift; acceptable per
   "set floor to measured rounded down". ZETA_CACHE_COVER_MIN=59 not
