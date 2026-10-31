@@ -35,3 +35,21 @@ commits since are fixes + docs + the appliance merge.
 
 ## Fix disposition
 - No code fixes required. Report-only wave.
+
+## THIRD-WAVE ADDENDUM (b3: test/ops harness)
+
+- Auditor claim [HIGH] "16 of 41 cases lack EXIT traps": parent-graded
+  MEDIUM. Parent verified the 14 flagged cases DO rm their mktemp files
+  at end-of-case (02: rm -f "$TMP" ...; 29: rm -f per temp); the gap is
+  only the mid-case early-exit path, and e2e_sweep_stale (30s age gate)
+  already reaps those leaks. Still a contract violation per AGENTS.md
+  ("named in that trap's rm") — FIXING: EXIT traps added to the 14
+  cases (01-10, 17, 29, 30-tagging, 39) by a fixer; bash -n gate.
+- COVER_MIN=78 vs measured 80.5% (coverage.out, 2026-10-25): floor is
+  BELOW reality by 2.5 points — no red-gate drift; acceptable per
+  "set floor to measured rounded down". ZETA_CACHE_COVER_MIN=59 not
+  re-measured this wave (logged).
+- lib.sh asserts: VERIFIED real exit codes (contract: set -u, never
+  set -e, failures counted to a real exit at suite end, no || true).
+- zfs-validate: no remaining same-class bugs. GUI: IPC-only, no auth
+  surface, no path traversal.
