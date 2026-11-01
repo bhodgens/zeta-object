@@ -270,7 +270,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   e2e:
-    runs-on: ubuntu-latest
+    # Heavy serial job: moved to the 8-core self-hosted runner (VM 155,
+    # capped at 1 job) to cut duration vs the 2-core GitHub-hosted image.
+    # Matrix test jobs stay on ubuntu-latest for parallelism.
+    runs-on: [self-hosted, linux, x64, zeta-object]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
