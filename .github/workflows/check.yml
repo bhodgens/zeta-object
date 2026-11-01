@@ -243,7 +243,11 @@ jobs:
           # gitleaks scans a commit RANGE on push events (last-scanned..HEAD);
           # a depth-1 clone lacks the base commit and the scan dies with
           # "ambiguous argument ... unknown revision". Full history required.
+          # Blobless: full commit graph without file contents of old commits —
+          # gitleaks only needs the range's own blobs, which checkout still
+          # materializes for HEAD.
           fetch-depth: 0
+          filter: blob:none
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
